@@ -1,70 +1,8 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
-import { EventBus, eventBus, type HistoryFilter } from "./eventBus.js";
-import { Storage, storage } from "./storage.js";
-
-// ---------------------------------------------------------------------------
-// Mock data helpers (replace with real broker integrations)
-// ---------------------------------------------------------------------------
-
-function mockPortfolio() {
-  const now = Date.now();
-  return {
-    timestamp: now,
-    baseCurrency: "USDT",
-    totalValue: 125_430.22,
-    availableCash: 42_100.5,
-    pnl: {
-      day: 1_240.33,
-      week: 3_890.12,
-      total: 12_543.22,
-      percentDay: 0.99,
-    },
-    holdings: [
-      { symbol: "BTCUSDT", qty: 0.85, avgPrice: 62_000, price: 68_120.5, value: 57_902.42, pnl: 5_202.42 },
-      { symbol: "ETHUSDT", qty: 12.5, avgPrice: 3_200, price: 3_450.12, value: 43_126.5, pnl: 3_126.5 },
-      { symbol: "SOLUSDT", qty: 150, avgPrice: 140, price: 162.68, value: 24_401.3, pnl: 3_401.3 },
-    ],
-    positions: [
-      { symbol: "BTCUSDT", side: "long" as const, qty: 0.85, entry: 62_000, mark: 68_120.5, unrealizedPnl: 5_202.42, leverage: 1 },
-    ],
-    risk: {
-      exposure: 0.68,
-      maxDrawdown: 0.12,
-      sharpe: 1.42,
-      status: "ok" as const,
-    },
-  };
-}
-
-function mockTicks(count = 20) {
-  const symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"];
-  const now = Date.now();
-  return Array.from({ length: count }, (_, i) => {
-    const symbol = symbols[i % symbols.length]!;
-    const base =
-      symbol === "BTCUSDT"
-        ? 68_000
-        : symbol === "ETHUSDT"
-          ? 3_400
-          : symbol === "SOLUSDT"
-            ? 160
-            : symbol === "BNBUSDT"
-              ? 600
-              : 0.52;
-    const volatility = base * 0.002;
-    const price = base + (Math.random() - 0.5) * volatility * 10;
-    const change = (Math.random() - 0.5) * 2;
-    return {
-      symbol,
-      price: Number(price.toFixed(2)),
-      change: Number(change.toFixed(2)),
-      changePercent: Number(((change / base) * 100).toFixed(3)),
-      volume: Number((Math.random() * 1000 + 100).toFixed(2)),
-      timestamp: now - (count - i) * 1000,
-    };
-  });
-}
+import { TypedEventBus, type EventBusOptions } from "@finance/core";
+import type { FinanceEvent, HistoryFilter } from "@finance/shared";
+import { getRuntime } from "./runtime.js";
 
 // ---------------------------------------------------------------------------
 // Server factory
@@ -73,14 +11,12 @@ function mockTicks(count = 20) {
 export interface ServerOptions {
   port?: number;
   host?: string;
-  bus?: EventBus;
-  store?: Storage;
+  bus?: TypedEventBus;
   logger?: boolean;
 }
 
 export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInstance> {
-  const bus = opts.bus ?? eventBus;
-  const store = opts.store ?? storage;
+  const bus = opts.bus ?? new TypedEventBus();
 
   const app = Fastify({
     logger: opts.logger ?? true,
@@ -92,52 +28,176 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   });
 
-  // Ensure storage is ready + seeded
-  await store.ensureDir().catch((err) => {
-    app.log.warn({ err }, "failed to ensure .data dir");
-  });
-  await store.seedIfEmpty().catch((err) => {
-    app.log.warn({ err }, "failed to seed storage");
-  });
-
   // -------------------------------------------------------------------------
   // GET /api/health
   // -------------------------------------------------------------------------
   app.get("/api/health", async () => {
+    const runtime = getRuntime();
+    const health = runtime ? await runtime.getHealth() : null;
     return {
       status: "ok",
       uptime: process.uptime(),
       timestamp: Date.now(),
       version: "0.1.0",
+      runtime: health ? {
+        status: health.status,
+        agents: Object.keys(health.agents).length,
+        tools: health.tools,
+        strategies: health.strategies,
+        events: health.eventBusSize,
+      } : null,
     };
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/state
+  // GET /api/agents
   // -------------------------------------------------------------------------
-  app.get("/api/state", async (_request, reply) => {
+  app.get("/api/agents", async () => {
+    const runtime = getRuntime();
+    if (!runtime) return { agents: [] };
+    const agents = runtime.getAgentRegistry().list();
+    return {
+      agents: agents.map((a) => ({
+        id: a.id,
+        name: a.name,
+        version: a.version,
+        description: a.description,
+        capabilities: a.capabilities,
+        status: a.getStatus(),
+        health: a.getHealth(),
+      })),
+    };
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/agents/:id/start
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>("/api/agents/:id/start", async (request, reply) => {
+    const runtime = getRuntime();
+    if (!runtime) return reply.status(503).send({ error: "runtime not available" });
+    const agent = runtime.getAgentRegistry().get(request.params.id);
+    if (!agent) return reply.status(404).send({ error: "agent not found" });
     try {
-      const state = await store.getState();
-      const recentEvents = bus.getHistory(undefined, 100);
-      return {
-        ...state,
-        recentEvents,
-        eventCount: bus.size(),
-        subscriberCount: bus.subscriberCount(),
-        timestamp: Date.now(),
-      };
+      await agent.start();
+      return { ok: true, agent: { id: agent.id, status: agent.getStatus() } };
     } catch (err) {
-      app.log.error({ err }, "GET /api/state failed");
-      return reply.status(500).send({ error: "failed to load state" });
+      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/agents/:id/stop
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>("/api/agents/:id/stop", async (request, reply) => {
+    const runtime = getRuntime();
+    if (!runtime) return reply.status(503).send({ error: "runtime not available" });
+    const agent = runtime.getAgentRegistry().get(request.params.id);
+    if (!agent) return reply.status(404).send({ error: "agent not found" });
+    try {
+      await agent.stop();
+      return { ok: true, agent: { id: agent.id, status: agent.getStatus() } };
+    } catch (err) {
+      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/strategies
+  // -------------------------------------------------------------------------
+  app.get("/api/strategies", async () => {
+    const runtime = getRuntime();
+    if (!runtime) return { strategies: [] };
+    return { strategies: runtime.getStrategyRegistry().list() };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/risk/status
+  // -------------------------------------------------------------------------
+  app.get("/api/risk/status", async () => {
+    const runtime = getRuntime();
+    if (!runtime) return { risk: null };
+    const riskAgent = runtime.getAgentRegistry().get("risk");
+    if (!riskAgent || typeof (riskAgent as any).getRiskMetrics !== "function") {
+      return { risk: null };
+    }
+    return { risk: (riskAgent as any).getRiskMetrics() };
   });
 
   // -------------------------------------------------------------------------
   // GET /api/portfolio
   // -------------------------------------------------------------------------
   app.get("/api/portfolio", async () => {
-    // In production this would aggregate from portfolio agent / broker
-    return mockPortfolio();
+    const runtime = getRuntime();
+    if (!runtime) {
+      return {
+        timestamp: Date.now(),
+        baseCurrency: "USDT",
+        totalValue: 100000,
+        availableCash: 100000,
+        pnl: { day: 0, week: 0, total: 0, percentDay: 0 },
+        holdings: [],
+        positions: [],
+        risk: { exposure: 0, maxDrawdown: 0, sharpe: 0, status: "ok" as const },
+      };
+    }
+
+    const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
+    if (!portfolioAgent || typeof (portfolioAgent as any).getPortfolio !== "function") {
+      return {
+        timestamp: Date.now(),
+        baseCurrency: "USDT",
+        totalValue: 100000,
+        availableCash: 100000,
+        pnl: { day: 0, week: 0, total: 0, percentDay: 0 },
+        holdings: [],
+        positions: [],
+        risk: { exposure: 0, maxDrawdown: 0, sharpe: 0, status: "ok" as const },
+      };
+    }
+
+    const snapshot = (portfolioAgent as any).getPortfolio();
+    const positionsArray = (portfolioAgent as any).getPositionsArray() ?? [];
+    const pnl = (portfolioAgent as any).getPnL();
+    const riskAgent = runtime.getAgentRegistry().get("risk");
+    const riskMetrics = riskAgent && typeof (riskAgent as any).getRiskMetrics === "function"
+      ? (riskAgent as any).getRiskMetrics()
+      : null;
+
+    return {
+      timestamp: Date.now(),
+      baseCurrency: "USDT",
+      totalValue: pnl.totalValue,
+      availableCash: pnl.cash,
+      pnl: {
+        day: pnl.realizedPnL,
+        week: 0,
+        total: pnl.totalPnL,
+        percentDay: pnl.totalValue > 0 ? (pnl.totalPnL / pnl.totalValue) * 100 : 0,
+      },
+      holdings: positionsArray.map((p: any) => ({
+        symbol: p.symbol,
+        qty: p.qty,
+        avgPrice: p.avgPrice,
+        price: p.currentPrice,
+        value: p.qty * p.currentPrice,
+        pnl: (p.currentPrice - p.avgPrice) * p.qty,
+      })),
+      positions: positionsArray.map((p: any) => ({
+        symbol: p.symbol,
+        side: "long" as const,
+        qty: p.qty,
+        entry: p.avgPrice,
+        mark: p.currentPrice,
+        unrealizedPnl: (p.currentPrice - p.avgPrice) * p.qty,
+        leverage: p.leverage ?? 1,
+      })),
+      risk: riskMetrics ? {
+        exposure: riskMetrics.exposure / 100,
+        maxDrawdown: riskMetrics.drawdown / 100,
+        sharpe: riskMetrics.sharpe,
+        status: "ok" as const,
+      } : { exposure: 0, maxDrawdown: 0, sharpe: 0, status: "ok" as const },
+    };
   });
 
   // -------------------------------------------------------------------------
@@ -154,18 +214,99 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
           limit = parsed;
         }
       }
-      let ticks = mockTicks(limit);
-      if (request.query.symbol) {
-        const sym = request.query.symbol.toUpperCase();
-        ticks = ticks.filter((t) => t.symbol === sym);
-        // If filtered empty but symbol requested, generate mock for that symbol
-        if (ticks.length === 0) {
-          ticks = mockTicks(limit).map((t) => ({ ...t, symbol: sym }));
+
+      const runtime = getRuntime();
+      if (runtime) {
+        const marketAgent = runtime.getAgentRegistry().get("market");
+        if (marketAgent && typeof (marketAgent as any).getHistory === "function") {
+          let ticks = (marketAgent as any).getHistory(limit, request.query.symbol);
+          return { ticks, timestamp: Date.now() };
         }
       }
-      return { ticks, timestamp: Date.now() };
+
+      // Fallback: empty ticks
+      return { ticks: [], timestamp: Date.now() };
     },
   );
+
+  // -------------------------------------------------------------------------
+  // GET /api/signals
+  // -------------------------------------------------------------------------
+  app.get<{ Querystring: { limit?: string } }>("/api/signals", async (request) => {
+    const runtime = getRuntime();
+    if (!runtime) return { signals: [] };
+    const quantAgent = runtime.getAgentRegistry().get("quant");
+    if (!quantAgent || typeof (quantAgent as any).getSignals !== "function") {
+      return { signals: [] };
+    }
+    const limit = request.query.limit ? parseInt(request.query.limit, 10) : 20;
+    return { signals: (quantAgent as any).getSignals(limit) };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/orders
+  // -------------------------------------------------------------------------
+  app.get("/api/orders", async () => {
+    const runtime = getRuntime();
+    if (!runtime) return { orders: [] };
+    const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
+    if (!portfolioAgent || typeof (portfolioAgent as any).getOrderHistory !== "function") {
+      return { orders: [] };
+    }
+    return { orders: (portfolioAgent as any).getOrderHistory() };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/trades
+  // -------------------------------------------------------------------------
+  app.get("/api/trades", async () => {
+    const runtime = getRuntime();
+    if (!runtime) return { trades: [] };
+    const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
+    if (!portfolioAgent || typeof (portfolioAgent as any).getFillHistory !== "function") {
+      return { trades: [] };
+    }
+    return { trades: (portfolioAgent as any).getFillHistory() };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/execution/status
+  // -------------------------------------------------------------------------
+  app.get("/api/execution/status", async () => {
+    const runtime = getRuntime();
+    if (!runtime) return { execution: null };
+    const execAgent = runtime.getAgentRegistry().get("execution");
+    if (!execAgent || typeof (execAgent as any).getStats !== "function") {
+      return { execution: null };
+    }
+    return { execution: (execAgent as any).getStats() };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/state
+  // -------------------------------------------------------------------------
+  app.get("/api/state", async (_request, reply) => {
+    try {
+      const recentEvents = bus.getHistory(undefined, 100);
+      const runtime = getRuntime();
+      const health = runtime ? await runtime.getHealth() : null;
+      return {
+        recentEvents,
+        eventCount: bus.size(),
+        subscriberCount: bus.subscriberCount(),
+        runtime: health ? {
+          status: health.status,
+          agents: health.agents,
+          tools: health.tools,
+          strategies: health.strategies,
+        } : null,
+        timestamp: Date.now(),
+      };
+    } catch (err) {
+      app.log.error({ err }, "GET /api/state failed");
+      return reply.status(500).send({ error: "failed to load state" });
+    }
+  });
 
   // -------------------------------------------------------------------------
   // POST /api/publish
@@ -198,33 +339,14 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
         type: body.type.trim(),
         data: body.data ?? null,
         timestamp: body.timestamp,
+        source: "api-publish",
         channelId: body.channelId,
         threadId: body.threadId,
         agentId: body.agentId,
         runId: body.runId,
       });
 
-      // Fire-and-forget persistence as a message if channel/thread context exists
-      // (non-blocking, don't fail publish if storage fails)
-      if (event.channelId && event.threadId) {
-        store
-          .appendMessage({
-            id: event.id,
-            channelId: event.channelId,
-            threadId: event.threadId,
-            role: event.agentId ?? "user",
-            content: typeof event.data === "string" ? event.data : JSON.stringify(event.data),
-            timestamp: event.timestamp,
-            agentId: event.agentId,
-            data: event.data,
-          })
-          .catch((err) => {
-            app.log.warn({ err, eventId: event.id }, "failed to persist message");
-          });
-      }
-
       app.log.info({ eventId: event.id, type: event.type }, "event published");
-
       return reply.status(201).send({ ok: true, event });
     } catch (err) {
       app.log.error({ err }, "publish failed");
@@ -233,7 +355,7 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/events  (SSE)
+  // GET /api/events (SSE)
   // -------------------------------------------------------------------------
   app.get<{
     Querystring: {
@@ -247,7 +369,6 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       lastEventId?: string;
     };
   }>("/api/events", async (request, reply) => {
-    // Build filter from query params
     const filter: HistoryFilter = {};
     if (request.query.channelId) filter.channelId = request.query.channelId;
     if (request.query.threadId) filter.threadId = request.query.threadId;
@@ -255,8 +376,6 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     if (request.query.type) filter.type = request.query.type;
     if (request.query.runId) filter.runId = request.query.runId;
 
-    // lastEventId support (OpenBot-style resume)
-    // If provided, replay events after that id's timestamp
     let sinceTimestamp: number | undefined;
     if (request.query.lastEventId) {
       const found = bus.getHistory().find((e) => e.id === request.query.lastEventId);
@@ -275,17 +394,14 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       }
     }
 
-    // Setup SSE headers
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
-      // CORS headers are already handled by @fastify/cors but ensure SSE works cross-origin
       "Access-Control-Allow-Origin": "*",
     });
 
-    // Helper to send SSE formatted event
     const sendEvent = (event: { id: string; type: string; data: unknown; timestamp: number }) => {
       try {
         reply.raw.write(`id: ${event.id}\n`);
@@ -302,7 +418,6 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       } catch {}
     };
 
-    // Send initial comment to establish connection
     sendComment("connected");
     if (typeof (reply.raw as unknown as { flushHeaders?: () => void }).flushHeaders === "function") {
       try {
@@ -310,19 +425,15 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       } catch {}
     }
 
-    // Replay history if requested
     if (shouldReplay) {
       const history = bus.getHistory(Object.keys(filter).length > 0 ? filter : undefined, replayLimit);
       for (const ev of history) {
         sendEvent(ev);
       }
-      // Signal replay complete
       sendComment("replay-complete");
     }
 
-    // Subscribe to live events
-    const handler = (event: import("./eventBus.js").FinanceEvent) => {
-      // Apply filter to live events as well
+    const handler = (event: FinanceEvent) => {
       if (filter.type && event.type !== filter.type) return;
       if (filter.channelId && event.channelId !== filter.channelId) return;
       if (filter.threadId && event.threadId !== filter.threadId) return;
@@ -333,12 +444,10 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
 
     const unsubscribe = bus.subscribe(handler);
 
-    // Heartbeat every 15s to keep connection alive (infrastructure / proxies)
     const heartbeat = setInterval(() => {
       sendComment(`heartbeat ${Date.now()}`);
     }, 15_000);
 
-    // Cleanup on client disconnect
     const cleanup = () => {
       clearInterval(heartbeat);
       unsubscribe();
@@ -352,14 +461,11 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       cleanup();
     });
 
-    // Keep request open — do not end reply. Fastify will not auto-close because we used reply.raw.writeHead
-    // Return a never-resolving promise that resolves on close to satisfy Fastify's async handler
     await new Promise<void>((resolve) => {
       request.raw.on("close", () => resolve());
       reply.raw.on("close", () => resolve());
     });
 
-    // Unreachable cleanup already done, but ensure
     cleanup();
   });
 
@@ -376,14 +482,9 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
 
   app.setErrorHandler((error, _request, reply) => {
     app.log.error({ err: error }, "unhandled error");
-    const status =
-      (error as unknown as { statusCode?: number }).statusCode ?? 500;
-    const message =
-      error instanceof Error ? error.message : "internal server error";
-    return reply.status(status).send({
-      error: message,
-      statusCode: status,
-    });
+    const status = (error as unknown as { statusCode?: number }).statusCode ?? 500;
+    const message = error instanceof Error ? error.message : "internal server error";
+    return reply.status(status).send({ error: message, statusCode: status });
   });
 
   return app;

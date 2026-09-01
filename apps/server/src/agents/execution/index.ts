@@ -1,27 +1,24 @@
-import { EventBus, eventBus as defaultBus, type FinanceEvent } from "../../core/eventBus.js";
+import { BaseAgent } from "@finance/core";
+import type { Agent } from "@finance/core";
+import { TypedEventBus } from "@finance/core";
+import type { FinanceEvent } from "@finance/shared";
 import { v4 as uuidv4 } from "uuid";
 import {
   createExchange,
   createExchangeSync,
   createOrder as ccxtCreateOrder,
-  fetchBalance as ccxtFetchBalance,
   type Exchange,
 } from "./ccxtWrapper.js";
 
-export { createExchange, createExchangeSync, ccxtCreateOrder, ccxtFetchBalance };
-export type { Exchange };
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+export { createExchange, createExchangeSync, ccxtCreateOrder };
 
 export type ExecutionMode = "paper" | "live";
 
 export interface ExecutionConfig {
   mode: ExecutionMode;
-  slippage: number; // 0.0005 = 0.05%
-  fee: number; // 0.001 = 0.1%
-  latency: number; // ms
+  slippage: number;
+  fee: number;
+  latency: number;
 }
 
 export interface Order {
@@ -33,7 +30,6 @@ export interface Order {
   timestamp?: number;
   id?: string;
   orderId?: string;
-  // allow extra fields
   [key: string]: unknown;
 }
 
@@ -46,7 +42,6 @@ export interface Fill {
   fee: number;
   timestamp: number;
   mode: ExecutionMode;
-  // optional notional/slippage diagnostics
   slippage?: number;
   rawPrice?: number;
 }
@@ -70,14 +65,8 @@ export interface ExecutionStats {
   avgSlippage: number;
 }
 
-// ---------------------------------------------------------------------------
-// ExecutionAgent
-// ---------------------------------------------------------------------------
-
-export class ExecutionAgent {
-  public readonly name = "Execution Agent";
-
-  private bus: EventBus;
+export class ExecutionAgent extends BaseAgent implements Agent {
+  private bus: TypedEventBus;
   private config: ExecutionConfig;
   private fills: Fill[] = [];
   private rejected: Rejected[] = [];
@@ -85,8 +74,15 @@ export class ExecutionAgent {
   private maxHistory = 500;
   private exchange: Exchange | null = null;
 
-  constructor(bus?: EventBus, config?: Partial<ExecutionConfig>) {
-    this.bus = bus ?? defaultBus;
+  constructor(bus?: TypedEventBus, config?: Partial<ExecutionConfig>) {
+    super({
+      id: "execution",
+      name: "Execution Agent",
+      version: "0.1.0",
+      description: "Order execution with paper and live trading support",
+      capabilities: ["order-execution", "paper-trading", "live-trading"],
+    });
+    this.bus = bus ?? new TypedEventBus();
 
     const envMode = (process.env.EXECUTION_MODE as ExecutionMode | undefined)?.toLowerCase() as
       | ExecutionMode
@@ -98,61 +94,42 @@ export class ExecutionAgent {
 
     this.config = {
       mode,
-      slippage: config?.slippage ?? 0.0005, // 0.05%
-      fee: config?.fee ?? 0.001, // 0.1%
+      slippage: config?.slippage ?? 0.0005,
+      fee: config?.fee ?? 0.001,
       latency: config?.latency ?? 100,
     };
-
-    // init mock/live exchange placeholder synchronously for paper
-    // async real exchange will be lazily created on first live execute
   }
 
-  // -------------------------------------------------------------------------
-  // Lifecycle
-  // -------------------------------------------------------------------------
-
-  start(): void {
-    if (this.unsubscribe) return;
+  async start(): Promise<void> {
+    await super.start();
     this.unsubscribe = this.bus.subscribe((event: FinanceEvent) => {
-      if (event.type === "portfolio:order") {
+      if (event.type === "order.created") {
         const order = event.data as Order | null;
         if (order) {
-          // fire-and-forget async execute
-          void this.execute(order).catch((err) => {
-            console.error(`[ExecutionAgent] execute error:`, err);
-          });
+          void this.execute(order).catch((err) => this.recordError(err));
         }
       }
     });
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = null;
     }
+    await super.stop();
   }
 
-  isRunning(): boolean {
-    return this.unsubscribe !== null;
+  async handleEvent(event: FinanceEvent): Promise<void> {
+    if (event.type === "order.created") {
+      const order = event.data as Order;
+      await this.execute(order);
+    }
   }
 
-  // -------------------------------------------------------------------------
-  // Core: execute
-  // -------------------------------------------------------------------------
-
-  /**
-   * Execute an order.
-   * - Validates qty/price/symbol/side
-   * - Generates orderId uuid if missing
-   * - In paper mode: simulate slippage/fee + latency, publish execution:filled
-   * - In live mode: placeholder for CCXT binance (falls back to mock if no keys)
-   * - On invalid order: publish execution:rejected
-   */
   async execute(order: Order): Promise<Fill | null> {
+    this.recordActivity();
     const now = Date.now();
-
-    // --- validation ---
     const validation = this.validateOrder(order);
     const orderId = (order.id as string) ?? (order.orderId as string) ?? uuidv4();
     const symbol = typeof order.symbol === "string" ? order.symbol.toUpperCase() : undefined;
@@ -164,7 +141,7 @@ export class ExecutionAgent {
       const rejected: Rejected = {
         orderId,
         symbol,
-        side: side ?? (typeof sideRaw === "string" ? String(sideRaw).toLowerCase() : undefined),
+        side: side ?? undefined,
         reason: validation.reason!,
         timestamp: now,
         mode: this.config.mode,
@@ -173,22 +150,20 @@ export class ExecutionAgent {
       if (this.rejected.length > this.maxHistory) {
         this.rejected.splice(0, this.rejected.length - this.maxHistory);
       }
-      try {
-        this.bus.publish({ type: "execution:rejected", data: rejected });
-      } catch (err) {
-        console.error("[ExecutionAgent] publish execution:rejected failed:", err);
-      }
-      console.warn(`[ExecutionAgent] rejected ${orderId} reason=${validation.reason}`);
+      this.bus.publish({
+        type: "order.rejected",
+        data: rejected,
+        source: "execution-agent",
+        agentId: "execution",
+      });
       return null;
     }
 
-    // At this point order is valid
     const qty = order.qty as number;
     const rawPrice = order.price as number;
     const validSide = side as "buy" | "sell";
     const validSymbol = symbol!;
 
-    // Simulate latency
     if (this.config.latency > 0) {
       await this.sleep(this.config.latency);
     }
@@ -197,17 +172,12 @@ export class ExecutionAgent {
     let fee: number;
 
     if (this.config.mode === "paper") {
-      // --- paper simulation ---
       const slippage = this.config.slippage;
-      // buy pays higher, sell receives lower
       fillPrice = validSide === "buy" ? rawPrice * (1 + slippage) : rawPrice * (1 - slippage);
-      fillPrice = Math.round(fillPrice * 100) / 100; // 2 decimals
+      fillPrice = Math.round(fillPrice * 100) / 100;
       fee = Math.round(fillPrice * qty * this.config.fee * 100) / 100;
     } else {
-      // --- live mode: CCXT placeholder ---
-      // ensure exchange initialized
       if (!this.exchange) {
-        // Try async real exchange; fallback to sync mock
         try {
           this.exchange = await createExchange("binance");
         } catch {
@@ -215,48 +185,23 @@ export class ExecutionAgent {
         }
       }
 
-      // If mock, simulate same as paper but tag mode live
       if (this.exchange.isMock) {
         const slippage = this.config.slippage;
         fillPrice = validSide === "buy" ? rawPrice * (1 + slippage) : rawPrice * (1 - slippage);
         fillPrice = Math.round(fillPrice * 100) / 100;
         fee = Math.round(fillPrice * qty * this.config.fee * 100) / 100;
-        console.log(`[ExecutionAgent] live mode mock fill for ${validSymbol} ${validSide} qty=${qty} price=${fillPrice}`);
       } else {
-        // Real CCXT call
         try {
-          const ccxtOrder = await ccxtCreateOrder(
-            this.exchange,
-            validSymbol,
-            "market",
-            validSide,
-            qty,
-            rawPrice,
-          );
-          // Real fill price may differ; use returned price or rawPrice
+          const ccxtOrder = await ccxtCreateOrder(this.exchange, validSymbol, "market", validSide, qty, rawPrice);
           fillPrice = typeof ccxtOrder.price === "number" && ccxtOrder.price > 0 ? ccxtOrder.price : rawPrice;
-          // fee from ccxt if available
           const ccxtFee = ccxtOrder.fee?.cost;
-          fee =
-            typeof ccxtFee === "number" && Number.isFinite(ccxtFee)
-              ? Math.round(ccxtFee * 100) / 100
-              : Math.round(fillPrice * qty * this.config.fee * 100) / 100;
+          fee = typeof ccxtFee === "number" && Number.isFinite(ccxtFee)
+            ? Math.round(ccxtFee * 100) / 100
+            : Math.round(fillPrice * qty * this.config.fee * 100) / 100;
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);
-          const rejected: Rejected = {
-            orderId,
-            symbol: validSymbol,
-            side: validSide,
-            reason: `live execution failed: ${reason}`,
-            timestamp: Date.now(),
-            mode: this.config.mode,
-          };
-          this.rejected.push(rejected);
-          try {
-            this.bus.publish({ type: "execution:rejected", data: rejected });
-          } catch (e) {
-            console.error("[ExecutionAgent] publish execution:rejected failed:", e);
-          }
+          this.rejected.push({ orderId, symbol: validSymbol, side: validSide, reason: `live execution failed: ${reason}`, timestamp: Date.now(), mode: this.config.mode });
+          this.bus.publish({ type: "order.rejected", data: { orderId, symbol: validSymbol, side: validSide, reason, timestamp: Date.now() }, source: "execution-agent", agentId: "execution" });
           return null;
         }
       }
@@ -280,33 +225,22 @@ export class ExecutionAgent {
       this.fills.splice(0, this.fills.length - this.maxHistory);
     }
 
-    try {
-      this.bus.publish({ type: "execution:filled", data: { ...fill } });
-    } catch (err) {
-      console.error("[ExecutionAgent] publish execution:filled failed:", err);
-    }
+    this.bus.publish({
+      type: "order.filled",
+      data: { ...fill },
+      source: "execution-agent",
+      agentId: "execution",
+    });
 
-    console.log(
-      `[ExecutionAgent] filled ${orderId} ${validSymbol} ${validSide} qty=${qty} price=${fillPrice} fee=${fee} mode=${this.config.mode}`,
-    );
-
+    console.log(`[ExecutionAgent] filled ${orderId} ${validSymbol} ${validSide} qty=${qty} price=${fillPrice} fee=${fee} mode=${this.config.mode}`);
     return fill;
   }
 
-  // -------------------------------------------------------------------------
-  // Mode / Config
-  // -------------------------------------------------------------------------
-
   setMode(mode: ExecutionMode): void {
-    if (mode !== "paper" && mode !== "live") {
-      throw new Error(`Invalid mode ${mode}, expected paper|live`);
-    }
     this.config.mode = mode;
-    // Reset exchange so next live execute re-creates with correct mode
     if (mode === "paper") {
-      // optionally keep mock
+      // keep mock
     } else {
-      // will lazy init real exchange on next execute
       this.exchange = null;
     }
   }
@@ -318,17 +252,6 @@ export class ExecutionAgent {
   getConfig(): ExecutionConfig {
     return { ...this.config };
   }
-
-  updateConfig(patch: Partial<ExecutionConfig>): void {
-    if (patch.mode !== undefined) this.setMode(patch.mode);
-    if (patch.slippage !== undefined && Number.isFinite(patch.slippage)) this.config.slippage = patch.slippage;
-    if (patch.fee !== undefined && Number.isFinite(patch.fee)) this.config.fee = patch.fee;
-    if (patch.latency !== undefined && Number.isFinite(patch.latency)) this.config.latency = patch.latency;
-  }
-
-  // -------------------------------------------------------------------------
-  // History / Stats
-  // -------------------------------------------------------------------------
 
   getFills(limit?: number, symbol?: string): Fill[] {
     let out = this.fills;
@@ -375,19 +298,6 @@ export class ExecutionAgent {
     };
   }
 
-  clearFills(): void {
-    this.fills = [];
-    this.rejected = [];
-  }
-
-  size(): number {
-    return this.fills.length;
-  }
-
-  // -------------------------------------------------------------------------
-  // Internal
-  // -------------------------------------------------------------------------
-
   private validateOrder(order: Order): { valid: boolean; reason?: string } {
     if (!order || typeof order !== "object") return { valid: false, reason: "order is null or not an object" };
     if (!order.symbol || typeof order.symbol !== "string" || order.symbol.trim() === "")
@@ -405,14 +315,4 @@ export class ExecutionAgent {
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
-
-  // Convenience handler for event subscription (exposed for testing)
-  async handleOrder(event: FinanceEvent): Promise<Fill | null> {
-    const order = event.data as Order;
-    return this.execute(order);
-  }
 }
-
-export const executionAgent = new ExecutionAgent();
-
-export default ExecutionAgent;
