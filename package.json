@@ -1,0 +1,15 @@
+{
+  "name": "finance-agent-os",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "pnpm -r dev",
+    "dev:server": "pnpm --filter @finance/server dev",
+    "dev:dashboard": "pnpm --filter @finance/dashboard dev",
+    "build": "pnpm -r build",
+    "start": "pnpm --filter @finance/server start"
+  },
+  "packageManager": "pnpm@9.0.0"
+}

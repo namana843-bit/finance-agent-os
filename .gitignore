@@ -1,0 +1,16 @@
+node_modules
+.next
+dist
+.pnpm-store
+.DS_Store
+.env
+.env.local
+.data
+*.log
+npm-debug.log*
+.cache
+coverage
+apps/dashboard/.next
+apps/server/.data
+apps/server/dist
+C:/Users/Naman/AppData/Local/Temp/finance-*
