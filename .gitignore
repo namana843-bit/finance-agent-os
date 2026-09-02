@@ -13,4 +13,7 @@ coverage
 apps/dashboard/.next
 apps/server/.data
 apps/server/dist
+.freebuff
+*.tsbuildinfo
+scripts/
 C:/Users/Naman/AppData/Local/Temp/finance-*

@@ -1,0 +1,332 @@
+// Finance Agent OS — Prisma Schema
+// Phase 16: Database / Persistence
+// Models: User, Account, Exchange, Agent, Strategy, MarketCandle, Signal,
+//         RiskDecision, Order, OrderFill, Position, Trade,
+//         PortfolioSnapshot, Event, AuditLog
+//
+// Run: npx prisma generate && npx prisma db push
+// Or: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite" // Use SQLite for local dev; switch to "postgresql" for production
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Users & Accounts
+// ---------------------------------------------------------------------------
+
+model User {
+  id        String   @id @default(uuid())
+  email     String?  @unique
+  name      String?
+  role      String   @default("user") // user | admin
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  accounts Account[]
+  exchanges Exchange[]
+}
+
+model Account {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  type      String   @default("spot") // spot | futures | margin
+  currency  String   @default("USDT")
+  balance   Float    @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id])
+  positions Position[]
+  trades   Trade[]
+}
+
+// ---------------------------------------------------------------------------
+// Exchanges
+// ---------------------------------------------------------------------------
+
+model Exchange {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String   // binance | bybit | okx
+  type      String   @default("paper") // paper | live
+  apiKey    String?  // encrypted in production
+  secret    String?  // encrypted in production
+  sandbox   Boolean  @default(true)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+// ---------------------------------------------------------------------------
+// Agents
+// ---------------------------------------------------------------------------
+
+model Agent {
+  id          String   @id @default(uuid())
+  name        String
+  version     String   @default("0.1.0")
+  description String?
+  type        String   // market | quant | risk | portfolio | execution | research | backtest
+  status      String   @default("idle") // idle | running | stopped | error
+  config      String   @default("{}") // JSON config
+  capabilities String @default("[]") // JSON array
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  signals    Signal[]
+  trades     Trade[]
+  auditLogs  AuditLog[]
+}
+
+// ---------------------------------------------------------------------------
+// Strategies
+// ---------------------------------------------------------------------------
+
+model Strategy {
+  id          String   @id @default(uuid())
+  name        String
+  version     String   @default("1.0.0")
+  description String?
+  enabled     Boolean  @default(true)
+  timeframe   String   @default("1m")
+  parameters  String   @default("{}") // JSON
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  signals Signal[]
+  trades  Trade[]
+}
+
+// ---------------------------------------------------------------------------
+// Market Data
+// ---------------------------------------------------------------------------
+
+model MarketCandle {
+  id        String   @id @default(uuid())
+  symbol    String
+  timeframe String   @default("1m")
+  open      Float
+  high      Float
+  low       Float
+  close     Float
+  volume    Float
+  timestamp DateTime
+
+  @@unique([symbol, timeframe, timestamp])
+  @@index([symbol, timeframe, timestamp])
+}
+
+// ---------------------------------------------------------------------------
+// Signals
+// ---------------------------------------------------------------------------
+
+model Signal {
+  id         String   @id @default(uuid())
+  agentId    String?
+  strategyId String?
+  symbol     String
+  side       String   // buy | sell | hold
+  price      Float
+  confidence Float
+  timeframe  String   @default("tick")
+  reasoning  String?
+  indicators String   @default("{}") // JSON
+  expiration DateTime?
+  createdAt  DateTime @default(now())
+
+  agent    Agent?    @relation(fields: [agentId], references: [id])
+  strategy Strategy? @relation(fields: [strategyId], references: [id])
+
+  @@index([symbol, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Risk Decisions
+// ---------------------------------------------------------------------------
+
+model RiskDecision {
+  id                String   @id @default(uuid())
+  correlationId     String?
+  decision          String   // APPROVED | REJECTED
+  reason            String
+  rulesChecked      String   @default("[]") // JSON array
+  requestedQuantity Float
+  approvedQuantity  Float
+  riskMetrics       String   @default("{}") // JSON
+  signalId          String?
+  createdAt         DateTime @default(now())
+
+  @@index([correlationId])
+}
+
+// ---------------------------------------------------------------------------
+// Orders
+// ---------------------------------------------------------------------------
+
+model Order {
+  id                String   @id @default(uuid())
+  clientOrderId     String   @default(uuid())
+  symbol            String
+  side              String   // buy | sell
+  type              String   @default("market") // market | limit | stop
+  quantity          Float
+  price             Float
+  stopPrice         Float?
+  status            String   @default("CREATED") // CREATED|PENDING|SUBMITTED|PARTIALLY_FILLED|FILLED|CANCELLED|REJECTED|FAILED
+  strategyId        String?
+  agentId           String?
+  executionMode     String   @default("paper") // paper | live
+  filledQuantity    Float    @default(0)
+  averageFillPrice  Float    @default(0)
+  fees              Float    @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  submittedAt       DateTime?
+  filledAt          DateTime?
+  cancelledAt       DateTime?
+
+  fills OrderFill[]
+
+  @@index([status])
+  @@index([symbol, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Order Fills
+// ---------------------------------------------------------------------------
+
+model OrderFill {
+  id        String   @id @default(uuid())
+  orderId   String
+  symbol    String
+  side      String
+  quantity  Float
+  price     Float
+  fee       Float    @default(0)
+  timestamp DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+}
+
+// ---------------------------------------------------------------------------
+// Positions
+// ---------------------------------------------------------------------------
+
+model Position {
+  id             String   @id @default(uuid())
+  accountId      String
+  symbol         String
+  side           String   @default("long") // long | short
+  quantity       Float
+  entryPrice     Float
+  markPrice      Float    @default(0)
+  unrealizedPnl  Float    @default(0)
+  realizedPnl    Float    @default(0)
+  leverage       Float    @default(1)
+  stopLoss       Float?
+  takeProfit     Float?
+  status         String   @default("open") // open | closed
+  openedAt       DateTime @default(now())
+  closedAt       DateTime?
+  updatedAt      DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id])
+
+  @@index([accountId, status])
+  @@index([symbol, status])
+}
+
+// ---------------------------------------------------------------------------
+// Trades
+// ---------------------------------------------------------------------------
+
+model Trade {
+  id          String   @id @default(uuid())
+  accountId   String?
+  agentId     String?
+  strategyId  String?
+  symbol      String
+  side        String   // buy | sell
+  entryPrice  Float
+  exitPrice   Float?
+  quantity    Float
+  fees        Float    @default(0)
+  pnl         Float    @default(0)
+  status      String   @default("open") // open | closed
+  openedAt    DateTime @default(now())
+  closedAt    DateTime?
+
+  account  Account?  @relation(fields: [accountId], references: [id])
+  agent    Agent?    @relation(fields: [agentId], references: [id])
+  strategy Strategy? @relation(fields: [strategyId], references: [id])
+
+  @@index([status])
+  @@index([symbol, openedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Portfolio Snapshots
+// ---------------------------------------------------------------------------
+
+model PortfolioSnapshot {
+  id            String   @id @default(uuid())
+  accountId     String?
+  cash          Float
+  equity        Float
+  realizedPnl   Float    @default(0)
+  unrealizedPnl Float    @default(0)
+  totalPnl      Float    @default(0)
+  exposure      Float    @default(0)
+  positions     String   @default("[]") // JSON array of position snapshots
+  timestamp     DateTime @default(now())
+
+  @@index([timestamp])
+}
+
+// ---------------------------------------------------------------------------
+// Events (audit trail of all system events)
+// ---------------------------------------------------------------------------
+
+model Event {
+  id            String   @id @default(uuid())
+  type          String
+  source        String?
+  agentId       String?
+  correlationId String?
+  data          String   @default("{}") // JSON
+  metadata      String   @default("{}") // JSON
+  timestamp     DateTime @default(now())
+
+  @@index([type, timestamp])
+  @@index([correlationId])
+}
+
+// ---------------------------------------------------------------------------
+// Audit Log
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id            String   @id @default(uuid())
+  eventType     String
+  source        String?
+  agentId       String?
+  correlationId String?
+  details       String   @default("{}") // JSON
+  timestamp     DateTime @default(now())
+
+  agent Agent? @relation(fields: [agentId], references: [id])
+
+  @@index([eventType, timestamp])
+  @@index([agentId, timestamp])
+}

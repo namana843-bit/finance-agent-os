@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import { TypedEventBus, type EventBusOptions } from "@finance/core";
 import type { FinanceEvent, HistoryFilter } from "@finance/shared";
-import { getRuntime } from "./runtime.js";
+import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker } from "./runtime.js";
 
 // ---------------------------------------------------------------------------
 // Server factory
@@ -467,6 +467,290 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     });
 
     cleanup();
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/gateway/trade — submit trade through gateway
+  // -------------------------------------------------------------------------
+  app.post<{
+    Body: {
+      symbol?: string;
+      side?: string;
+      type?: string;
+      quantity?: number;
+      price?: number;
+      strategy?: string;
+      agentId?: string;
+    };
+  }>("/api/gateway/trade", async (request, reply) => {
+    const gw = getGateway();
+    if (!gw) return reply.status(503).send({ error: "gateway not available" });
+    const body = request.body;
+    if (!body?.symbol || !body?.side || typeof body?.quantity !== "number" || typeof body?.price !== "number") {
+      return reply.status(400).send({ error: "symbol, side, quantity, price are required" });
+    }
+    try {
+      const decision = await gw.submitRequest({
+        symbol: body.symbol,
+        side: body.side as "buy" | "sell",
+        type: (body.type as "market" | "limit") ?? "market",
+        quantity: body.quantity,
+        price: body.price,
+        strategy: body.strategy,
+        agentId: body.agentId ?? "api",
+      });
+      return { decision };
+    } catch (err) {
+      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/gateway/stats
+  // -------------------------------------------------------------------------
+  app.get("/api/gateway/stats", async () => {
+    const gw = getGateway();
+    return { gateway: gw ? gw.getStats() : null };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/market/state
+  // -------------------------------------------------------------------------
+  app.get("/api/market/state", async () => {
+    const ms = getMarketState();
+    return { marketState: ms ? ms.getSnapshot() : null };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/market/candles
+  // -------------------------------------------------------------------------
+  app.get<{
+    Querystring: { symbol?: string; timeframe?: string; limit?: string };
+  }>("/api/market/candles", async (request) => {
+    const symbol = (request.query.symbol ?? "BTCUSDT").toUpperCase();
+    const limit = parseInt(request.query.limit ?? "100", 10);
+    const ms = getMarketState();
+    const price = ms?.getPrice(symbol) ?? 68000;
+
+    // Generate synthetic candles from current price
+    const now = Date.now();
+    const candles = Array.from({ length: Math.min(limit, 500) }, (_, i) => {
+      const change = (Math.random() - 0.5) * price * 0.02;
+      const open = price + change;
+      const high = open + Math.abs(change) * 0.5;
+      const low = open - Math.abs(change) * 0.5;
+      const close = low + Math.random() * (high - low);
+      return {
+        symbol,
+        timeframe: request.query.timeframe ?? "1m",
+        open: Math.round(open * 100) / 100,
+        high: Math.round(high * 100) / 100,
+        low: Math.round(low * 100) / 100,
+        close: Math.round(close * 100) / 100,
+        volume: Math.round(Math.random() * 1000 * 100) / 100,
+        timestamp: now - (limit - i) * 60_000,
+      };
+    });
+    return { candles, timestamp: Date.now() };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/market/orderbook
+  // -------------------------------------------------------------------------
+  app.get<{
+    Querystring: { symbol?: string; depth?: string };
+  }>("/api/market/orderbook", async (request) => {
+    const symbol = (request.query.symbol ?? "BTCUSDT").toUpperCase();
+    const depth = parseInt(request.query.depth ?? "10", 10);
+    const ms = getMarketState();
+    const mid = ms?.getPrice(symbol) ?? 68000;
+    const bids = Array.from({ length: depth }, (_, i) => ({
+      price: Math.round(mid * (1 - (i + 1) * 0.0001) * 100) / 100,
+      quantity: Math.round(Math.random() * 10 * 1000) / 1000,
+    }));
+    const asks = Array.from({ length: depth }, (_, i) => ({
+      price: Math.round(mid * (1 + (i + 1) * 0.0001) * 100) / 100,
+      quantity: Math.round(Math.random() * 10 * 1000) / 1000,
+    }));
+    return { symbol, bids, asks, timestamp: Date.now() };
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/strategies — register a new strategy
+  // -------------------------------------------------------------------------
+  app.post<{
+    Body: { id?: string; name?: string; enabled?: boolean };
+  }>("/api/strategies", async (request, reply) => {
+    const registry = getStrategyRegistry();
+    if (!registry) return reply.status(503).send({ error: "strategy registry not available" });
+    const body = request.body;
+    if (!body?.id || !body?.name) {
+      return reply.status(400).send({ error: "id and name are required" });
+    }
+    // Check if already exists
+    if (registry.get(body.id)) {
+      return reply.status(409).send({ error: `Strategy '${body.id}' already exists` });
+    }
+    registry.register({
+      config: {
+        id: body.id,
+        name: body.name,
+        version: "1.0.0",
+        description: body.name,
+        enabled: body.enabled ?? true,
+        timeframe: "tick",
+        parameters: {},
+      },
+      calculate: () => ({ side: "hold" as const, confidence: 0.5, indicators: {}, reasoning: "placeholder" }),
+    });
+    return { ok: true, strategy: { id: body.id, name: body.name } };
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/strategies/:id/toggle — enable/disable
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>("/api/strategies/:id/toggle", async (request, reply) => {
+    const registry = getStrategyRegistry();
+    if (!registry) return reply.status(503).send({ error: "strategy registry not available" });
+    const strategy = registry.get(request.params.id);
+    if (!strategy) return reply.status(404).send({ error: "strategy not found" });
+    if (strategy.config.enabled) {
+      registry.disable(request.params.id);
+    } else {
+      registry.enable(request.params.id);
+    }
+    return { ok: true, enabled: !strategy.config.enabled };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/audit
+  // -------------------------------------------------------------------------
+  app.get<{
+    Querystring: { eventType?: string; agentId?: string; limit?: string };
+  }>("/api/audit", async (request) => {
+    const logger = getAuditLogger();
+    if (!logger) return { records: [] };
+    return {
+      records: logger.getRecords({
+        eventType: request.query.eventType,
+        agentId: request.query.agentId,
+        limit: request.query.limit ? parseInt(request.query.limit, 10) : 50,
+      }),
+    };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/portfolio/positions
+  // -------------------------------------------------------------------------
+  app.get("/api/portfolio/positions", async () => {
+    const runtime = getRuntime();
+    if (!runtime) return { positions: [] };
+    const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
+    if (!portfolioAgent || typeof (portfolioAgent as any).getPositionsArray !== "function") {
+      return { positions: [] };
+    }
+    return { positions: (portfolioAgent as any).getPositionsArray() };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/portfolio/history
+  // -------------------------------------------------------------------------
+  app.get("/api/portfolio/history", async () => {
+    const runtime = getRuntime();
+    if (!runtime) return { snapshots: [] };
+    // TODO: fetch from state recovery or database
+    return { snapshots: [], note: "TODO: implement portfolio history persistence" };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/portfolio/allocation
+  // -------------------------------------------------------------------------
+  app.get("/api/portfolio/allocation", async () => {
+    const runtime = getRuntime();
+    if (!runtime) return { allocation: {} };
+    const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
+    if (!portfolioAgent || typeof (portfolioAgent as any).getAllocation !== "function") {
+      return { allocation: {} };
+    }
+    return { allocation: (portfolioAgent as any).getAllocation() };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/orders/:id
+  // -------------------------------------------------------------------------
+  app.get<{ Params: { id: string } }>("/api/orders/:id", async (request, reply) => {
+    const runtime = getRuntime();
+    if (!runtime) return reply.status(404).send({ error: "order not found" });
+    const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
+    if (!portfolioAgent || typeof (portfolioAgent as any).getOrderHistory !== "function") {
+      return reply.status(404).send({ error: "order not found" });
+    }
+    const orders = (portfolioAgent as any).getOrderHistory();
+    const order = orders.find((o: { id?: string; orderId?: string }) => o.id === request.params.id || o.orderId === request.params.id);
+    if (!order) return reply.status(404).send({ error: "order not found" });
+    return { order };
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/orders/:id/cancel
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>("/api/orders/:id/cancel", async (request, reply) => {
+    const runtime = getRuntime();
+    if (!runtime) return reply.status(503).send({ error: "runtime not available" });
+    const execAgent = runtime.getAgentRegistry().get("execution");
+    if (!execAgent) return reply.status(503).send({ error: "execution agent not available" });
+    // Emit cancel event
+    runtime.getEventBus().publish({
+      type: "order.cancelled",
+      data: { orderId: request.params.id, timestamp: Date.now() },
+      source: "api",
+    });
+    return { ok: true, orderId: request.params.id, status: "cancelled" };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/risk/metrics
+  // -------------------------------------------------------------------------
+  app.get("/api/risk/metrics", async () => {
+    const runtime = getRuntime();
+    if (!runtime) return { metrics: null };
+    const riskAgent = runtime.getAgentRegistry().get("risk");
+    if (!riskAgent || typeof (riskAgent as any).getRiskMetrics !== "function") {
+      return { metrics: null };
+    }
+    return { metrics: (riskAgent as any).getRiskMetrics() };
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/trading/signal — manually trigger a signal
+  // -------------------------------------------------------------------------
+  app.post<{
+    Body: { symbol?: string; action?: string; price?: number; confidence?: number };
+  }>("/api/trading/signal", async (request, reply) => {
+    const runtime = getRuntime();
+    if (!runtime) return reply.status(503).send({ error: "runtime not available" });
+    const body = request.body;
+    if (!body?.symbol || !body?.action || typeof body?.price !== "number") {
+      return reply.status(400).send({ error: "symbol, action, price are required" });
+    }
+    runtime.getEventBus().publish({
+      type: "quant.signal",
+      data: {
+        id: `manual-${Date.now()}`,
+        symbol: body.symbol.toUpperCase(),
+        action: body.action,
+        confidence: body.confidence ?? 0.7,
+        price: body.price,
+        timestamp: Date.now(),
+        reason: "Manual signal from API",
+        strategy: "manual",
+        timeframe: "tick",
+        indicators: {},
+      },
+      source: "api",
+      agentId: "api",
+    });
+    return { ok: true };
   });
 
   // -------------------------------------------------------------------------
