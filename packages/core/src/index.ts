@@ -12,8 +12,9 @@ export {
   ToolRegistry,
   PluginRegistry,
   StrategyRegistry,
+  ServiceRegistry,
 } from "./registries.js";
-export type { ToolHandler, StrategyHandler, PluginLifecycle } from "./registries.js";
+export type { ToolHandler, StrategyHandler, PluginLifecycle, ServiceLifecycle, ServiceInfo } from "./registries.js";
 
 export { FinanceRuntime } from "./runtime.js";
 export type { RuntimeConfig, RuntimeHealth } from "./runtime.js";

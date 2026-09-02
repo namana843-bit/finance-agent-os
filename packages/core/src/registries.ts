@@ -9,6 +9,35 @@ import type { StrategyConfig } from "@finance/shared";
 import type { PluginInfo } from "@finance/shared";
 
 // ---------------------------------------------------------------------------
+// Service Types
+// ---------------------------------------------------------------------------
+
+/**
+ * Service — an infrastructure component managed by the runtime.
+ * Unlike agents (which produce signals and make decisions),
+ * services provide capabilities like persistence, logging,
+ * market state tracking, and order management.
+ */
+export interface ServiceLifecycle {
+  /** Called once after registration, before start. */
+  initialize(): Promise<void>;
+  /** Start the service. Idempotent. */
+  start(): Promise<void>;
+  /** Stop the service gracefully. Idempotent. */
+  stop(): Promise<void>;
+  /** Get current health/status info. */
+  getHealth(): ServiceInfo;
+}
+
+export interface ServiceInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  status: "registered" | "initialized" | "active" | "stopped" | "error";
+}
+
+// ---------------------------------------------------------------------------
 // Agent Registry
 // ---------------------------------------------------------------------------
 
@@ -242,5 +271,74 @@ export class StrategyRegistry {
 
   size(): number {
     return this.strategies.size;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Service Registry
+// ---------------------------------------------------------------------------
+
+export class ServiceRegistry {
+  private services = new Map<string, ServiceLifecycle>();
+
+  register(service: ServiceLifecycle): void {
+    const info = service.getHealth();
+    if (this.services.has(info.id)) {
+      throw new Error(`Service '${info.id}' already registered`);
+    }
+    this.services.set(info.id, service);
+    console.log(`[registry:service] registered: ${info.id}`);
+  }
+
+  unregister(id: string): boolean {
+    const removed = this.services.delete(id);
+    if (removed) console.log(`[registry:service] unregistered: ${id}`);
+    return removed;
+  }
+
+  get(id: string): ServiceLifecycle | undefined {
+    return this.services.get(id);
+  }
+
+  list(): ServiceLifecycle[] {
+    return [...this.services.values()];
+  }
+
+  listInfo(): ServiceInfo[] {
+    return [...this.services.values()].map((s) => s.getHealth());
+  }
+
+  async initializeAll(): Promise<void> {
+    for (const service of this.services.values()) {
+      try {
+        await service.initialize();
+      } catch (err) {
+        console.error(`[registry:service] failed to initialize:`, err);
+      }
+    }
+  }
+
+  async startAll(): Promise<void> {
+    for (const service of this.services.values()) {
+      try {
+        await service.start();
+      } catch (err) {
+        console.error(`[registry:service] failed to start:`, err);
+      }
+    }
+  }
+
+  async stopAll(): Promise<void> {
+    for (const service of this.services.values()) {
+      try {
+        await service.stop();
+      } catch (err) {
+        console.error(`[registry:service] failed to stop:`, err);
+      }
+    }
+  }
+
+  size(): number {
+    return this.services.size;
   }
 }

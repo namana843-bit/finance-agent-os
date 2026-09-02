@@ -4,10 +4,10 @@
 // ============================================================================
 
 import { TypedEventBus } from "./event-bus.js";
-import { AgentRegistry, ToolRegistry, PluginRegistry, StrategyRegistry } from "./registries.js";
+import { AgentRegistry, ToolRegistry, PluginRegistry, StrategyRegistry, ServiceRegistry } from "./registries.js";
 import type { Agent } from "./agent.js";
 import type { ToolDefinition, StrategyConfig, PluginInfo } from "@finance/shared";
-import type { PluginLifecycle, ToolHandler, StrategyHandler } from "./registries.js";
+import type { PluginLifecycle, ToolHandler, StrategyHandler, ServiceLifecycle } from "./registries.js";
 
 export interface RuntimeConfig {
   port?: number;
@@ -21,6 +21,7 @@ export interface RuntimeHealth {
   uptime: number;
   agents: Record<string, ReturnType<Agent["getHealth"]>>;
   plugins: ReturnType<PluginRegistry["list"]>;
+  services: ReturnType<ServiceRegistry["listInfo"]>;
   tools: number;
   strategies: number;
   eventBusSize: number;
@@ -37,6 +38,7 @@ export class FinanceRuntime {
   private toolRegistry: ToolRegistry;
   private pluginRegistry: PluginRegistry;
   private strategyRegistry: StrategyRegistry;
+  private serviceRegistry: ServiceRegistry;
   private startedAt: number = 0;
   private running = false;
 
@@ -53,6 +55,7 @@ export class FinanceRuntime {
     this.toolRegistry = new ToolRegistry();
     this.pluginRegistry = new PluginRegistry();
     this.strategyRegistry = new StrategyRegistry();
+    this.serviceRegistry = new ServiceRegistry();
 
     this.log("info", "Finance Runtime created");
   }
@@ -65,12 +68,14 @@ export class FinanceRuntime {
 
     await this.pluginRegistry.initializeAll();
     await this.pluginRegistry.startAll();
+    await this.serviceRegistry.initializeAll();
+    await this.serviceRegistry.startAll();
     await this.agentRegistry.startAll();
 
     this.running = true;
     this.log("info", `Finance Runtime started on ${this.config.host}:${this.config.port}`);
     this.log("info", `Execution mode: ${this.config.executionMode}`);
-    this.log("info", `Components: ${this.agentRegistry.size()} agents, ${this.toolRegistry.size()} tools, ${this.pluginRegistry.size()} plugins, ${this.strategyRegistry.size()} strategies`);
+    this.log("info", `Components: ${this.agentRegistry.size()} agents, ${this.toolRegistry.size()} tools, ${this.pluginRegistry.size()} plugins, ${this.strategyRegistry.size()} strategies, ${this.serviceRegistry.size()} services`);
   }
 
   async stop(): Promise<void> {
@@ -78,6 +83,7 @@ export class FinanceRuntime {
 
     this.log("info", "Stopping Finance Runtime...");
     await this.agentRegistry.stopAll();
+    await this.serviceRegistry.stopAll();
     await this.pluginRegistry.stopAll();
 
     this.running = false;
@@ -105,6 +111,10 @@ export class FinanceRuntime {
     this.strategyRegistry.register(config, handler);
   }
 
+  registerService(service: ServiceLifecycle): void {
+    this.serviceRegistry.register(service);
+  }
+
   getEventBus(): TypedEventBus {
     return this.eventBus;
   }
@@ -125,6 +135,14 @@ export class FinanceRuntime {
     return this.strategyRegistry;
   }
 
+  getServiceRegistry(): ServiceRegistry {
+    return this.serviceRegistry;
+  }
+
+  getService<T extends ServiceLifecycle>(id: string): T | undefined {
+    return this.serviceRegistry.get(id) as T | undefined;
+  }
+
   getConfig(): Readonly<RuntimeConfig> {
     return { ...this.config };
   }
@@ -132,6 +150,7 @@ export class FinanceRuntime {
   async getHealth(): Promise<RuntimeHealth> {
     const agents = await this.agentRegistry.health();
     const plugins = this.pluginRegistry.list();
+    const services = this.serviceRegistry.listInfo();
     const allHealthy = Object.values(agents).every((a) => a.status === "running" || a.status === "idle");
 
     return {
@@ -139,6 +158,7 @@ export class FinanceRuntime {
       uptime: this.running ? Date.now() - this.startedAt : 0,
       agents,
       plugins,
+      services,
       tools: this.toolRegistry.size(),
       strategies: this.strategyRegistry.size(),
       eventBusSize: this.eventBus.size(),
