@@ -8,7 +8,7 @@ The **Finance Runtime** is the central orchestrator that manages the lifecycle o
 
 1. **Runtime as Composition Root** — All components are registered with the `FinanceRuntime`. No module-level singletons for services that have lifecycle.
 2. **Event-Driven** — Components communicate through a shared `TypedEventBus`. Agents publish events, other agents subscribe and react.
-3. **Lifecycle Management** — The runtime controls start/stop ordering: plugins → services → agents.
+3. **Phase-Based Lifecycle** — The runtime uses a `LifecycleManager` with ordered phases: CREATED → REGISTERING → INITIALIZING → STARTING → RUNNING → STOPPING → DRAINING → STOPPED.
 4. **Typed Events** — Events use a strongly typed bus with history, replay, and wildcard subscription support.
 5. **Separation of Concerns** — Agents make decisions, services provide infrastructure, tools expose capabilities.
 
@@ -31,15 +31,95 @@ The central class that manages the entire platform lifecycle.
 
 ```
 FinanceRuntime
-├── eventBus: TypedEventBus        — shared event infrastructure
-├── agentRegistry: AgentRegistry   — manages agent lifecycle
-├── toolRegistry: ToolRegistry     — callable tools
-├── pluginRegistry: PluginRegistry — plugin lifecycle
+├── eventBus: TypedEventBus          — shared event infrastructure
+├── agentRegistry: AgentRegistry     — manages agent lifecycle
+├── toolRegistry: ToolRegistry       — callable tools
+├── pluginRegistry: PluginRegistry   — plugin lifecycle
 ├── strategyRegistry: StrategyRegistry — strategy management
-└── serviceRegistry: ServiceRegistry   — infrastructure services
+├── serviceRegistry: ServiceRegistry — infrastructure services
+├── lifecycle: LifecycleManager      — phase-based startup/shutdown
+└── config: ResolvedRuntimeConfig    — resolved configuration
 ```
 
-**Lifecycle:** `start()` → plugins.initialize → plugins.start → services.initialize → services.start → agents.start
+**Lifecycle Phases (in order):**
+```
+CREATED → REGISTERING → INITIALIZING → STARTING → RUNNING
+                                                ↓
+                                          STOPPING → DRAINING → STOPPED
+```
+
+**Startup sequence:** plugins.init → plugins.start → services.init → services.start → agents.start
+**Shutdown sequence:** agents.stop → services.stop → plugins.stop (reverse order)
+
+### LifecycleManager
+
+Controls ordered startup/shutdown phases. Features:
+- **Phase validation** — prevents illegal transitions
+- **Hook system** — register callbacks on specific phase transitions
+- **Transition log** — records all phase transitions with timestamps
+- **Status queries** — `getPhase()`, `isRunning()`, `isStopped()`
+
+### Runtime Configuration
+
+```typescript
+interface RuntimeConfig {
+  port?: number;          // Default: 4132
+  host?: string;          // Default: "0.0.0.0"
+  executionMode?: "paper" | "live";  // Default: "paper"
+  logLevel?: "debug" | "info" | "warn" | "error";  // Default: "info"
+  version?: string;       // Default: "0.1.0"
+  eventBus?: {
+    maxHistory?: number;  // Default: 50_000
+  };
+}
+```
+
+### Runtime Status
+
+```typescript
+interface RuntimeStatus {
+  phase: LifecyclePhase;  // Current lifecycle phase
+  running: boolean;       // Is fully operational?
+  uptime: number;         // Milliseconds since started
+  config: ResolvedRuntimeConfig;
+  components: ComponentCounts;  // { agents, tools, plugins, strategies, services }
+  eventBusSize: number;
+  lifecycleTransitions: number;
+}
+```
+
+### Runtime Health
+
+```typescript
+interface RuntimeHealth {
+  status: "healthy" | "degraded" | "unhealthy";  // Aggregate status
+  phase: LifecyclePhase;
+  uptime: number;
+  agents: Record<string, AgentHealth>;
+  plugins: PluginInfo[];
+  services: ServiceInfo[];
+  components: ComponentCounts;
+  eventBusSize: number;
+}
+```
+
+Health computation:
+- **healthy** — all agents running, all services active
+- **degraded** — any agent stopped or service not yet active, or runtime not in RUNNING phase
+- **unhealthy** — any agent or service in error state
+
+### Runtime Events
+
+The runtime publishes lifecycle events to the event bus:
+
+| Event | When |
+|-------|------|
+| `runtime.starting` | Before startup sequence begins |
+| `runtime.started` | After all components started |
+| `runtime.stopping` | Before shutdown begins |
+| `runtime.stopped` | After all components stopped |
+| `runtime.error` | On startup/shutdown error |
+| `runtime.health_check` | Periodic health check (future) |
 
 ### Component Types
 

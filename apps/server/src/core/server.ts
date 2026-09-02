@@ -42,8 +42,8 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       runtime: health ? {
         status: health.status,
         agents: Object.keys(health.agents).length,
-        tools: health.tools,
-        strategies: health.strategies,
+        tools: health.components.tools,
+        strategies: health.components.strategies,
         events: health.eventBusSize,
       } : null,
     };
@@ -279,8 +279,8 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
         runtime: health ? {
           status: health.status,
           agents: health.agents,
-          tools: health.tools,
-          strategies: health.strategies,
+          tools: health.components.tools,
+          strategies: health.components.strategies,
         } : null,
         timestamp: Date.now(),
       };
