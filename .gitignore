@@ -11,6 +11,7 @@ npm-debug.log*
 .cache
 coverage
 apps/dashboard/.next
+apps/dashboard/out
 apps/server/.data
 apps/server/dist
 .freebuff
