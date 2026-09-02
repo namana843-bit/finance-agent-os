@@ -4,9 +4,7 @@
 // ============================================================================
 
 import type { Agent } from "./agent.js";
-import type { ToolDefinition } from "@finance/shared";
-import type { StrategyConfig } from "@finance/shared";
-import type { PluginInfo } from "@finance/shared";
+import type { ToolDefinition, StrategyConfig, PluginInfo, AgentManifest } from "@finance/shared";
 
 // ---------------------------------------------------------------------------
 // Service Types
@@ -62,8 +60,36 @@ export class AgentRegistry {
     return this.agents.get(id);
   }
 
+  has(id: string): boolean {
+    return this.agents.has(id);
+  }
+
   list(): Agent[] {
     return [...this.agents.values()];
+  }
+
+  /**
+   * List manifests for all registered agents.
+   * Each agent exposes its full metadata via getManifest() if available,
+   * otherwise constructs a basic manifest from the Agent interface fields.
+   */
+  listManifests(): AgentManifest[] {
+    return [...this.agents.values()].map((a) => {
+      const maybeManifest = a as unknown as { getManifest?: () => AgentManifest };
+      if (typeof maybeManifest.getManifest === "function") {
+        return maybeManifest.getManifest();
+      }
+      return {
+        id: a.id,
+        name: a.name,
+        version: a.version,
+        description: a.description,
+        capabilities: [...a.capabilities],
+        tools: [],
+        subscriptions: [],
+        permissions: [],
+      };
+    });
   }
 
   async startAll(): Promise<void> {
@@ -132,6 +158,10 @@ export class ToolRegistry {
     return this.tools.get(id);
   }
 
+  has(id: string): boolean {
+    return this.tools.has(id);
+  }
+
   list(): ToolDefinition[] {
     return [...this.tools.values()].map(({ handler, ...def }) => def);
   }
@@ -175,6 +205,10 @@ export class PluginRegistry {
 
   get(id: string): { info: PluginInfo; lifecycle: PluginLifecycle } | undefined {
     return this.plugins.get(id);
+  }
+
+  has(id: string): boolean {
+    return this.plugins.has(id);
   }
 
   list(): PluginInfo[] {
@@ -244,8 +278,19 @@ export class StrategyRegistry {
     return this.strategies.get(id);
   }
 
+  has(id: string): boolean {
+    return this.strategies.has(id);
+  }
+
   list(): StrategyConfig[] {
     return [...this.strategies.values()].map(({ handler, ...config }) => config);
+  }
+
+  /** Remove a strategy by ID. Returns true if removed, false if not found. */
+  remove(id: string): boolean {
+    const removed = this.strategies.delete(id);
+    if (removed) console.log(`[registry:strategy] removed: ${id}`);
+    return removed;
   }
 
   enable(id: string): void {
@@ -298,6 +343,10 @@ export class ServiceRegistry {
 
   get(id: string): ServiceLifecycle | undefined {
     return this.services.get(id);
+  }
+
+  has(id: string): boolean {
+    return this.services.has(id);
   }
 
   list(): ServiceLifecycle[] {

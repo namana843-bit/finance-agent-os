@@ -173,6 +173,17 @@ export class LifecycleManager {
   }
 
   /**
+   * Reset the lifecycle back to CREATED. Used for restart scenarios.
+   * Only valid when in STOPPED phase.
+   */
+  reset(): void {
+    if (this.phase !== LifecyclePhase.STOPPED) {
+      throw new Error(`Cannot reset: current phase is '${this.phase}', expected '${LifecyclePhase.STOPPED}'`);
+    }
+    this.phase = LifecyclePhase.CREATED;
+  }
+
+  /**
    * Get a summary of the lifecycle state.
    */
   getStatus(): { phase: LifecyclePhase; transitions: number; lastTransition?: LifecycleEvent } {

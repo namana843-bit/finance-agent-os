@@ -25,6 +25,14 @@ export type {
   ServiceInfo,
 } from "./registries.js";
 
+// Shared re-exports for convenience
+export type {
+  AgentManifest,
+  PluginManifest,
+  StrategyConfig,
+  ToolDefinition,
+} from "@finance/shared";
+
 // Lifecycle Manager
 export { LifecycleManager, LifecyclePhase } from "./lifecycle.js";
 export type { LifecycleEvent, LifecycleHook } from "./lifecycle.js";

@@ -339,6 +339,25 @@ export interface AgentHealth {
   eventsProcessed: number;
 }
 
+/**
+ * AgentManifest — full metadata that an agent exposes to the runtime.
+ * Returned by agents to describe their capabilities, required tools,
+ * event subscriptions, and permissions.
+ */
+export interface AgentManifest {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  capabilities: string[];
+  /** Tool IDs this agent requires or uses. */
+  tools: string[];
+  /** Event types this agent subscribes to. */
+  subscriptions: string[];
+  /** Permissions the agent needs (e.g., "trade", "read-market"). */
+  permissions: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Tool Types
 // ---------------------------------------------------------------------------
@@ -361,7 +380,7 @@ export interface ToolDefinition {
 // Plugin Types
 // ---------------------------------------------------------------------------
 
-export type PluginStatus = "registered" | "initialized" | "active" | "error";
+export type PluginStatus = "registered" | "initialized" | "active" | "stopped" | "error";
 
 export interface PluginInfo {
   id: string;
@@ -369,6 +388,21 @@ export interface PluginInfo {
   version: string;
   description: string;
   status: PluginStatus;
+}
+
+/**
+ * PluginManifest — full metadata that a plugin exposes to the runtime.
+ * Describes what the plugin provides and its capabilities.
+ */
+export interface PluginManifest {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  /** Capabilities this plugin provides (e.g., "market-data", "order-execution"). */
+  capabilities: string[];
+  /** Exchange or provider ID if applicable. */
+  provider?: string;
 }
 
 // ---------------------------------------------------------------------------

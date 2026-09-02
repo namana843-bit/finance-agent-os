@@ -201,6 +201,11 @@ export class FinanceRuntime {
   async start(): Promise<void> {
     if (this.lifecycle.isRunning()) return;
 
+    // If previously stopped, reset to CREATED so we can go through phases again
+    if (this.lifecycle.isStopped()) {
+      this.lifecycle.reset();
+    }
+
     this.log("info", "Starting Finance Runtime...");
 
     // Phase: REGISTERING → INITIALIZING
@@ -256,7 +261,14 @@ export class FinanceRuntime {
    * Phases: STOPPING → DRAINING → STOPPED
    */
   async stop(): Promise<void> {
-    if (this.lifecycle.isStopped() || this.lifecycle.getPhase() === LifecyclePhase.CREATED) return;
+    if (this.lifecycle.isStopped()) return;
+    if (this.lifecycle.getPhase() === LifecyclePhase.CREATED) {
+      // Never started — transition directly to STOPPED
+      await this.lifecycle.transitionTo(LifecyclePhase.STOPPING);
+      await this.lifecycle.transitionTo(LifecyclePhase.DRAINING);
+      await this.lifecycle.transitionTo(LifecyclePhase.STOPPED);
+      return;
+    }
 
     this.log("info", "Stopping Finance Runtime...");
 
