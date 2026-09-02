@@ -126,33 +126,15 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   // -------------------------------------------------------------------------
   // GET /api/portfolio
   // -------------------------------------------------------------------------
-  app.get("/api/portfolio", async () => {
+  app.get("/api/portfolio", async (_request, reply) => {
     const runtime = getRuntime();
     if (!runtime) {
-      return {
-        timestamp: Date.now(),
-        baseCurrency: "USDT",
-        totalValue: 100000,
-        availableCash: 100000,
-        pnl: { day: 0, week: 0, total: 0, percentDay: 0 },
-        holdings: [],
-        positions: [],
-        risk: { exposure: 0, maxDrawdown: 0, sharpe: 0, status: "ok" as const },
-      };
+      return reply.status(503).send({ error: "runtime not available", code: "RUNTIME_NOT_READY" });
     }
 
     const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
     if (!portfolioAgent || typeof (portfolioAgent as any).getPortfolio !== "function") {
-      return {
-        timestamp: Date.now(),
-        baseCurrency: "USDT",
-        totalValue: 100000,
-        availableCash: 100000,
-        pnl: { day: 0, week: 0, total: 0, percentDay: 0 },
-        holdings: [],
-        positions: [],
-        risk: { exposure: 0, maxDrawdown: 0, sharpe: 0, status: "ok" as const },
-      };
+      return reply.status(503).send({ error: "portfolio agent not available", code: "PORTFOLIO_NOT_READY" });
     }
 
     const snapshot = (portfolioAgent as any).getPortfolio();
@@ -528,13 +510,18 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     Querystring: { symbol?: string; timeframe?: string; limit?: string };
   }>("/api/market/candles", async (request) => {
     const symbol = (request.query.symbol ?? "BTCUSDT").toUpperCase();
-    const limit = parseInt(request.query.limit ?? "100", 10);
+    const limit = Math.min(parseInt(request.query.limit ?? "100", 10), 500);
     const ms = getMarketState();
-    const price = ms?.getPrice(symbol) ?? 68000;
+    const price = ms?.getPrice(symbol);
 
-    // Generate synthetic candles from current price
+    if (!price) {
+      // TODO: fetch real candle data from exchange adapter when market state has no price yet
+      return { candles: [], symbol, timeframe: request.query.timeframe ?? "1m", timestamp: Date.now(), note: "No price data available for this symbol" };
+    }
+
+    // TODO: replace synthetic candles with real historical data from BinanceAdapter
     const now = Date.now();
-    const candles = Array.from({ length: Math.min(limit, 500) }, (_, i) => {
+    const candles = Array.from({ length: limit }, (_, i) => {
       const change = (Math.random() - 0.5) * price * 0.02;
       const open = price + change;
       const high = open + Math.abs(change) * 0.5;
@@ -551,7 +538,8 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
         timestamp: now - (limit - i) * 60_000,
       };
     });
-    return { candles, timestamp: Date.now() };
+    // TODO: candles are synthetic — real historical candle storage needed (Phase 6/7)
+    return { candles, symbol, timeframe: request.query.timeframe ?? "1m", timestamp: Date.now(), synthetic: true };
   });
 
   // -------------------------------------------------------------------------
@@ -563,7 +551,13 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     const symbol = (request.query.symbol ?? "BTCUSDT").toUpperCase();
     const depth = parseInt(request.query.depth ?? "10", 10);
     const ms = getMarketState();
-    const mid = ms?.getPrice(symbol) ?? 68000;
+    const mid = ms?.getPrice(symbol);
+
+    if (!mid) {
+      return { symbol, bids: [], asks: [], timestamp: Date.now(), note: "No price data available" };
+    }
+
+    // TODO: replace with real orderbook data from BinanceAdapter WebSocket
     const bids = Array.from({ length: depth }, (_, i) => ({
       price: Math.round(mid * (1 - (i + 1) * 0.0001) * 100) / 100,
       quantity: Math.round(Math.random() * 10 * 1000) / 1000,
@@ -572,7 +566,7 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       price: Math.round(mid * (1 + (i + 1) * 0.0001) * 100) / 100,
       quantity: Math.round(Math.random() * 10 * 1000) / 1000,
     }));
-    return { symbol, bids, asks, timestamp: Date.now() };
+    return { symbol, bids, asks, timestamp: Date.now(), synthetic: true };
   });
 
   // -------------------------------------------------------------------------

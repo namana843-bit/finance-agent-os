@@ -120,10 +120,41 @@ export class PaperBroker {
     this.orders.push(order);
     this.orderHistory.push({ ...order });
 
+    // Emit order.created
+    this.bus.publish({
+      type: "order.created",
+      data: {
+        orderId: order.id,
+        symbol: sym,
+        side,
+        type,
+        quantity,
+        price: orderPrice,
+        timestamp: order.createdAt,
+      },
+      source: "paper-broker",
+      agentId: "execution",
+    });
+
     // Simulate latency
     if (this.config.latencyMs > 0) {
       await new Promise((r) => setTimeout(r, this.config.latencyMs));
     }
+
+    // Emit order.submitted
+    this.bus.publish({
+      type: "order.submitted",
+      data: {
+        orderId: order.id,
+        symbol: sym,
+        side,
+        quantity,
+        price: fillPrice,
+        timestamp: Date.now(),
+      },
+      source: "paper-broker",
+      agentId: "execution",
+    });
 
     // Execute
     order.status = "filled";

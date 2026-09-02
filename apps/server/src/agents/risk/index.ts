@@ -129,7 +129,7 @@ export class RiskAgent extends BaseAgent implements Agent {
   async start(): Promise<void> {
     await super.start();
     this.unsubscribe = this.bus.subscribe((event: FinanceEvent) => {
-      if (event.type === "quant.signal") {
+      if (event.type === "quant.signal" || event.type === "gateway.trade_request") {
         const signal = event.data as RiskSignal;
         if (signal && typeof signal.symbol === "string" && typeof signal.price === "number") {
           try {
@@ -151,7 +151,7 @@ export class RiskAgent extends BaseAgent implements Agent {
   }
 
   async handleEvent(event: FinanceEvent): Promise<void> {
-    if (event.type === "quant.signal") {
+    if (event.type === "quant.signal" || event.type === "gateway.trade_request") {
       const signal = event.data as RiskSignal;
       if (signal && typeof signal.symbol === "string" && typeof signal.price === "number") {
         this.evaluate(signal);

@@ -100,9 +100,14 @@ export class FinanceGateway {
       executionMode: "paper",
       liveTradingEnabled: false,
       maxPendingRequests: 50,
-      requestTimeoutMs: 30_000,
+      requestTimeoutMs: 15_000,
       ...config,
     };
+
+    // NOTE: The gateway does NOT subscribe to gateway.trade_request to avoid
+    // infinite recursion (it publishes that event in waitForRiskDecision).
+    // Agents route through the gateway via submitRequest() directly.
+    // The gateway publishes gateway.trade_request which the Risk Agent processes.
   }
 
   // -------------------------------------------------------------------------
@@ -125,7 +130,7 @@ export class FinanceGateway {
   }
 
   // -------------------------------------------------------------------------
-  // Request Processing
+  // Request Processing — API submission path
   // -------------------------------------------------------------------------
 
   async submitRequest(request: TradeRequest): Promise<GatewayDecision> {
@@ -138,131 +143,145 @@ export class FinanceGateway {
     // 1. Validate the request
     const validation = this.validateRequest(request);
     if (!validation.valid) {
+      this.rejectedRequests++;
       return this.makeDecision(requestId, false, validation.reason!, false, false, correlationId);
     }
 
     // 2. Check agent permissions
     const permCheck = this.checkAgentPermissions(request);
     if (!permCheck.allowed) {
+      this.rejectedRequests++;
       return this.makeDecision(requestId, false, permCheck.reason!, false, false, correlationId);
     }
 
     // 3. Check pending request limit
     if (this.pendingRequests.size >= this.config.maxPendingRequests) {
+      this.rejectedRequests++;
       return this.makeDecision(requestId, false, "Too many pending requests", false, false, correlationId);
     }
 
     // 4. Check execution mode safety
-    // If execution mode is not 'paper', verify live trading is explicitly enabled
     if (this.config.executionMode === "live" && !this.config.liveTradingEnabled) {
+      this.rejectedRequests++;
       return this.makeDecision(requestId, false, "Live trading not enabled — set LIVE_TRADING_ENABLED=true", false, false, correlationId);
     }
 
-    // 5. Publish risk check request and wait for response
+    // 5. Subscribe to risk decision and publish trade request
     this.pendingRequests.set(requestId, { ...request, id: requestId, correlationId });
 
-    let riskApproved = false;
+    const decision = await this.waitForRiskDecision(requestId, correlationId, request);
+    return decision;
+  }
 
-    // Subscribe to risk decision for this specific request
-    const riskPromise = new Promise<boolean>((resolve) => {
+  // -------------------------------------------------------------------------
+  // Risk decision wait — subscribes to both approved and rejected, cleans up both
+  // -------------------------------------------------------------------------
+
+  private waitForRiskDecision(
+    requestId: string,
+    correlationId: string,
+    request: TradeRequest,
+  ): Promise<GatewayDecision> {
+    return new Promise<GatewayDecision>((resolve) => {
+      let resolved = false;
+
+      const cleanup = () => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timeout);
+        unsubApprove();
+        unsubReject();
+        this.pendingRequests.delete(requestId);
+      };
+
+      const onDecision = (approved: boolean) => {
+        cleanup();
+
+        if (!approved) {
+          this.rejectedRequests++;
+          resolve(this.makeDecision(requestId, false, approved ? "All checks passed" : "Risk engine rejected", approved, false, correlationId));
+          return;
+        }
+
+        // Check portfolio constraints
+        const portfolioOk = this.checkPortfolioConstraints(request);
+        if (!portfolioOk) {
+          this.rejectedRequests++;
+          resolve(this.makeDecision(requestId, false, "Portfolio constraints violated", true, false, correlationId));
+          return;
+        }
+
+        this.approvedRequests++;
+        this.agentDailyOrders.set(
+          request.agentId,
+          (this.agentDailyOrders.get(request.agentId) ?? 0) + 1,
+        );
+
+        const decision = this.makeDecision(requestId, true, "All gateway checks passed", true, true, correlationId);
+        this.requestHistory.push(decision);
+        if (this.requestHistory.length > 2000) {
+          this.requestHistory.splice(0, this.requestHistory.length - 2000);
+        }
+
+        // Emit approval and forward as order.created
+        this.bus.publish({
+          type: "gateway.approved",
+          data: { ...decision, request },
+          source: "finance-gateway",
+          correlationId,
+        });
+
+        this.bus.publish({
+          type: "order.created",
+          data: {
+            id: requestId,
+            symbol: request.symbol,
+            side: request.side,
+            type: request.type,
+            quantity: request.quantity,
+            price: request.price,
+            strategy: request.strategy,
+            agent: request.agentId,
+            executionMode: this.config.executionMode,
+            timestamp: Date.now(),
+          },
+          source: "finance-gateway",
+          agentId: request.agentId,
+          correlationId,
+        });
+
+        resolve(decision);
+      };
+
+      const unsubApprove = this.bus.subscribeTo("risk.approved", (event: FinanceEvent) => {
+        const data = event.data as { correlationId?: string; id?: string };
+        if (data?.correlationId === correlationId || data?.id === requestId) {
+          onDecision(true);
+        }
+      });
+
+      const unsubReject = this.bus.subscribeTo("risk.rejected", (event: FinanceEvent) => {
+        const data = event.data as { correlationId?: string; id?: string };
+        if (data?.correlationId === correlationId || data?.id === requestId) {
+          onDecision(false);
+        }
+      });
+
       const timeout = setTimeout(() => {
-        unsubscribe();
-        resolve(false); // timeout = rejected
+        cleanup();
+        this.rejectedRequests++;
+        resolve(this.makeDecision(requestId, false, "Risk decision timeout", false, false, correlationId));
       }, this.config.requestTimeoutMs);
 
-      const unsubscribe = this.bus.subscribeTo("risk.approved", (event: FinanceEvent) => {
-        const data = event.data as { correlationId?: string; id?: string };
-        if (data?.correlationId === correlationId || data?.id === requestId) {
-          clearTimeout(timeout);
-          unsubscribe();
-          resolve(true);
-        }
+      // Publish the trade request for risk evaluation
+      this.bus.publish({
+        type: "gateway.trade_request",
+        data: { ...request, id: requestId, correlationId },
+        source: "finance-gateway",
+        agentId: request.agentId,
+        correlationId,
       });
-
-      const unsubscribeReject = this.bus.subscribeTo("risk.rejected", (event: FinanceEvent) => {
-        const data = event.data as { correlationId?: string; id?: string };
-        if (data?.correlationId === correlationId || data?.id === requestId) {
-          clearTimeout(timeout);
-          unsubscribe();
-          unsubscribeReject();
-          resolve(false);
-        }
-      });
-
-      // Also clean up approve on reject
     });
-
-    // Publish the trade request for risk evaluation
-    this.bus.publish({
-      type: "gateway.trade_request",
-      data: { ...request, id: requestId, correlationId },
-      source: "finance-gateway",
-      agentId: request.agentId,
-      correlationId,
-    });
-
-    riskApproved = await riskPromise;
-    this.pendingRequests.delete(requestId);
-
-    if (!riskApproved) {
-      this.rejectedRequests++;
-      const decision = this.makeDecision(requestId, false, "Risk engine rejected", false, false, correlationId);
-      this.requestHistory.push(decision);
-      return decision;
-    }
-
-    // 6. Check portfolio constraints (simplified)
-    const portfolioApproved = this.checkPortfolioConstraints(request);
-    if (!portfolioApproved) {
-      this.rejectedRequests++;
-      const decision = this.makeDecision(requestId, false, "Portfolio constraints violated", true, false, correlationId);
-      this.requestHistory.push(decision);
-      return decision;
-    }
-
-    // 7. All checks passed — emit approval
-    this.approvedRequests++;
-    this.agentDailyOrders.set(
-      request.agentId,
-      (this.agentDailyOrders.get(request.agentId) ?? 0) + 1,
-    );
-
-    const decision = this.makeDecision(requestId, true, "All gateway checks passed", true, true, correlationId);
-    this.requestHistory.push(decision);
-
-    if (this.requestHistory.length > 2000) {
-      this.requestHistory.splice(0, this.requestHistory.length - 2000);
-    }
-
-    // Emit gateway approval event
-    this.bus.publish({
-      type: "gateway.approved",
-      data: { ...decision, request },
-      source: "finance-gateway",
-      correlationId,
-    });
-
-    // Forward as order.created
-    this.bus.publish({
-      type: "order.created",
-      data: {
-        id: requestId,
-        symbol: request.symbol,
-        side: request.side,
-        type: request.type,
-        quantity: request.quantity,
-        price: request.price,
-        strategy: request.strategy,
-        agent: request.agentId,
-        executionMode: this.config.executionMode,
-        timestamp: now,
-      },
-      source: "finance-gateway",
-      agentId: request.agentId,
-      correlationId,
-    });
-
-    return decision;
   }
 
   // -------------------------------------------------------------------------
@@ -365,7 +384,6 @@ export class FinanceGateway {
 
   private checkPortfolioConstraints(_request: TradeRequest): boolean {
     // In a full implementation, this would check portfolio limits
-    // For now, always allow after risk approval
     return true;
   }
 
@@ -377,7 +395,7 @@ export class FinanceGateway {
     portfolioApproved: boolean,
     correlationId: string,
   ): GatewayDecision {
-    return {
+    const decision: GatewayDecision = {
       requestId,
       approved,
       reason,
@@ -387,6 +405,21 @@ export class FinanceGateway {
       timestamp: Date.now(),
       correlationId,
     };
+    this.requestHistory.push(decision);
+    if (this.requestHistory.length > 2000) {
+      this.requestHistory.splice(0, this.requestHistory.length - 2000);
+    }
+    return decision;
+  }
+
+  private emitDecision(decision: GatewayDecision): void {
+    const eventType = decision.approved ? "gateway.approved" : "gateway.rejected";
+    this.bus.publish({
+      type: eventType,
+      data: decision,
+      source: "finance-gateway",
+      correlationId: decision.correlationId,
+    });
   }
 
   resetDailyCounts(): void {

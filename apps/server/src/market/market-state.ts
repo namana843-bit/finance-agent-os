@@ -74,6 +74,11 @@ export class MarketStateService {
     this.entries.set(symbol, entry);
     this.lastUpdate = Date.now();
     this.eventCount++;
+
+    // Recover connection state when fresh data arrives
+    if (this.connectionState === "reconnecting") {
+      this.connectionState = "connected";
+    }
   }
 
   getPrice(symbol: string): number | undefined {
