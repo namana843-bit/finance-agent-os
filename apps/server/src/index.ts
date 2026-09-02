@@ -11,7 +11,8 @@ let server: Awaited<ReturnType<typeof buildServer>> | null = null;
 async function main() {
   try {
     server = await buildServer({ port, host, bus });
-    console.log(`[finance-os] server started on http://${host}:${port}`);
+    await server.listen({ port, host });
+    console.log(`[finance-os] server listening on http://${host}:${port}`);
 
     await runtime.start();
     console.log(`[finance-os] runtime started: ${runtime.getAgentRegistry().size()} agents`);

@@ -130,13 +130,13 @@ export interface PluginLifecycle {
 }
 
 export class PluginRegistry {
-  private plugins = new Map<string, PluginLifecycle & { info: PluginInfo }>();
+  private plugins = new Map<string, { info: PluginInfo; lifecycle: PluginLifecycle }>();
 
   register(info: PluginInfo, lifecycle: PluginLifecycle): void {
     if (this.plugins.has(info.id)) {
       throw new Error(`Plugin '${info.id}' already registered`);
     }
-    this.plugins.set(info.id, { info: { ...info, status: "registered" }, ...lifecycle });
+    this.plugins.set(info.id, { info: { ...info, status: "registered" }, lifecycle });
     console.log(`[registry:plugin] registered: ${info.id}`);
   }
 
@@ -144,18 +144,18 @@ export class PluginRegistry {
     return this.plugins.delete(id);
   }
 
-  get(id: string): (PluginLifecycle & { info: PluginInfo }) | undefined {
+  get(id: string): { info: PluginInfo; lifecycle: PluginLifecycle } | undefined {
     return this.plugins.get(id);
   }
 
   list(): PluginInfo[] {
-    return [...this.plugins.values()].map((p) => p.getHealth());
+    return [...this.plugins.values()].map((p) => p.lifecycle.getHealth());
   }
 
   async initializeAll(): Promise<void> {
     for (const plugin of this.plugins.values()) {
       try {
-        await plugin.initialize();
+        await plugin.lifecycle.initialize();
       } catch (err) {
         console.error(`[registry:plugin] failed to initialize ${plugin.info.id}:`, err);
       }
@@ -165,7 +165,7 @@ export class PluginRegistry {
   async startAll(): Promise<void> {
     for (const plugin of this.plugins.values()) {
       try {
-        await plugin.start();
+        await plugin.lifecycle.start();
       } catch (err) {
         console.error(`[registry:plugin] failed to start ${plugin.info.id}:`, err);
       }
@@ -175,7 +175,7 @@ export class PluginRegistry {
   async stopAll(): Promise<void> {
     for (const plugin of this.plugins.values()) {
       try {
-        await plugin.stop();
+        await plugin.lifecycle.stop();
       } catch (err) {
         console.error(`[registry:plugin] failed to stop ${plugin.info.id}:`, err);
       }
