@@ -16,6 +16,7 @@
     "build:core": "pnpm --filter @finance/core build",
     "build:server": "pnpm --filter @finance/server build",
     "start": "pnpm --filter @finance/server start",
+    "openbot": "node scripts/openbot.js",
     "typecheck": "pnpm -r exec tsc --noEmit",
     "test": "pnpm -r test"
   },

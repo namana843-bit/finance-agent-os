@@ -14,12 +14,12 @@ type AgentInfo = {
   updatedAt?: number;
 };
 
-const AGENTS: AgentInfo[] = [
-  { id: "market", name: "Market Agent", role: "ticks • candles • orderbook", status: "online", latencyMs: 18, lastSignal: "BTC tick 68,120" },
-  { id: "quant", name: "Quant Agent", role: "signals • strategies", status: "online", latencyMs: 42, lastSignal: "LONG BTC 62%" },
-  { id: "risk", name: "Risk Agent", role: "exposure • drawdown • limits", status: "online", latencyMs: 9, lastSignal: "exposure 0.68 OK" },
-  { id: "portfolio", name: "Portfolio Agent", role: "allocation • PnL • holdings", status: "online", latencyMs: 27, lastSignal: "rebalance check" },
-  { id: "execution", name: "Execution Agent", role: "orders • fills • broker", status: "online", latencyMs: 31, lastSignal: "no open orders" },
+const FALLBACK_AGENTS: AgentInfo[] = [
+  { id: "market", name: "Market Agent", role: "ticks • candles • orderbook", status: "offline", latencyMs: 0, lastSignal: "waiting for /api/agents" },
+  { id: "quant", name: "Quant Agent", role: "signals • strategies", status: "offline", latencyMs: 0, lastSignal: "—" },
+  { id: "risk", name: "Risk Agent", role: "exposure • drawdown • limits", status: "offline", latencyMs: 0, lastSignal: "—" },
+  { id: "portfolio", name: "Portfolio Agent", role: "allocation • PnL • holdings", status: "offline", latencyMs: 0, lastSignal: "—" },
+  { id: "execution", name: "Execution Agent", role: "orders • fills • broker", status: "offline", latencyMs: 0, lastSignal: "—" },
 ];
 
 const STATUS_COLOR: Record<AgentInfo["status"], string> = {
@@ -30,26 +30,33 @@ const STATUS_COLOR: Record<AgentInfo["status"], string> = {
 };
 
 export default function AgentStatus() {
-  const [agents, setAgents] = useState<AgentInfo[]>(AGENTS);
+  const [agents, setAgents] = useState<AgentInfo[]>(FALLBACK_AGENTS);
   const [health, setHealth] = useState<string>("loading");
 
   useEffect(() => {
     let cancelled = false;
     async function poll() {
       try {
-        const res = await fetch(`${API_BASE}/api/health`, { cache: "no-store" });
-        if (!res.ok) throw new Error(String(res.status));
-        const data = await res.json();
-        if (!cancelled) {
-          setHealth(data.status ?? "ok");
-          // mark all online if health ok, otherwise keep prior
-          setAgents((prev) =>
-            prev.map((a) => ({
-              ...a,
-              status: data.status === "ok" ? "online" : a.status,
-              updatedAt: Date.now(),
-            }))
-          );
+        const [healthRes, agentsRes] = await Promise.all([
+          fetch(`${API_BASE}/api/health`, { cache: "no-store" }),
+          fetch(`${API_BASE}/api/agents`, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        ]);
+        const data = healthRes.ok ? await healthRes.json() : null;
+        if (cancelled) return;
+        if (data) setHealth(data.status ?? "ok");
+        if (agentsRes?.agents?.length) {
+          const mapped: AgentInfo[] = agentsRes.agents.map((a: { id: string; name: string; description?: string; status?: string }) => ({
+            id: a.id as AgentId,
+            name: a.name,
+            role: (a.description ?? "").slice(0, 32) || a.id,
+            status: (a.status === "running" ? "online" : a.status === "error" ? "error" : a.status === "stopped" ? "offline" : "online") as AgentInfo["status"],
+            latencyMs: undefined,
+            lastSignal: a.status ?? "—",
+            updatedAt: Date.now(),
+          }));
+          setAgents(mapped);
+        } else if (data?.status === "ok") {
+          setAgents((prev) => prev.map((a) => ({ ...a, status: "online" as const, updatedAt: Date.now() })));
         }
       } catch {
         if (!cancelled) setHealth("offline");
