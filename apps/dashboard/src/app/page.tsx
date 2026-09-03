@@ -5,6 +5,7 @@ import MarketChart from "@/components/MarketChart";
 import AgentStatus from "@/components/AgentStatus";
 import BacktestPanel from "@/components/BacktestPanel";
 import OrdersPanel from "@/components/OrdersPanel";
+import MarketMeta from "@/components/MarketMeta";
 import TradeForm from "@/components/TradeForm";
 import {
   API_BASE,
@@ -370,6 +371,10 @@ export default function DashboardPage() {
 
           <section className="card p-4 sm:p-5">
             <OrdersPanel />
+          </section>
+
+          <section className="card p-4 sm:p-5">
+            <MarketMeta symbol={btc?.symbol ?? "BTCUSDT"} />
           </section>
 
           <section className="card p-4 sm:p-5">
