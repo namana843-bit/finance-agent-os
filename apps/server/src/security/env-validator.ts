@@ -17,9 +17,16 @@ const REQUIRED_VARS: string[] = [];
 const SENSITIVE_VARS = ["BINANCE_API_KEY", "BINANCE_SECRET"];
 
 export function validateEnv(): EnvConfig {
-  const port = parseInt(process.env.PORT ?? "4132", 10);
+  const portRaw = process.env.PORT ?? "4132";
+  const port = parseInt(portRaw, 10);
+  if (Number.isNaN(port) || port < 1 || port > 65535) {
+    throw new Error(`[security] Invalid PORT=${portRaw} — must be 1-65535`);
+  }
   const host = process.env.HOST ?? "0.0.0.0";
   const executionMode = (process.env.EXECUTION_MODE as "paper" | "live") ?? "paper";
+  if (executionMode !== "paper" && executionMode !== "live") {
+    throw new Error(`[security] Invalid EXECUTION_MODE=${executionMode} — must be paper|live`);
+  }
   const liveTradingEnabled = process.env.LIVE_TRADING_ENABLED === "true";
   const binanceApiKey = process.env.BINANCE_API_KEY ?? "";
   const binanceSecret = process.env.BINANCE_SECRET ?? "";
@@ -32,7 +39,11 @@ export function validateEnv(): EnvConfig {
     }
   }
 
-  // Safety: if not in live mode, reject live trading
+  // Production hardening: live mode requires keys + explicit flag
+  if (executionMode === "live") {
+    if (!liveTradingEnabled) throw new Error("[security] LIVE_TRADING_ENABLED=true required for live mode");
+    if (!binanceApiKey || !binanceSecret) throw new Error("[security] BINANCE_API_KEY and BINANCE_SECRET required for live mode");
+  }
   if (executionMode !== "live" || !liveTradingEnabled) {
     if (binanceApiKey && binanceSecret) {
       console.log("[security] Binance keys present but live trading disabled — paper mode active");
@@ -40,7 +51,7 @@ export function validateEnv(): EnvConfig {
   }
 
   // Log sanitized config (never log secrets)
-  console.log(`[security] Config: PORT=${port} HOST=${host} MODE=${executionMode} LIVE_TRADING=${liveTradingEnabled}`);
+  console.log(`[security] Config: PORT=${port} HOST=${host} MODE=${executionMode} LIVE_TRADING=${liveTradingEnabled} API_BASE=${nextPublicApiBase}`);
 
   return {
     PORT: port,
