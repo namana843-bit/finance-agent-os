@@ -242,29 +242,43 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/orders
+  // GET /api/orders — single truth: PaperBroker (real orders), fallback PortfolioAgent
+  // GET /api/trades — single truth: PaperBroker fills + ExecutionAgent, fallback PortfolioAgent
   // -------------------------------------------------------------------------
   app.get("/api/orders", async () => {
+    const broker = getPaperBroker();
+    if (broker) return { orders: broker.getOrderHistory(), source: "paper-broker" };
     const runtime = getRuntime();
     if (!runtime) return { orders: [] };
     const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
     if (!portfolioAgent || typeof (portfolioAgent as any).getOrderHistory !== "function") {
       return { orders: [] };
     }
-    return { orders: (portfolioAgent as any).getOrderHistory() };
+    return { orders: (portfolioAgent as any).getOrderHistory(), source: "portfolio-agent" };
   });
 
-  // -------------------------------------------------------------------------
-  // GET /api/trades
-  // -------------------------------------------------------------------------
   app.get("/api/trades", async () => {
+    const broker = getPaperBroker();
+    // Prefer broker history would be trades, but broker tracks orders; execution agent tracks fills
     const runtime = getRuntime();
+    const execAgent = runtime?.getAgentRegistry().get("execution");
+    if (execAgent && typeof (execAgent as any).getFills === "function") {
+      return { trades: (execAgent as any).getFills(100), source: "execution-agent" };
+    }
+    if (broker) {
+      // broker.getOrderHistory includes filled orders with filledPrice/fee — map to trades shape
+      const filled = broker.getOrderHistory().filter((o: any) => o.status === "filled").map((o: any) => ({
+        symbol: o.symbol, side: o.side, qty: o.quantity, price: o.filledPrice ?? o.price,
+        fee: o.fee ?? 0, timestamp: o.filledAt ?? o.createdAt, orderId: o.id,
+      }));
+      return { trades: filled, source: "paper-broker" };
+    }
     if (!runtime) return { trades: [] };
     const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
     if (!portfolioAgent || typeof (portfolioAgent as any).getFillHistory !== "function") {
       return { trades: [] };
     }
-    return { trades: (portfolioAgent as any).getFillHistory() };
+    return { trades: (portfolioAgent as any).getFillHistory(), source: "portfolio-agent-fallback" };
   });
 
   // -------------------------------------------------------------------------
@@ -650,16 +664,21 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/portfolio/positions
+  // GET /api/portfolio/positions — single truth: PaperBroker
   // -------------------------------------------------------------------------
   app.get("/api/portfolio/positions", async () => {
+    const broker = getPaperBroker();
+    if (broker) {
+      const pf = broker.getPortfolio();
+      return { positions: pf.positions.map((p) => ({ symbol: p.symbol, qty: p.quantity, entryPrice: p.entryPrice, currentPrice: p.currentPrice, unrealizedPnl: p.unrealizedPnl })), source: "paper-broker" };
+    }
     const runtime = getRuntime();
     if (!runtime) return { positions: [] };
     const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
     if (!portfolioAgent || typeof (portfolioAgent as any).getPositionsArray !== "function") {
       return { positions: [] };
     }
-    return { positions: (portfolioAgent as any).getPositionsArray() };
+    return { positions: (portfolioAgent as any).getPositionsArray(), source: "portfolio-agent" };
   });
 
   // -------------------------------------------------------------------------
