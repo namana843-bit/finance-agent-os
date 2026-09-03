@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import MarketChart from "@/components/MarketChart";
 import AgentStatus from "@/components/AgentStatus";
 import BacktestPanel from "@/components/BacktestPanel";
+import OrdersPanel from "@/components/OrdersPanel";
 import {
   API_BASE,
   connectEvents,
@@ -364,6 +365,10 @@ export default function DashboardPage() {
 
           <section className="card p-4 sm:p-5">
             <BacktestPanel />
+          </section>
+
+          <section className="card p-4 sm:p-5">
+            <OrdersPanel />
           </section>
 
           <section className="card p-4 sm:p-5">
