@@ -5,7 +5,7 @@ Event-driven trading OS: 5 agents (Market → Quant → Risk → Portfolio → E
 [![CI](https://github.com/namana843-bit/finance-agent-os/actions/workflows/ci.yml/badge.svg)](https://github.com/namana843-bit/finance-agent-os/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e.svg)](LICENSE)
 
-> **Merged to `main`:** #1 actionable Quant (`confidence ≥0.6` + `2/4` confluence, `POST /api/backtest/run` + `GET /api/backtest/strategies`, CI `pnpm test`), #2 prod hardening (`PORT`/`EXECUTION_MODE` validation, live requires `LIVE_TRADING_ENABLED` + keys, market stops duplicate synthetic flood), #3 dashboard honesty + `pnpm openbot` scaffold, #4 portfolio single-truth (`PaperBroker` → `GET /api/portfolio`/`GET /api/orders`/`GET /api/trades`, risk `60s→15s`, `BacktestPanel`). Pending: #5 single EventBus shim, #7 orders/trades single truth.
+> **Merged to `main`:** #1 actionable Quant, #2 prod hardening, #3 dashboard honesty + `pnpm openbot` scaffold, #4 portfolio single-truth + `BacktestPanel`, #5 single EventBus shim, #7 orders/trades single truth, #8 honest README, #9 OrdersPanel, #10 MarketMeta synthetic badges, #11 verify-honesty script.
 
 ## Architecture
 
@@ -58,6 +58,7 @@ pnpm dev:dashboard       # Next.js on http://localhost:3000
 curl http://localhost:4132/api/health
 curl http://localhost:4132/api/agents
 curl http://localhost:4132/api/portfolio   # PaperBroker single truth (holdings/positions/cash)
+node scripts/verify-honesty.mjs             # loop honesty contract: ticks source, candles/orderbook synthetic flag, orders/trades, backtest
 ```
 
 ### Production env (hardened in `apps/server/src/security/env-validator.ts:19`)
