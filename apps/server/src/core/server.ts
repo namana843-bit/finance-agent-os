@@ -748,6 +748,56 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   // -------------------------------------------------------------------------
+  // POST /api/backtest/run — OpenBot-finance: run strategy backtest
+  // -------------------------------------------------------------------------
+  app.post<{
+    Body: { strategyId?: string; symbol?: string; timeframe?: string; candles?: number };
+  }>("/api/backtest/run", async (request, reply) => {
+    const registry = getStrategyRegistry();
+    if (!registry) return reply.status(503).send({ error: "strategy registry not available" });
+    const body = request.body ?? {};
+    const strategyId = body.strategyId ?? registry.list()[0]?.id;
+    if (!strategyId) return reply.status(400).send({ error: "strategyId required and no strategies registered" });
+    const instance = registry.get(strategyId);
+    if (!instance) return reply.status(404).send({ error: `strategy '${strategyId}' not found` });
+
+    const symbol = (body.symbol ?? "BTCUSDT").toUpperCase();
+    const timeframe = body.timeframe ?? "1m";
+    const limit = Math.min(body.candles ?? 200, 1000);
+
+    // Build synthetic candles from current price for demo — replace with DB/history in prod
+    const ms = getMarketState();
+    const basePrice = ms?.getPrice(symbol) ?? 68000;
+    const now = Date.now();
+    const candles = Array.from({ length: limit }, (_, i) => {
+      const drift = (Math.random() - 0.5) * basePrice * 0.01;
+      const open = basePrice + drift;
+      const close = open + (Math.random() - 0.5) * open * 0.005;
+      return {
+        open, high: Math.max(open, close) * 1.002,
+        low: Math.min(open, close) * 0.998,
+        close, volume: Math.random() * 1000,
+        timestamp: now - (limit - i) * 60000,
+      };
+    });
+
+    try {
+      const { BacktestEngine } = await import("../backtesting/backtest-engine.js");
+      const engine = new BacktestEngine();
+      const result = engine.run(instance as any, candles as any, symbol, timeframe);
+      return { ok: true, result };
+    } catch (err) {
+      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get("/api/backtest/strategies", async () => {
+    const registry = getStrategyRegistry();
+    if (!registry) return { strategies: [] };
+    return { strategies: registry.list().map((s) => ({ id: s.id, name: s.name, enabled: s.enabled })) };
+  });
+
+  // -------------------------------------------------------------------------
   // 404 & error handling
   // -------------------------------------------------------------------------
   app.setNotFoundHandler((request, reply) => {

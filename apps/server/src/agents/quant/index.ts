@@ -224,12 +224,18 @@ export class QuantAgent extends BaseAgent implements Agent {
     }
 
     this.recordActivity();
-    this.bus.publish({
-      type: `quant.signal`,
-      data: signal,
-      source: "quant-agent",
-      agentId: "quant",
-    });
+
+    // OpenBot-finance: only publish actionable signals (buy/sell) with confluence
+    // Prevents EventBus flood of hold/mixed signals that RiskEngine would reject anyway
+    const isActionable = (action === "buy" || action === "sell") && confidence >= 0.6 && Math.max(buyCount, sellCount) >= 2;
+    if (isActionable) {
+      this.bus.publish({
+        type: `quant.signal`,
+        data: signal,
+        source: "quant-agent",
+        agentId: "quant",
+      });
+    }
 
     return signal;
   }
