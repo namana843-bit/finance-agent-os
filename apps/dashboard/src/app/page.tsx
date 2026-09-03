@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import MarketChart from "@/components/MarketChart";
 import AgentStatus from "@/components/AgentStatus";
+import BacktestPanel from "@/components/BacktestPanel";
 import {
   API_BASE,
   connectEvents,
@@ -359,6 +360,10 @@ export default function DashboardPage() {
         <div className="xl:col-span-4 space-y-6">
           <section className="card p-4 sm:p-5">
             <AgentStatus />
+          </section>
+
+          <section className="card p-4 sm:p-5">
+            <BacktestPanel />
           </section>
 
           <section className="card p-4 sm:p-5">
