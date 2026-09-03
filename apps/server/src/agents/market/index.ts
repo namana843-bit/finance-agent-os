@@ -9,6 +9,7 @@ import {
   fetchTick as fetchTickHelper,
   type Tick,
 } from "./service.js";
+import { BinanceWS } from "../../adapters/binance-ws.js";
 
 export type { Tick } from "./service.js";
 export { SUPPORTED_SYMBOLS, BASE_PRICES };
@@ -21,6 +22,7 @@ export class MarketAgent extends BaseAgent implements Agent {
   private maxHistory = 1000;
   private pollingTimer: ReturnType<typeof setInterval> | null = null;
   private wsTimer: ReturnType<typeof setInterval> | null = null;
+  private binanceWS: BinanceWS | null = null;
   private symbols: string[] = [...SUPPORTED_SYMBOLS];
   private lastPrices = new Map<string, number>();
   private pollIntervalMs = 2000;
@@ -30,8 +32,8 @@ export class MarketAgent extends BaseAgent implements Agent {
       id: "market",
       name: "Market Agent",
       version: "0.1.0",
-      description: "Streams real-time market ticks via Binance REST + synthetic fallback",
-      capabilities: ["market-data", "tick-streaming", "binance-rest"],
+      description: "Streams real-time market ticks via Binance WS + REST + synthetic fallback",
+      capabilities: ["market-data", "tick-streaming", "binance-ws", "binance-rest"],
     });
     this.bus = bus ?? new TypedEventBus();
     for (const s of SUPPORTED_SYMBOLS) {
@@ -53,6 +55,10 @@ export class MarketAgent extends BaseAgent implements Agent {
     if (this.wsTimer) {
       clearInterval(this.wsTimer);
       this.wsTimer = null;
+    }
+    if (this.binanceWS) {
+      this.binanceWS.disconnect();
+      this.binanceWS = null;
     }
     await super.stop();
   }
@@ -104,26 +110,65 @@ export class MarketAgent extends BaseAgent implements Agent {
       clearInterval(this.wsTimer);
       this.wsTimer = null;
     }
+    if (this.binanceWS) {
+      this.binanceWS.disconnect();
+      this.binanceWS = null;
+    }
 
-    const hasKey = !!process.env.BINANCE_API_KEY;
+    const wsEnabled = process.env.BINANCE_WS_ENABLED !== "false";
+    const binanceSymbols = list.filter((s) => s.endsWith("USDT")); // public WS only for crypto
 
-    if (!hasKey) {
-      console.log("[MarketAgent] BINANCE_API_KEY missing — synthetic ticks (source=synthetic) until live WS configured");
-      this.wsTimer = setInterval(() => {
+    if (wsEnabled && binanceSymbols.length > 0) {
+      console.log(`[MarketAgent] Binance WS enabled for ${binanceSymbols.join(",")} — public stream (no key required)`);
+      this.binanceWS = new BinanceWS();
+      this.binanceWS.connect(binanceSymbols, (wsTick) => {
         if (this.getStatus() !== "running") return;
-        for (const sym of list) {
-          const tick = generateSyntheticTick(sym, this.lastPrices.get(sym));
-          this.lastPrices.set(sym, tick.price);
-          this.pushHistory(tick);
-          this.publishTick(tick);
-        }
-      }, 1500);
+        const prev = this.lastPrices.get(wsTick.symbol);
+        const change = prev !== undefined ? wsTick.price - prev : 0;
+        const tick: Tick = {
+          symbol: wsTick.symbol,
+          price: wsTick.price,
+          change,
+          volume: wsTick.volume,
+          timestamp: wsTick.timestamp,
+          source: "binance",
+        };
+        this.lastPrices.set(wsTick.symbol, wsTick.price);
+        this.pushHistory(tick);
+        this.publishTick(tick);
+      });
+      // Fallback synthetic only for non-binance symbols (EURUSD/AAPL/SPY) if no price
+      const nonBinance = list.filter((s) => !binanceSymbols.includes(s));
+      if (nonBinance.length > 0) {
+        this.wsTimer = setInterval(() => {
+          if (this.getStatus() !== "running") return;
+          for (const sym of nonBinance) {
+            const tick = generateSyntheticTick(sym, this.lastPrices.get(sym));
+            this.lastPrices.set(sym, tick.price);
+            this.pushHistory(tick);
+            this.publishTick(tick);
+          }
+        }, 2000);
+      }
       return;
     }
 
-    // With API key, polling via fetchTick() already hits Binance REST.
-    // Real WS would replace synthetic here — keep polling as source, no extra synthetic flood.
-    console.log("[MarketAgent] BINANCE_API_KEY present — using REST polling (source=binance when available); synthetic only on fetch failure");
+    if (!wsEnabled) {
+      console.log("[MarketAgent] BINANCE_WS_ENABLED=false — REST polling only (source=binance when available), synthetic on failure");
+      return;
+    }
+
+    // Fallback: no binance symbols → synthetic for all
+    console.log("[MarketAgent] No binance-streamable symbols — synthetic ticks (source=synthetic)");
+    this.wsTimer = setInterval(() => {
+      if (this.getStatus() !== "running") return;
+      for (const sym of list) {
+        const tick = generateSyntheticTick(sym, this.lastPrices.get(sym));
+        this.lastPrices.set(sym, tick.price);
+        this.pushHistory(tick);
+        this.publishTick(tick);
+      }
+    }, 1500);
   }
 
   getHistory(limit?: number, symbol?: string): Tick[] {
