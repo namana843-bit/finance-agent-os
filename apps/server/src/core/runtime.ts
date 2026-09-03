@@ -407,20 +407,25 @@ export function createRuntime(): FinanceRuntime {
 
   const bus = runtime.getEventBus();
 
-  // --- Agents ---
+  // --- Agents — OpenBot-style: explicit registry (extensible via registerAgent)
+  // To add a new finance agent: create apps/server/src/agents/<my-agent>/index.ts
+  // and add `runtime.registerAgent(new MyAgent(bus))` here — or use the CLI scaffold:
+  //   pnpm openbot add agent my-agent --template quant
   runtime.registerAgent(new MarketAgent(bus));
   runtime.registerAgent(new QuantAgent(bus));
   runtime.registerAgent(new RiskAgent(bus));
   runtime.registerAgent(new PortfolioAgent(bus));
   runtime.registerAgent(new ExecutionAgent(bus));
 
-  // --- Tools ---
+  // --- Tools — OpenBot-style tool registry ---
+  // Add tools via `pnpm openbot add tool <name>` -> apps/server/src/tools/<name>/index.ts
   registerAllTools(runtime);
 
-  // --- Plugin ---
+  // --- Plugin — OpenBot-style plugin registry ---
+  // Add plugins via `pnpm openbot add plugin <name>` -> apps/server/src/plugins/<name>/index.ts
   const binancePlugin = new BinanceMarketPlugin();
   runtime.registerPlugin(
-    { id: "binance-market", name: "Binance Market Data", version: "0.1.0", description: "Binance market data plugin", status: "registered" },
+    { id: "binance-market", name: "Binance Market Data", version: "0.1.0", description: "Binance market data plugin (REST + WS)", status: "registered" },
     binancePlugin,
   );
 

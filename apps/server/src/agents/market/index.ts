@@ -108,6 +108,7 @@ export class MarketAgent extends BaseAgent implements Agent {
     const hasKey = !!process.env.BINANCE_API_KEY;
 
     if (!hasKey) {
+      console.log("[MarketAgent] BINANCE_API_KEY missing — synthetic ticks (source=synthetic) until live WS configured");
       this.wsTimer = setInterval(() => {
         if (this.getStatus() !== "running") return;
         for (const sym of list) {
@@ -120,15 +121,9 @@ export class MarketAgent extends BaseAgent implements Agent {
       return;
     }
 
-    this.wsTimer = setInterval(() => {
-      if (this.getStatus() !== "running") return;
-      for (const sym of list) {
-        const tick = generateSyntheticTick(sym, this.lastPrices.get(sym));
-        this.lastPrices.set(sym, tick.price);
-        this.pushHistory(tick);
-        this.publishTick(tick);
-      }
-    }, 1200);
+    // With API key, polling via fetchTick() already hits Binance REST.
+    // Real WS would replace synthetic here — keep polling as source, no extra synthetic flood.
+    console.log("[MarketAgent] BINANCE_API_KEY present — using REST polling (source=binance when available); synthetic only on fetch failure");
   }
 
   getHistory(limit?: number, symbol?: string): Tick[] {
