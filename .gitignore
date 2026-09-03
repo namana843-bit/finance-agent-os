@@ -16,5 +16,7 @@ apps/server/.data
 apps/server/dist
 .freebuff
 *.tsbuildinfo
-scripts/
+# keep scripts/openbot.js (OpenBot-style scaffold)
+!scripts/
+!scripts/openbot.js
 C:/Users/Naman/AppData/Local/Temp/finance-*
