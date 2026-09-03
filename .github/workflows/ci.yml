@@ -17,4 +17,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r exec tsc --noEmit
       - run: pnpm build
-      - run: node test-e2e.mjs || true
+      - run: pnpm test
+      - run: node test-e2e.mjs
