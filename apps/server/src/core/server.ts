@@ -124,7 +124,7 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/portfolio
+  // GET /api/portfolio — single truth: PaperBroker (cash/positions), fallback PortfolioAgent
   // -------------------------------------------------------------------------
   app.get("/api/portfolio", async (_request, reply) => {
     const runtime = getRuntime();
@@ -132,47 +132,63 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       return reply.status(503).send({ error: "runtime not available", code: "RUNTIME_NOT_READY" });
     }
 
+    // Single source of truth: PaperBroker owns cash + positions (real fills).
+    // PortfolioAgent tracks derived PnL/allocation but duplicates cash — prefer broker.
+    const broker = getPaperBroker();
     const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
-    if (!portfolioAgent || typeof (portfolioAgent as any).getPortfolio !== "function") {
-      return reply.status(503).send({ error: "portfolio agent not available", code: "PORTFOLIO_NOT_READY" });
-    }
-
-    const snapshot = (portfolioAgent as any).getPortfolio();
-    const positionsArray = (portfolioAgent as any).getPositionsArray() ?? [];
-    const pnl = (portfolioAgent as any).getPnL();
     const riskAgent = runtime.getAgentRegistry().get("risk");
     const riskMetrics = riskAgent && typeof (riskAgent as any).getRiskMetrics === "function"
       ? (riskAgent as any).getRiskMetrics()
       : null;
 
+    let totalValue: number; let availableCash: number; let realizedPnL = 0; let unrealizedPnL = 0;
+    let holdings: Array<{ symbol: string; qty: number; avgPrice: number; price: number; value: number; pnl: number }>;
+    let positions: Array<{ symbol: string; side: "long" | "short"; qty: number; entry: number; mark: number; unrealizedPnl: number; leverage: number }>;
+
+    if (broker) {
+      const pf = broker.getPortfolio();
+      totalValue = pf.equity;
+      availableCash = pf.cash;
+      realizedPnL = pf.realizedPnl;
+      unrealizedPnL = pf.unrealizedPnl;
+      holdings = pf.positions.map((p) => ({
+        symbol: p.symbol, qty: p.quantity, avgPrice: p.entryPrice, price: p.currentPrice,
+        value: p.quantity * p.currentPrice, pnl: p.unrealizedPnl,
+      }));
+      positions = pf.positions.map((p) => ({
+        symbol: p.symbol, side: p.side, qty: p.quantity, entry: p.entryPrice, mark: p.currentPrice,
+        unrealizedPnl: p.unrealizedPnl, leverage: 1,
+      }));
+    } else if (portfolioAgent && typeof (portfolioAgent as any).getPortfolio === "function") {
+      const pnl = (portfolioAgent as any).getPnL();
+      const positionsArray = (portfolioAgent as any).getPositionsArray() ?? [];
+      totalValue = pnl.totalValue; availableCash = pnl.cash; realizedPnL = pnl.realizedPnL; unrealizedPnL = pnl.unrealizedPnL;
+      holdings = positionsArray.map((p: any) => ({
+        symbol: p.symbol, qty: p.qty, avgPrice: p.avgPrice, price: p.currentPrice,
+        value: p.qty * p.currentPrice, pnl: (p.currentPrice - p.avgPrice) * p.qty,
+      }));
+      positions = positionsArray.map((p: any) => ({
+        symbol: p.symbol, side: "long" as const, qty: p.qty, entry: p.avgPrice, mark: p.currentPrice,
+        unrealizedPnl: (p.currentPrice - p.avgPrice) * p.qty, leverage: p.leverage ?? 1,
+      }));
+    } else {
+      return reply.status(503).send({ error: "portfolio not available", code: "PORTFOLIO_NOT_READY" });
+    }
+
+    const totalPnl = realizedPnL + unrealizedPnL;
     return {
       timestamp: Date.now(),
       baseCurrency: "USDT",
-      totalValue: pnl.totalValue,
-      availableCash: pnl.cash,
+      totalValue,
+      availableCash,
       pnl: {
-        day: pnl.realizedPnL,
+        day: realizedPnL,
         week: 0,
-        total: pnl.totalPnL,
-        percentDay: pnl.totalValue > 0 ? (pnl.totalPnL / pnl.totalValue) * 100 : 0,
+        total: totalPnl,
+        percentDay: totalValue > 0 ? (totalPnl / totalValue) * 100 : 0,
       },
-      holdings: positionsArray.map((p: any) => ({
-        symbol: p.symbol,
-        qty: p.qty,
-        avgPrice: p.avgPrice,
-        price: p.currentPrice,
-        value: p.qty * p.currentPrice,
-        pnl: (p.currentPrice - p.avgPrice) * p.qty,
-      })),
-      positions: positionsArray.map((p: any) => ({
-        symbol: p.symbol,
-        side: "long" as const,
-        qty: p.qty,
-        entry: p.avgPrice,
-        mark: p.currentPrice,
-        unrealizedPnl: (p.currentPrice - p.avgPrice) * p.qty,
-        leverage: p.leverage ?? 1,
-      })),
+      holdings,
+      positions,
       risk: riskMetrics ? {
         exposure: riskMetrics.exposure / 100,
         maxDrawdown: riskMetrics.drawdown / 100,

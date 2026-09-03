@@ -36,7 +36,9 @@ const DEFAULT_CONFIG: RiskEngineConfig = {
   maxDrawdown: 15,
   maxOpenPositions: 10,
   maxLeverage: 3,
-  cooldownMs: 60_000,
+  // Per-symbol cooldown: 60s was rejecting most actionable signals (quant emits every ~2s)
+  // 15s allows ~4 signals/min/symbol while still throttling burst
+  cooldownMs: 15_000,
   confidenceThreshold: 0.6,
 };
 
