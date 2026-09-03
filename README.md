@@ -1,11 +1,11 @@
 # Finance Agent OS — OpenBot for Finance
 
-Event-driven trading OS: 5 agents (Market → Quant → Risk → Portfolio → Execution) on a single `TypedEventBus` with `FinanceGateway` + `Paper/Live` broker. Cross-platform (Windows/Linux/Docker) — the finance-native equivalent of OpenBot.
-
-> **OpenBot-finance update (branch `feat/openbot-finance`):** Quant only publishes actionable `buy/sell` (`confidence ≥0.6` + `2/4` confluence), `CI` now runs `pnpm test`, new `POST /api/backtest/run` + `GET /api/backtest/strategies`.
+Event-driven trading OS: 5 agents (Market → Quant → Risk → Portfolio → Execution) on a **single `TypedEventBus`** (`@finance/core`, `packages/core/src/event-bus.ts:1`) with `FinanceGateway` + `Paper/Live` broker. Cross-platform (Windows/Linux/Docker) — the finance-native equivalent of OpenBot. **No fake data:** dashboard shows `—` until `GET /api/portfolio` / `GET /api/market/ticks` return real data; ticks carry `source: binance|synthetic`.
 
 [![CI](https://github.com/namana843-bit/finance-agent-os/actions/workflows/ci.yml/badge.svg)](https://github.com/namana843-bit/finance-agent-os/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e.svg)](LICENSE)
+
+> **Merged to `main`:** #1 actionable Quant (`confidence ≥0.6` + `2/4` confluence, `POST /api/backtest/run` + `GET /api/backtest/strategies`, CI `pnpm test`), #2 prod hardening (`PORT`/`EXECUTION_MODE` validation, live requires `LIVE_TRADING_ENABLED` + keys, market stops duplicate synthetic flood), #3 dashboard honesty + `pnpm openbot` scaffold, #4 portfolio single-truth (`PaperBroker` → `GET /api/portfolio`/`GET /api/orders`/`GET /api/trades`, risk `60s→15s`, `BacktestPanel`). Pending: #5 single EventBus shim, #7 orders/trades single truth.
 
 ## Architecture
 
@@ -42,17 +42,44 @@ Event-driven trading OS: 5 agents (Market → Quant → Risk → Portfolio → E
 ## Quick Start
 
 ```bash
-# Install dependencies
+# Install (cross-platform — Windows / Linux / Docker)
 pnpm install
 
-# Build shared packages
+# Build shared packages + server + dashboard
 pnpm build
 
-# Start server
-pnpm dev:server
+# Start server (paper mode by default — live requires env, see below)
+pnpm dev:server          # Fastify on http://localhost:4132
 
 # Start dashboard (separate terminal)
-pnpm dev:dashboard
+pnpm dev:dashboard       # Next.js on http://localhost:3000
+
+# Verify
+curl http://localhost:4132/api/health
+curl http://localhost:4132/api/agents
+curl http://localhost:4132/api/portfolio   # PaperBroker single truth (holdings/positions/cash)
+```
+
+### Production env (hardened in `apps/server/src/security/env-validator.ts:19`)
+
+```bash
+PORT=4132
+HOST=0.0.0.0
+EXECUTION_MODE=paper          # paper | live
+LIVE_TRADING_ENABLED=false    # must be true + BINANCE_API_KEY + BINANCE_SECRET for live
+BINANCE_API_KEY=
+BINANCE_SECRET=
+NEXT_PUBLIC_API_BASE=http://localhost:4132
+```
+`PORT` must be `1-65535` and `EXECUTION_MODE` must be `paper|live`; `live` fails fast unless `LIVE_TRADING_ENABLED=true` + keys are set.
+
+### OpenBot-style scaffolding
+
+```bash
+pnpm openbot add agent my-agent     # scaffolds apps/server/src/agents/my-agent
+pnpm openbot add tool my-tool       # scaffolds apps/server/src/tools
+pnpm openbot add plugin my-plugin   # scaffolds apps/server/src/plugins
+# registry is explicit in apps/server/src/core/runtime.ts:410 — pnpm openbot add is the OpenBot pattern
 ```
 
 ## Project Structure
@@ -84,24 +111,31 @@ finance-agent-os/
 
 ## Agents
 
-- **Market Agent** — Real-time market data from Binance REST + synthetic fallback
-- **Quant Agent** — Technical analysis: SMA, EMA, RSI, MACD, Bollinger Bands
-- **Risk Agent** — Risk management: exposure, drawdown, VaR, Sharpe analysis
-- **Portfolio Agent** — Position management, PnL tracking, Kelly criterion
-- **Execution Agent** — Paper and live trading via CCXT
+- **Market Agent** (`apps/server/src/agents/market/index.ts:100`) — Binance REST via `fetchTick()` (`source: binance`); without `BINANCE_API_KEY` emits synthetic ticks (`source: synthetic`) on 1500ms interval with explicit log; with key, REST polling only (synthetic on fetch failure). Dashboard badge `● BINANCE` / `○ SYNTHETIC` from `tick.source`.
+- **Quant Agent** — Technical analysis: SMA, EMA, RSI, MACD, Bollinger Bands — **only publishes actionable `buy/sell`** when `confidence ≥0.6` + `2/4` confluence (no `hold` flood).
+- **Risk Agent** (`apps/server/src/risk-engine/risk-engine.ts:39`) — `15s` per-symbol cooldown (`60s` rejected most signals when quant emits every `~2s`), confidence threshold, exposure/drawdown/leverage checks.
+- **Portfolio Agent** — Position management, PnL tracking, Kelly criterion (fallback); **single truth is `PaperBroker`** (`apps/server/src/broker/paper-broker.ts` / `apps/server/src/core/server.ts:129`).
+- **Execution Agent** — Paper and live trading via CCXT; fills feed `GET /api/trades` (`source: execution-agent`).
+
+## Honesty & Single-Truth Notes
+
+- **No fake dashboard data:** `apps/dashboard/src/app/page.tsx` shows `— awaiting /api/portfolio` and `No positions yet — paper trading starts with $100k cash` until the server returns data. `AgentStatus` fetches live `GET /api/agents`.
+- **Portfolio single truth:** `GET /api/portfolio` + `GET /api/portfolio/positions` + `GET /api/orders` + `GET /api/trades` prefer `PaperBroker` (real fills) and add `source: paper-broker|execution-agent`.
+- **Market honesty:** `tick.source` is `binance|synthetic`; with key, no duplicate synthetic flood (`apps/server/src/agents/market/index.ts:100-132`).
+- **EventBus single truth:** canonical `TypedEventBus` is `packages/core/src/event-bus.ts:1`; `apps/server/src/core/eventBus.ts` is a shim re-export (`feat/bus-unification`).
 
 ## Event Pipeline
 
 ```
-MarketAgent → market.tick → QuantAgent → quant.signal
+MarketAgent → market.tick (source: binance|synthetic) → QuantAgent → quant.signal (buy/sell only, ≥0.6 + 2/4)
                                          ↓
-                                    RiskAgent → risk.approved/rejected
+                                    RiskAgent (15s cooldown) → risk.approved/rejected
                                          ↓
-                                    PortfolioAgent → order.created
+                              FinanceGateway → order.created
                                          ↓
                                     ExecutionAgent → order.filled
                                          ↓
-                                    PortfolioAgent → portfolio.updated
+                               PaperBroker → portfolio.updated → dashboard
 ```
 
 ## API Endpoints
@@ -109,32 +143,38 @@ MarketAgent → market.tick → QuantAgent → quant.signal
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check with runtime status |
-| GET | `/api/agents` | List all agents with health |
+| GET | `/api/agents` | List all agents with health (used by dashboard `AgentStatus`) |
 | POST | `/api/agents/:id/start` | Start agent |
 | POST | `/api/agents/:id/stop` | Stop agent |
-| GET | `/api/events` | SSE event stream |
-| GET | `/api/portfolio` | Portfolio with positions and PnL |
-| GET | `/api/market/ticks` | Market tick data |
-| GET | `/api/signals` | Recent trading signals (actionable buy/sell only) |
-| GET | `/api/orders` | Order history |
-| GET | `/api/trades` | Trade history |
+| GET | `/api/events` | SSE event stream (`?replay&limit&lastEventId`) |
+| GET | `/api/portfolio` | Portfolio — `PaperBroker` single truth (`holdings/positions/availableCash/totalValue/pnl/risk`) + `source` |
+| GET | `/api/portfolio/positions` | Positions — `PaperBroker` preferred |
+| GET | `/api/market/ticks` | Market tick data (`tick.source: binance\|synthetic`) |
+| GET | `/api/market/candles` | Candles (`synthetic: true` until real history) |
+| GET | `/api/market/orderbook` | Orderbook (`synthetic: true` until WS) |
+| GET | `/api/signals` | Recent trading signals (actionable `buy/sell` only) |
+| GET | `/api/orders` | Order history — `PaperBroker` preferred (`source`) |
+| GET | `/api/trades` | Trade history — `ExecutionAgent`/`PaperBroker` preferred (`source`) |
 | GET | `/api/strategies` | Registered strategies |
 | POST | `/api/strategies` | Register strategy |
 | POST | `/api/strategies/:id/toggle` | Enable/disable strategy |
-| GET | `/api/risk/status` | Risk metrics |
+| GET | `/api/backtest/strategies` | List backtestable strategies (#1) |
+| POST | `/api/backtest/run` | Run backtest `{strategyId,symbol,timeframe,candles}` (#1, used by `BacktestPanel`) |
+| GET | `/api/risk/status` | Risk metrics (exposure/drawdown/sharpe) |
 | GET | `/api/execution/status` | Execution statistics |
+| GET | `/api/gateway/stats` | Gateway stats |
 | POST | `/api/publish` | Publish custom events |
-| POST | `/api/backtest/run` | Run backtest (OpenBot-finance) |
-| GET | `/api/backtest/strategies` | List backtestable strategies |
-| POST | `/api/trading/signal` | Manually trigger signal |
-| POST | `/api/gateway/trade` | Submit trade via FinanceGateway |
+| POST | `/api/trading/signal` | Manually trigger `quant.signal` |
+| POST | `/api/gateway/trade` | Submit trade via `FinanceGateway` → risk → execution |
 
-## Testing
+## Testing & Builds
 
 ```bash
-pnpm test              # Run all tests
+pnpm test              # Run all tests (CI runs pnpm test, not || true)
 pnpm typecheck         # Type check
-pnpm build             # Build all packages
+pnpm build             # Build all packages (server: tsc, dashboard: next build 8.85kB /)
+pnpm --filter @finance/server build
+pnpm --filter @finance/dashboard build
 ```
 
 ## License
