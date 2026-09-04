@@ -8,6 +8,32 @@ import type { TypedEventBus } from "@finance/core";
 import { validateSymbolTool, executeValidateSymbol } from "./validateSymbol.js";
 import { formatMoneyTool, executeFormatMoney } from "./formatMoney.js";
 import { eventLogTool, executeEventLog } from "./eventLog.js";
+import { priceTool, executeGetPrice } from "./price.js";
+import { ohlcvTool, executeGetOHLCV } from "./ohlcv.js";
+import { orderBookTool, executeGetOrderBook } from "./orderbook.js";
+import {
+  balanceTool,
+  executeGetBalance,
+  positionsTool,
+  executeGetPositions,
+  portfolioTool,
+  executeGetPortfolioSnapshot,
+} from "./portfolio.js";
+import {
+  smaTool,
+  executeSMA,
+  emaTool,
+  executeEMA,
+  rsiTool,
+  executeRSIIndicator,
+  macdTool,
+  executeMACDIndicator,
+  bollingerBandsTool,
+  executeBollingerBands,
+  indicatorTool,
+  executeIndicator,
+} from "./indicators.js";
+import { createExchangeProvider } from "../providers/index.js";
 
 export interface ToolContext {
   bus: TypedEventBus;
@@ -156,7 +182,7 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
     riskConfig: {},
   };
 
-  // Sync market state from events
+  // Sync market state from events (kept for backward compat with get_market_price / get_portfolio)
   bus.subscribeTo("market.tick", (event) => {
     const tick = event.data as { symbol: string; price: number; timestamp: number };
     if (tick && tick.symbol) {
@@ -172,7 +198,13 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
     }
   });
 
+  // Exchange-agnostic providers — exchange-specific code stays in providers/*,
+  // tools depend only on MarketDataProvider/PortfolioProvider interfaces.
+  // Select via EXCHANGE_PROVIDER env: "memory" (default, deterministic) | "binance" (live).
+  const exchangeProvider = createExchangeProvider();
+
   const tools: Array<[ToolDefinition, (input: Record<string, unknown>) => Promise<unknown> | unknown]> = [
+    // Legacy / existing
     [getMarketPriceTool(), (input) => executeGetMarketPrice(ctx, input)],
     [getCandlesTool(), async () => ({ candles: [], note: "TODO: implement candle storage" })],
     [calculateRSITool(), (input) => executeCalculateRSI(input)],
@@ -182,6 +214,21 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
     [validateSymbolTool(), (input) => executeValidateSymbol(input)],
     [formatMoneyTool(), (input) => executeFormatMoney(input)],
     [eventLogTool(), (input) => executeEventLog(ctx, input)],
+    // New — market data (price / OHLCV / order book) — via MarketDataProvider
+    [priceTool(), (input) => executeGetPrice(exchangeProvider, input)],
+    [ohlcvTool(), (input) => executeGetOHLCV(exchangeProvider, input)],
+    [orderBookTool(), (input) => executeGetOrderBook(exchangeProvider, input)],
+    // New — portfolio / balance / positions — via PortfolioProvider
+    [balanceTool(), (input) => executeGetBalance(exchangeProvider, input)],
+    [positionsTool(), (input) => executeGetPositions(exchangeProvider, input)],
+    [portfolioTool(), (input) => executeGetPortfolioSnapshot(exchangeProvider, input)],
+    // New — basic indicators (pure, no provider)
+    [smaTool(), (input) => executeSMA(input)],
+    [emaTool(), (input) => executeEMA(input)],
+    [rsiTool(), (input) => executeRSIIndicator(input)],
+    [macdTool(), (input) => executeMACDIndicator(input)],
+    [bollingerBandsTool(), (input) => executeBollingerBands(input)],
+    [indicatorTool(), (input) => executeIndicator(input)],
   ];
 
   for (const [def, handler] of tools) {
