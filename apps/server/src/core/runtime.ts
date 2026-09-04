@@ -29,6 +29,7 @@ import { createFinanceEnvironment } from "../environment/index.js";
 import { FinanceEnvironmentService } from "../environment/service.js";
 import { SupervisorAgent } from "../agents/supervisor/index.js";
 import { StrategyLabService } from "../strategy-lab/service.js";
+import { ExecutionPipelineService } from "../execution-pipeline/service.js";
 
 // Service IDs — canonical identifiers for service lookup
 export const SERVICE_IDS = {
@@ -43,6 +44,7 @@ export const SERVICE_IDS = {
   STRATEGY_REGISTRY: "strategy-registry",
   FINANCE_ENVIRONMENT: "finance-environment",
   STRATEGY_LAB: "strategy-lab",
+  EXECUTION_PIPELINE: "execution-pipeline",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -417,9 +419,10 @@ export function createRuntime(): FinanceRuntime {
   // To add a new finance agent: create apps/server/src/agents/<my-agent>/index.ts
   // and add `runtime.registerAgent(new MyAgent(bus))` here — or use the CLI scaffold:
   //   pnpm openbot add agent my-agent --template quant
+  const riskAgent = new RiskAgent(bus);
   runtime.registerAgent(new MarketAgent(bus));
   runtime.registerAgent(new QuantAgent(bus));
-  runtime.registerAgent(new RiskAgent(bus));
+  runtime.registerAgent(riskAgent);
   runtime.registerAgent(new PortfolioAgent(bus));
   runtime.registerAgent(new ExecutionAgent(bus));
 
@@ -512,6 +515,16 @@ export function createRuntime(): FinanceRuntime {
   });
   runtime.registerService(strategyLabService);
 
+  // Execution Pipeline — Signal -> Risk -> Permission -> Paper -> Result (live disabled by default)
+  const executionPipelineService = new ExecutionPipelineService({
+    bus,
+    riskAgent,
+    gateway: gatewayService.getInstance(),
+    paperBroker: paperBrokerService.getInstance(),
+    auditLogger: auditLoggerService.getInstance(),
+  });
+  runtime.registerService(executionPipelineService);
+
   return runtime;
 }
 
@@ -573,6 +586,10 @@ export function getSupervisor(): SupervisorAgent | undefined {
 
 export function getStrategyLab(): import("../strategy-lab/strategy-lab.js").StrategyLab | undefined {
   return getService<import("../strategy-lab/service.js").StrategyLabService>(SERVICE_IDS.STRATEGY_LAB)?.getInstance();
+}
+
+export function getExecutionPipeline(): import("../execution-pipeline/pipeline.js").ExecutionPipeline | undefined {
+  return getService<import("../execution-pipeline/service.js").ExecutionPipelineService>(SERVICE_IDS.EXECUTION_PIPELINE)?.getInstance();
 }
 
 // ---------------------------------------------------------------------------
