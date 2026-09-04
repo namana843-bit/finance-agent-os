@@ -5,6 +5,9 @@
 
 import type { ToolDefinition, ToolPermission } from "@finance/shared";
 import type { TypedEventBus } from "@finance/core";
+import { validateSymbolTool, executeValidateSymbol } from "./validateSymbol.js";
+import { formatMoneyTool, executeFormatMoney } from "./formatMoney.js";
+import { eventLogTool, executeEventLog } from "./eventLog.js";
 
 export interface ToolContext {
   bus: TypedEventBus;
@@ -176,6 +179,9 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
     [calculateMACDTool(), async () => ({ note: "TODO: wrap strategies.ts macd()" })],
     [getPortfolioTool(), () => executeGetPortfolio(ctx)],
     [calculatePositionSizeTool(), (input) => executeCalculatePositionSize(input)],
+    [validateSymbolTool(), (input) => executeValidateSymbol(input)],
+    [formatMoneyTool(), (input) => executeFormatMoney(input)],
+    [eventLogTool(), (input) => executeEventLog(ctx, input)],
   ];
 
   for (const [def, handler] of tools) {
