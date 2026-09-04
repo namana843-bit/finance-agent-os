@@ -46,10 +46,15 @@ export interface PlanExecution {
 // Options
 // ---------------------------------------------------------------------------
 
+export interface ExecutionPipelineLike {
+  execute(signal: Record<string, unknown>): Promise<{ success: boolean; stage: string; reason: string; order?: unknown; riskDecision?: unknown; correlationId: string; signalId: string }>;
+}
+
 export interface SupervisorOptions {
   bus?: TypedEventBus;
   agentRegistry?: AgentRegistry;
   toolRegistry?: ToolRegistry;
+  executionPipeline?: ExecutionPipelineLike;
   /** Fail-fast: abort on first step failure. Default: true */
   failFast?: boolean;
 }
@@ -62,6 +67,7 @@ export class SupervisorAgent extends BaseAgent implements Agent {
   private bus: TypedEventBus;
   private agentRegistry?: AgentRegistry;
   private toolRegistry?: ToolRegistry;
+  private executionPipeline?: ExecutionPipelineLike;
   private failFast: boolean;
   private unsubscribe: (() => void) | null = null;
   private executions = new Map<string, PlanExecution>();
@@ -78,6 +84,7 @@ export class SupervisorAgent extends BaseAgent implements Agent {
     this.bus = opts.bus ?? new TypedEventBus();
     this.agentRegistry = opts.agentRegistry;
     this.toolRegistry = opts.toolRegistry;
+    this.executionPipeline = opts.executionPipeline;
     this.failFast = opts.failFast ?? true;
   }
 
@@ -85,6 +92,10 @@ export class SupervisorAgent extends BaseAgent implements Agent {
   setRegistries(registries: { agentRegistry: AgentRegistry; toolRegistry: ToolRegistry }): void {
     this.agentRegistry = registries.agentRegistry;
     this.toolRegistry = registries.toolRegistry;
+  }
+
+  setExecutionPipeline(pipeline: ExecutionPipelineLike): void {
+    this.executionPipeline = pipeline;
   }
 
   getBus(): TypedEventBus {
@@ -234,22 +245,99 @@ export class SupervisorAgent extends BaseAgent implements Agent {
       let result: StepResult;
 
       if (!step.toolId) {
-        // Agent-mediated step — no tool call, mark completed (deterministic)
-        result = {
-          stepId: step.id,
-          agentId: step.agentId,
-          input: step.input,
-          status: "completed",
-          output: { note: `agent:${step.agentId} step (no tool)`, description: step.description },
-          durationMs: Date.now() - stepStartedAt,
-        };
-        this.bus.publish({
-          type: "supervisor.step_completed",
-          data: { planId: plan.id, stepId: step.id, agentId: step.agentId, status: "completed", output: result.output, durationMs: result.durationMs, timestamp: Date.now() },
-          source: "supervisor-agent",
-          agentId: this.id,
-          correlationId: plan.id,
-        });
+        // Execution pipeline integration: route trade execution through
+        // Signal -> Risk -> Permission -> Paper with audit/observability.
+        // Keeps supervisor deterministic while enforcing reliability gates.
+        if (step.agentId === "execution" && this.executionPipeline) {
+          try {
+            const pipelineSignal = {
+              id: `${plan.id}:${step.id}`,
+              symbol: String((step.input as Record<string, unknown>).symbol ?? plan.symbol ?? "BTCUSDT"),
+              side: String((step.input as Record<string, unknown>).side ?? "buy") as "buy" | "sell",
+              quantity: Number((step.input as Record<string, unknown>).quantity ?? 0.05),
+              price: Number((step.input as Record<string, unknown>).price ?? 50000),
+              type: "market" as const,
+              agentId: "supervisor",
+              strategy: plan.kind,
+              confidence: 0.85,
+              timestamp: Date.now(),
+              correlationId: plan.id,
+            };
+            const pipelineResult = await this.executionPipeline.execute(pipelineSignal as Record<string, unknown>);
+            const isOk = pipelineResult.success && pipelineResult.stage === "completed";
+            result = {
+              stepId: step.id,
+              agentId: step.agentId,
+              input: step.input,
+              status: isOk ? "completed" : "failed",
+              output: pipelineResult,
+              error: isOk ? undefined : pipelineResult.reason,
+              durationMs: Date.now() - stepStartedAt,
+            };
+            this.bus.publish({
+              type: isOk ? "supervisor.step_completed" : "supervisor.step_failed",
+              data: {
+                planId: plan.id,
+                stepId: step.id,
+                agentId: step.agentId,
+                status: result.status,
+                output: pipelineResult,
+                pipelineStage: pipelineResult.stage,
+                reason: pipelineResult.reason,
+                durationMs: result.durationMs,
+                timestamp: Date.now(),
+              },
+              source: "supervisor-agent",
+              agentId: this.id,
+              correlationId: plan.id,
+            });
+            if (!isOk) success = false;
+            if (!isOk && this.failFast) {
+              stepResults.push(result);
+              break;
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            result = {
+              stepId: step.id,
+              agentId: step.agentId,
+              input: step.input,
+              status: "failed",
+              error: msg,
+              durationMs: Date.now() - stepStartedAt,
+            };
+            success = false;
+            this.recordError(err);
+            this.bus.publish({
+              type: "supervisor.step_failed",
+              data: { planId: plan.id, stepId: step.id, agentId: step.agentId, error: msg, timestamp: Date.now() },
+              source: "supervisor-agent",
+              agentId: this.id,
+              correlationId: plan.id,
+            });
+            if (this.failFast) {
+              stepResults.push(result);
+              break;
+            }
+          }
+        } else {
+          // Agent-mediated step — no tool call, mark completed (deterministic)
+          result = {
+            stepId: step.id,
+            agentId: step.agentId,
+            input: step.input,
+            status: "completed",
+            output: { note: `agent:${step.agentId} step (no tool)`, description: step.description },
+            durationMs: Date.now() - stepStartedAt,
+          };
+          this.bus.publish({
+            type: "supervisor.step_completed",
+            data: { planId: plan.id, stepId: step.id, agentId: step.agentId, status: "completed", output: result.output, durationMs: result.durationMs, timestamp: Date.now() },
+            source: "supervisor-agent",
+            agentId: this.id,
+            correlationId: plan.id,
+          });
+        }
       } else if (!this.toolRegistry) {
         result = {
           stepId: step.id,
