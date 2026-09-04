@@ -10,34 +10,47 @@ Event-driven trading OS: 5 agents (Market → Quant → Risk → Portfolio → E
 ## Architecture
 
 ```
-                    FINANCE RUNTIME
-                          │
-          ┌───────────────┼───────────────┐
-          ↓               ↓               ↓
-       AGENTS           TOOLS          PLUGINS
-          │               │               │
-     ┌────┼────┐          │      ┌────────┼────────┐
-     ↓    ↓    ↓          │      ↓        ↓        ↓
-   Quant Risk Portfolio   │   Binance   Market   Research
-     ↓    ↓    ↓          │
-   Execution Portfolio    │
-     │                    │
-     └────────┬───────────┘
-              ↓
-           EVENT BUS
-              ↓
-      FINANCE GATEWAY
-              ↓
-       RISK / GOVERNANCE
-              ↓
-        EXECUTION LAYER
-         ┌────┴────┐
-         ↓         ↓
-      PAPER     LIVE BROKER
-      BROKER       │
-                   ↓
-                Binance
+                          User
+                           │
+                  Desktop OS (Next.js, SSE — Chat/Workspace/Tool/Market/Strategy/Portfolio/Risk/Paper/Terminal)
+                           │  POST /api/publish (supervisor.task)  GET /api/*  GET /api/events
+                           ▼
+                    Fastify (:4132) + TypedEventBus
+                           │
+                     FinanceRuntime (@finance/core — Lifecycle + 5 Registries)
+    ┌──────────────────────┼──────────────────────────────────────┐
+    │                      │                                      │
+  AGENTS                 TOOLS                               SERVICES
+    │                      │                                      │
+  ┌─┼──────────┐     ToolRegistry (21)                    ┌──────┴─────────────┐
+  │ │          │      price/ohlcv/orderbook                │                    │
+Market Quant  Risk    portfolio/indicators/utility         FinanceGateway  AuditLogger
+  │   │    │   │      (via ExchangeProvider)               MarketState   PaperBroker
+Portfolio Execution   memory ↔ binance                    StateRecovery  OrderManager
+  │      │        ↕                                       TradeEngine  AgentMemory
+Supervisor◄──────▶Finance Environment◄──────────────────── StrategyRegistry
+  │ plan │     adapters                                   FinanceEnvironment
+  │      │  BinanceMarketData ─┐  PaperTrading ─┐         StrategyLab
+  │      └────► BacktestEngine◄┴──► PaperBroker │         ExecutionPipeline ───┐
+  │             market.getOHLCV  audit/validate │              │               │
+  └────────────── correlationId ─────────────────┘              │               │
+                           │                                    │               │
+                        EVENT BUS (TypedEventBus 50k, replay, correlationId)
+                           │                                    │
+                     FinanceGateway                              │
+                      Risk/Governance                            │
+                           │                                     │
+                     Execution Layer                              │
+                      ┌────┴────┐                                │
+                      ▼         ▼                                │
+                   PAPER     LIVE BROKER (gated LIVE_TRADING_ENABLED)
+                   BROKER       │
+                                ▼
+                             Binance
 ```
+
+Flow: `User → Desktop Chat (supervisor.task) → Supervisor plan → Tools/Environment → Risk → ExecutionPipeline (Risk→Permission→Paper, audited) → PaperBroker → portfolio.updated → Desktop`.
+`Strategy Idea → Strategy Lab → BacktestEngine (reused) → Performance/Risk → Paper Candidate` runs via Finance Environment market adapter.
 
 ## Quick Start
 
@@ -88,26 +101,41 @@ pnpm openbot add plugin my-plugin   # scaffolds apps/server/src/plugins
 ```
 finance-agent-os/
 ├── packages/
-│   ├── shared/              # Shared types and models
-│   └── core/                # Runtime, EventBus, Registries
+│   ├── core/src/             # @finance/core — FinanceRuntime, TypedEventBus, Agent/Tool/Plugin/Strategy/Service registries, LifecycleManager, BaseAgent
+│   └── shared/src/           # @finance/shared — FinanceEvent, ToolDefinition, StrategyConfig, PluginInfo, types
 ├── apps/
-│   ├── server/              # Fastify backend
-│   │   └── src/
-│   │       ├── core/        # Runtime, Server, EventBus
-│   │       ├── agents/      # Market, Quant, Risk, Portfolio, Execution
-│   │       ├── tools/       # Finance tools
-│   │       ├── plugins/     # Binance plugin
-│   │       ├── market/      # Exchange adapter, market state
-│   │       ├── strategies/  # Strategy registry
-│   │       ├── risk-engine/ # Risk engine
-│   │       ├── broker/      # Paper broker
-│   │       ├── order-manager/ # Order lifecycle
-│   │       ├── trade-engine/  # Trade management
-│   │       ├── backtesting/   # Backtesting engine
-│   │       ├── memory/      # Agent memory
-│   │       └── audit/       # Audit logging
-│   └── dashboard/           # Next.js 14 dashboard
-└── docs/                    # Documentation
+│   ├── server/src/
+│   │   ├── core/             # runtime.ts (createRuntime composition root, SERVICE_IDS, get* accessors), server.ts (Fastify + SSE), eventBus.ts (shim), storage.ts
+│   │   ├── agents/           # market/ quant/ risk/ portfolio/ execution/ + supervisor/{planner.ts, index.ts} (deterministic planner → ExecutionPipeline)
+│   │   ├── environment/      # FinanceEnvironment (MarketDataPort/PortfolioPort/PaperTradingPort/BacktestPort), adapters/{binance-market-data, paper-trading}, service.ts
+│   │   ├── strategy-lab/     # Strategy Lab: strategy-factory.ts + performance.ts + risk-analysis.ts + strategy-lab.ts + service.ts
+│   │   ├── execution-pipeline/ # Signal→Risk→Permission→Paper→Result: validation.ts + permission.ts + audit.ts + pipeline.ts + service.ts
+│   │   ├── tools/            # finance-tools.ts (21 tools via ToolRegistry) + price.ts/ohlcv.ts/orderbook.ts/portfolio.ts/indicators.ts + validateSymbol/formatMoney/eventLog
+│   │   ├── providers/        # ExchangeProvider abstraction (types.ts, memory-provider.ts, binance-provider.ts) — keeps exchange code out of tools
+│   │   ├── market/           # exchange-adapter.ts, market-state.ts
+│   │   ├── strategies/       # StrategyRegistry + default strategies (SMA/EMA/RSI/MACD/BB)
+│   │   ├── risk-engine/      # pure risk metrics (exposure/drawdown/VaR/Sharpe)
+│   │   ├── broker/           # paper-broker.ts (single truth) + binance-broker.ts
+│   │   ├── order-manager/    # order state machine
+│   │   ├── trade-engine/     # orders ≠ trades
+│   │   ├── backtesting/      # BacktestEngine (reused by Strategy Lab + /api/backtest/run)
+│   │   ├── gateway/          # FinanceGateway (permissions, executionMode, audit)
+│   │   ├── audit/            # AuditLogger (audit.* events, pipeline mirror)
+│   │   ├── memory/           # AgentMemory
+│   │   ├── state/            # StateRecovery (persist/restore)
+│   │   ├── persistence/      # Prisma (Postgres)
+│   │   ├── security/         # env-validator.ts (gates live)
+│   │   ├── plugins/          # binance-plugin.ts
+│   │   ├── adapters/         # binance-ws.ts
+│   │   └── __tests__/        # 12 suites: market-data-tools, portfolio-and-indicators, risk-engine, strategies, paper-broker, gateway-audit-memory, finance-environment, supervisor, strategy-lab, execution-pipeline, tools, utility-tools
+│   └── dashboard/src/
+│       ├── app/page.tsx      # <DesktopShell />
+│       ├── components/desktop/ # Shell.tsx + ChatPanel + AgentWorkspace + ToolActivity + MarketPanel + StrategyPanel + PortfolioPanel + RiskPanel + PaperTradingPanel + TerminalPanel
+│       ├── components/       # MarketChart, MarketMeta, AgentStatus, BacktestPanel, OrdersPanel, TradeForm
+│       └── lib/              # api.ts (SSE), desktop-api.ts (supervisor.task/terminal.command), useFinanceEvents.ts
+├── docs/                     # ARCHITECTURE.md (this OS), API.md, AGENTS.md, RUNTIME.md, EVENTS.md, STRATEGIES.md, RISK.md, EXECUTION.md, SECURITY.md, DEVELOPMENT.md
+├── prisma/schema.prisma
+└── scripts/verify-honesty.mjs
 ```
 
 ## Agents
@@ -117,6 +145,9 @@ finance-agent-os/
 - **Risk Agent** (`apps/server/src/risk-engine/risk-engine.ts:39`) — `15s` per-symbol cooldown (`60s` rejected most signals when quant emits every `~2s`), confidence threshold, exposure/drawdown/leverage checks.
 - **Portfolio Agent** — Position management, PnL tracking, Kelly criterion (fallback); **single truth is `PaperBroker`** (`apps/server/src/broker/paper-broker.ts` / `apps/server/src/core/server.ts:129`).
 - **Execution Agent** — Paper and live trading via CCXT; fills feed `GET /api/trades` (`source: execution-agent`).
+- **Supervisor Agent** (`apps/server/src/agents/supervisor/`) — Deterministic planner `task → plan` (`planner.ts: extractSymbol/classifyTask/extractQuantity`): `"Analyze BTC" → Market→Research→Strategy→Risk→Final`, `"Buy 0.05 BTC" → validate→market→risk→execution→final`. Validates vs `AgentRegistry`/`ToolRegistry`, emits `supervisor.plan_created/step_started|completed|failed`, and trade steps execute via **`ExecutionPipeline` (`Signal→Risk→Permission→Paper`, `correlationId=plan.id`)** so permissions/audit/RiskAgent are never bypassed. Triggered from Desktop `ChatPanel → POST /api/publish {type:'supervisor.task'}`.
+
+**Finance Environment** (`apps/server/src/environment/`) — `MarketDataPort/PortfolioPort/PaperTradingPort/BacktestPort` → `BinanceMarketDataAdapter` + `PaperTradingAdapter(PaperBroker)`; paper-only, used by Strategy Lab and Supervisor backtest steps. **Strategy Lab** (`strategy-lab/`) — `Idea→Strategy→Backtest(BacktestEngine reused)→Performance→Risk→Paper Candidate` via `FinanceEnvironment.market`. **Execution Pipeline** (`execution-pipeline/`) — `Signal→Risk(RiskAgent.evaluate)→Permission(FinanceGateway+limits)→Paper(PaperBroker)→Audit(PipelineAuditLog+AuditLogger)`, `LIVE_TRADING_ENABLED=false` default.
 
 ## Honesty & Single-Truth Notes
 
@@ -128,15 +159,26 @@ finance-agent-os/
 ## Event Pipeline
 
 ```
+Classic (autonomous loop):
 MarketAgent → market.tick (source: binance|synthetic) → QuantAgent → quant.signal (buy/sell only, ≥0.6 + 2/4)
-                                         ↓
-                                    RiskAgent (15s cooldown) → risk.approved/rejected
-                                         ↓
-                              FinanceGateway → order.created
-                                         ↓
-                                    ExecutionAgent → order.filled
-                                         ↓
-                               PaperBroker → portfolio.updated → dashboard
+                                          ↓
+                                     RiskAgent (15s cooldown) → risk.approved/rejected
+                                          ↓
+                               FinanceGateway → order.created
+                                          ↓
+                                     ExecutionAgent → order.filled
+                                          ↓
+                                PaperBroker → portfolio.updated → dashboard (SSE)
+
+Supervisor (user-driven, Desktop → Pipeline — pipeline enforces permissions/audit):
+User → Desktop ChatPanel → POST /api/publish {type:'supervisor.task'} → TypedEventBus supervisor.task
+  → SupervisorAgent → plan(task) → supervisor.plan_created → validate(registries)
+  → executePlan: for step → supervisor.step_started → ToolRegistry.execute OR (execution step → ExecutionPipeline.execute{signal, correlationId:plan.id})
+     → pipeline.risk_passed|rejected → pipeline.permission_granted|denied → pipeline.paper_filled → pipeline.audit_written
+  → supervisor.step_completed (+pipelineStage) → dashboard ToolActivity/PaperTradingPanel/Terminal
+
+Strategy Lab:
+Idea → strategy-factory (lab:<id>:<kind>) → StrategyRegistry → BacktestEngine.run (via FinanceEnvironment.market.getOHLCV or synthetic) → performance (profitFactor/expectancy) → risk (7 checks→APPROVED/REJECTED) → PaperCandidate → strategy-lab.* SSE
 ```
 
 ## API Endpoints
