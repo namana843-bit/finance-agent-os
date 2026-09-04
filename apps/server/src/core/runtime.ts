@@ -27,6 +27,7 @@ import { TradeEngine } from "../trade-engine/trade-engine.js";
 import { AgentMemory } from "../memory/agent-memory.js";
 import { createFinanceEnvironment } from "../environment/index.js";
 import { FinanceEnvironmentService } from "../environment/service.js";
+import { SupervisorAgent } from "../agents/supervisor/index.js";
 
 // Service IDs — canonical identifiers for service lookup
 export const SERVICE_IDS = {
@@ -420,6 +421,11 @@ export function createRuntime(): FinanceRuntime {
   runtime.registerAgent(new PortfolioAgent(bus));
   runtime.registerAgent(new ExecutionAgent(bus));
 
+  // Supervisor — deterministic planner: task -> Market -> Research -> Strategy -> Risk -> Final
+  // Uses AgentRegistry/ToolRegistry/EventBus to validate and execute plans.
+  const supervisor = new SupervisorAgent({ bus, agentRegistry: runtime.getAgentRegistry(), toolRegistry: runtime.getToolRegistry() });
+  runtime.registerAgent(supervisor);
+
   // --- Tools — OpenBot-style tool registry ---
   // Add tools via `pnpm openbot add tool <name>` -> apps/server/src/tools/<name>/index.ts
   registerAllTools(runtime);
@@ -548,6 +554,10 @@ export function getAgentMemory(): AgentMemory | undefined {
 
 export function getFinanceEnvironment(): import("../environment/types.js").FinanceEnvironment | undefined {
   return getService<FinanceEnvironmentService>(SERVICE_IDS.FINANCE_ENVIRONMENT)?.getInstance();
+}
+
+export function getSupervisor(): SupervisorAgent | undefined {
+  return runtime?.getAgentRegistry().get("supervisor") as SupervisorAgent | undefined;
 }
 
 // ---------------------------------------------------------------------------
