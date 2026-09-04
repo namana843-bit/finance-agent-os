@@ -525,6 +525,11 @@ export function createRuntime(): FinanceRuntime {
   });
   runtime.registerService(executionPipelineService);
 
+  // Connect full OS: User -> Desktop (supervisor.task) -> Supervisor -> Tools/Environment -> Risk -> Paper
+  // Supervisor trade steps now route through ExecutionPipeline so permissions/audit/Risk gates are enforced.
+  // No live trading — paper-only, LIVE_TRADING_ENABLED guard inside pipeline.
+  supervisor.setExecutionPipeline(executionPipelineService.getInstance() as unknown as import("../agents/supervisor/index.js").ExecutionPipelineLike);
+
   return runtime;
 }
 

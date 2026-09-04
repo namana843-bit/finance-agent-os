@@ -169,14 +169,27 @@ function buildAnalyzeSteps(symbol: string): PlanStep[] {
   ];
 }
 
-function buildTradeSteps(symbol: string): PlanStep[] {
+function extractQuantity(task: string): number | null {
+  const m = task.match(/\b(\d+(?:\.\d+)?)\s*(?:BTC|ETH|SOL|USDT)?\b/i);
+  if (!m?.[1]) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0 || n > 10_000) return null;
+  // Distinguish qty vs price: if value > 1000 likely price, not qty — treat as no qty
+  if (n > 100) return null;
+  return n;
+}
+
+function buildTradeSteps(symbol: string, task: string): PlanStep[] {
   const sym = symbol;
   const prices = syntheticPrices(sym, 30);
+  const lastPrice = prices[prices.length - 1]!;
+  const qty = extractQuantity(task) ?? 0.05;
+  const side: "buy" | "sell" = /\bsell\b/i.test(task) ? "sell" : "buy";
   return [
     step("market.fetch_price", "market", `Fetch market price for ${sym}`, { symbol: sym }, "get_price"),
     step("quant.research", "quant", `Compute indicators for trade ${sym}`, { indicator: "sma", prices, period: 20 }, "calculate_indicator", ["market.fetch_price"]),
-    step("risk.assess", "risk", `Risk check before trade ${sym}`, { symbol: sym, cash: 100000, price: prices[prices.length - 1], riskPercent: 0.01 }, "calculate_position_size", ["quant.research"]),
-    step("execution.execute", "execution", `Execute order for ${sym}`, { symbol: sym, side: "buy", quantity: 0.01 }, undefined, ["risk.assess"]),
+    step("risk.assess", "risk", `Risk check before trade ${sym}`, { symbol: sym, cash: 100000, price: lastPrice, riskPercent: 0.01 }, "calculate_position_size", ["quant.research"]),
+    step("execution.execute", "execution", `Execute ${side} ${qty} ${sym} @ ${lastPrice}`, { symbol: sym, side, quantity: qty, price: lastPrice }, undefined, ["risk.assess"]),
     step("portfolio.summarize", "portfolio", "Post-trade portfolio snapshot", {}, "get_portfolio_snapshot", ["execution.execute"]),
   ];
 }
@@ -222,7 +235,7 @@ export function createPlan(task: string): Plan {
       steps = buildAnalyzeSteps(symForSteps);
       break;
     case "trade":
-      steps = buildTradeSteps(symForSteps);
+      steps = buildTradeSteps(symForSteps, task);
       break;
     case "portfolio":
       steps = buildPortfolioSteps(symbol);
