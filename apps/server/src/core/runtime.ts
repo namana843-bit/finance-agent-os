@@ -25,6 +25,8 @@ import { PaperBroker } from "../broker/paper-broker.js";
 import { OrderManager } from "../order-manager/order-manager.js";
 import { TradeEngine } from "../trade-engine/trade-engine.js";
 import { AgentMemory } from "../memory/agent-memory.js";
+import { createFinanceEnvironment } from "../environment/index.js";
+import { FinanceEnvironmentService } from "../environment/service.js";
 
 // Service IDs — canonical identifiers for service lookup
 export const SERVICE_IDS = {
@@ -37,6 +39,7 @@ export const SERVICE_IDS = {
   TRADE_ENGINE: "trade-engine",
   AGENT_MEMORY: "agent-memory",
   STRATEGY_REGISTRY: "strategy-registry",
+  FINANCE_ENVIRONMENT: "finance-environment",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -482,6 +485,16 @@ export function createRuntime(): FinanceRuntime {
   const agentMemoryService = new AgentMemoryService();
   runtime.registerService(agentMemoryService);
 
+  // Finance Environment — OpenMausBot-inspired abstraction for agents
+  // Composes Binance market-data adapter (BinanceMarketDataAdapter) + Paper Trading adapter (PaperTradingAdapter)
+  // No live orders — paper only. Agents interact exclusively via environment.
+  const financeEnv = createFinanceEnvironment({
+    bus,
+    mode: "paper",
+    strategyRegistry: strategyRegistryService.getInstance(),
+  });
+  runtime.registerService(new FinanceEnvironmentService(financeEnv, bus));
+
   return runtime;
 }
 
@@ -531,6 +544,10 @@ export function getTradeEngine(): TradeEngine | undefined {
 
 export function getAgentMemory(): AgentMemory | undefined {
   return getService<AgentMemoryService>(SERVICE_IDS.AGENT_MEMORY)?.getInstance();
+}
+
+export function getFinanceEnvironment(): import("../environment/types.js").FinanceEnvironment | undefined {
+  return getService<FinanceEnvironmentService>(SERVICE_IDS.FINANCE_ENVIRONMENT)?.getInstance();
 }
 
 // ---------------------------------------------------------------------------
