@@ -1,11 +1,10 @@
-import { EventBus, eventBus as defaultBus, type FinanceEvent } from "../../core/eventBus.js";
+import { BaseAgent } from "@finance/core";
+import type { Agent } from "@finance/core";
+import { TypedEventBus } from "@finance/core";
+import type { FinanceEvent } from "@finance/shared";
 import { kellyCriterion, positionSizing, rebalanceWeights, type RebalanceTrade } from "./allocation.js";
 
 export { kellyCriterion, positionSizing, rebalanceWeights, type RebalanceTrade };
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export interface Position {
   symbol: string;
@@ -63,32 +62,17 @@ export interface Allocation {
   [symbol: string]: number;
 }
 
-// Risk approved payload can be either { signal } or direct
 interface RiskApprovedData {
-  signal?: {
-    symbol: string;
-    action?: string;
-    side?: string;
-    price: number;
-    confidence?: number;
-  };
+  signal?: { symbol: string; action?: string; side?: string; price: number; confidence?: number };
   symbol?: string;
   side?: string;
   action?: string;
   price?: number;
   confidence?: number;
-  reason?: string;
-  checks?: unknown;
 }
 
-// ---------------------------------------------------------------------------
-// PortfolioAgent
-// ---------------------------------------------------------------------------
-
-export class PortfolioAgent {
-  public readonly name = "Portfolio Agent";
-
-  private bus: EventBus;
+export class PortfolioAgent extends BaseAgent implements Agent {
+  private bus: TypedEventBus;
   private cash: number;
   private positions = new Map<string, Position>();
   private realizedPnL = 0;
@@ -98,52 +82,58 @@ export class PortfolioAgent {
   private unsubscribe: (() => void) | null = null;
   private maxHistory = 500;
 
-  constructor(bus?: EventBus, initialCash = 100000) {
-    this.bus = bus ?? defaultBus;
+  constructor(bus?: TypedEventBus, initialCash = 100000) {
+    super({
+      id: "portfolio",
+      name: "Portfolio Agent",
+      version: "0.1.0",
+      description: "Portfolio management with position tracking, PnL, and allocation",
+      capabilities: ["portfolio-management", "position-sizing", "pnl-tracking"],
+    });
+    this.bus = bus ?? new TypedEventBus();
     this.cash = Number.isFinite(initialCash) ? initialCash : 100000;
   }
 
-  // -------------------------------------------------------------------------
-  // Lifecycle
-  // -------------------------------------------------------------------------
-
-  start(): void {
-    if (this.unsubscribe) return;
+  async start(): Promise<void> {
+    await super.start();
     this.unsubscribe = this.bus.subscribe((event: FinanceEvent) => {
       try {
-        if (event.type === "risk:approved") {
+        if (event.type === "risk.approved") {
           this.handleApproved(event);
-        } else if (event.type === "execution:filled") {
+        } else if (event.type === "order.filled") {
           this.handleFilled(event);
-        } else if (event.type === "market:tick") {
+        } else if (event.type === "market.tick") {
           this.handleTick(event);
         }
       } catch (err) {
-        console.error(`[PortfolioAgent] handler error for ${event.type}:`, err);
+        this.recordError(err);
       }
     });
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = null;
     }
+    await super.stop();
   }
 
-  isRunning(): boolean {
-    return this.unsubscribe !== null;
+  async handleEvent(event: FinanceEvent): Promise<void> {
+    if (event.type === "risk.approved") {
+      this.handleApproved(event);
+    } else if (event.type === "order.filled") {
+      this.handleFilled(event);
+    } else if (event.type === "market.tick") {
+      this.handleTick(event);
+    }
   }
-
-  // -------------------------------------------------------------------------
-  // Handlers
-  // -------------------------------------------------------------------------
 
   handleApproved(event: FinanceEvent): Order | null {
+    this.recordActivity();
     const data = event.data as RiskApprovedData | null;
     if (!data) return null;
 
-    // Extract signal
     let symbol: string | undefined;
     let price: number | undefined;
     let confidence = 0.5;
@@ -170,8 +160,6 @@ export class PortfolioAgent {
     }
 
     symbol = symbol.toUpperCase();
-
-    // Sizing: risk 1% per trade, qty = (cash*0.01)/price
     const qty = positionSizing(this.cash, price, 0.01);
     if (qty <= 0) return null;
 
@@ -189,31 +177,25 @@ export class PortfolioAgent {
       this.orderHistory.splice(0, this.orderHistory.length - this.maxHistory);
     }
 
-    try {
-      this.bus.publish({
-        type: "portfolio:order",
-        data: { ...order },
-      });
-    } catch (err) {
-      console.error("[PortfolioAgent] publish portfolio:order failed:", err);
-    }
+    this.bus.publish({
+      type: "order.created",
+      data: { ...order },
+      source: "portfolio-agent",
+      agentId: "portfolio",
+    });
 
     return order;
   }
 
   handleFilled(event: FinanceEvent): Fill | null {
-    const data = event.data as Partial<Fill> & { fill?: Partial<Fill>; execution?: Partial<Fill> } | null;
+    this.recordActivity();
+    const data = event.data as Partial<Fill> & { fill?: Partial<Fill> } | null;
     if (!data) return null;
 
-    // Support nested { fill } or direct
-    const raw: Partial<Fill> = (data as { fill?: Partial<Fill> }).fill ??
-      (data as { execution?: Partial<Fill> }).execution ??
-      data;
-
+    const raw: Partial<Fill> = data.fill ?? data;
     const symbol = typeof raw.symbol === "string" ? raw.symbol.toUpperCase() : undefined;
-    const sideRaw = (raw.side as string) ?? (raw as unknown as { action?: string }).action;
-    const side: "buy" | "sell" = sideRaw?.toString().toLowerCase() === "sell" ? "sell" : "buy";
-    const qty = typeof raw.qty === "number" ? raw.qty : typeof (raw as unknown as { quantity?: number }).quantity === "number" ? (raw as unknown as { quantity: number }).quantity : undefined;
+    const side: "buy" | "sell" = raw.side === "sell" ? "sell" : "buy";
+    const qty = typeof raw.qty === "number" ? raw.qty : undefined;
     const price = typeof raw.price === "number" ? raw.price : undefined;
 
     if (!symbol || typeof qty !== "number" || typeof price !== "number") return null;
@@ -229,32 +211,19 @@ export class PortfolioAgent {
       fee: raw.fee,
     };
 
-    // Update positions / cash / PnL
     if (side === "buy") {
       const existing = this.positions.get(symbol);
       if (existing) {
         const totalQty = existing.qty + qty;
         const totalCost = existing.avgPrice * existing.qty + price * qty;
         const newAvg = totalCost / totalQty;
-        this.positions.set(symbol, {
-          symbol,
-          qty: totalQty,
-          avgPrice: Number(newAvg.toFixed(6)),
-          currentPrice: price,
-        });
+        this.positions.set(symbol, { symbol, qty: totalQty, avgPrice: Number(newAvg.toFixed(6)), currentPrice: price });
       } else {
-        this.positions.set(symbol, {
-          symbol,
-          qty,
-          avgPrice: price,
-          currentPrice: price,
-        });
+        this.positions.set(symbol, { symbol, qty, avgPrice: price, currentPrice: price });
       }
       this.cash -= price * qty;
-      // Deduct fee if present
       if (typeof fill.fee === "number" && Number.isFinite(fill.fee)) this.cash -= fill.fee;
     } else {
-      // sell
       const existing = this.positions.get(symbol);
       if (existing) {
         const closeQty = Math.min(qty, existing.qty);
@@ -264,32 +233,18 @@ export class PortfolioAgent {
         if (remaining <= 0.0000001) {
           this.positions.delete(symbol);
         } else {
-          this.positions.set(symbol, {
-            symbol,
-            qty: remaining,
-            avgPrice: existing.avgPrice,
-            currentPrice: price,
-          });
+          this.positions.set(symbol, { symbol, qty: remaining, avgPrice: existing.avgPrice, currentPrice: price });
         }
         this.cash += price * closeQty;
         if (typeof fill.fee === "number" && Number.isFinite(fill.fee)) this.cash -= fill.fee;
-        // If sell qty > held, treat excess as short cash addition (no short position)
-        if (qty > closeQty) {
-          const excess = qty - closeQty;
-          this.cash += price * excess;
-        }
       } else {
-        // No position — still add cash (e.g., short or external)
         this.cash += price * qty;
         if (typeof fill.fee === "number" && Number.isFinite(fill.fee)) this.cash -= fill.fee;
       }
     }
 
-    // Round cash to 2 decimals
     this.cash = Math.round(this.cash * 100) / 100;
     this.realizedPnL = Math.round(this.realizedPnL * 100) / 100;
-
-    // Recalc unrealized
     this.recalcUnrealized();
 
     this.fillHistory.push({ ...fill });
@@ -297,9 +252,7 @@ export class PortfolioAgent {
       this.fillHistory.splice(0, this.fillHistory.length - this.maxHistory);
     }
 
-    // Publish portfolio:update
     this.publishUpdate();
-
     return fill;
   }
 
@@ -315,25 +268,8 @@ export class PortfolioAgent {
       this.positions.set(sym, { ...pos });
       this.recalcUnrealized();
       this.publishUpdate();
-    } else {
-      // No position for this symbol — still recalc to keep consistent, but only publish if needed?
-      // We publish update only when position exists to avoid noise, but spec says recalculates and publishes.
-      // To be safe, if no positions, still ensure unrealized is 0
-      // Optionally publish update even without position? We'll not publish to avoid spam, but calc anyway
-      // However spec: "on market:tick: updates currentPrice, recalculates unrealizedPnL, publishes portfolio:update"
-      // So we should publish even if no position change? Let's publish after recalc regardless for compliance.
-      // But to avoid flooding when many irrelevant ticks, we only publish if positions not empty? We'll publish regardless.
-      // For now, only publish if we have any positions (keeps behavior sensible)
-      if (this.positions.size > 0) {
-        this.recalcUnrealized();
-        this.publishUpdate();
-      }
     }
   }
-
-  // -------------------------------------------------------------------------
-  // Queries
-  // -------------------------------------------------------------------------
 
   getPortfolio(): PortfolioSnapshot {
     return {
@@ -346,11 +282,6 @@ export class PortfolioAgent {
     };
   }
 
-  getPositions(): Map<string, Position> {
-    return new Map(this.positions);
-  }
-
-  // Also support array form for convenience
   getPositionsArray(): Position[] {
     return [...this.positions.values()].map((p) => ({ ...p }));
   }
@@ -376,68 +307,6 @@ export class PortfolioAgent {
     return alloc;
   }
 
-  /** Allocation including cash weight (useful for dashboard). */
-  getAllocationWithCash(): Allocation & { CASH: number } {
-    const alloc = this.getAllocation() as Allocation & { CASH: number };
-    const total = this.getTotalValue();
-    if (total > 0) {
-      alloc["CASH"] = Math.round((this.cash / total) * 10000) / 10000;
-    }
-    return alloc;
-  }
-
-  rebalance(targetWeights: Record<string, number> | Map<string, number>): RebalanceTrade[] | Record<string, number> {
-    const totalValue = this.getTotalValue();
-    // Build current weights
-    const currentWeights: Record<string, number> = {};
-    for (const [sym, pos] of this.positions.entries()) {
-      currentWeights[sym] = (pos.qty * pos.currentPrice) / (totalValue || 1);
-    }
-    // Include cash implicitly? Keep only positions for rebalance
-    const prices: Record<string, number> = {};
-    for (const [sym, pos] of this.positions.entries()) {
-      prices[sym] = pos.currentPrice;
-    }
-    // Add target symbols missing prices — try to use target keys with fallback price 100?
-    // If target has symbol not in positions, we need its price to compute qty. Use currentPrice if available else assume 0 qty.
-    // Caller should provide price via current tick; if missing, qty will be 0.
-    const targetRecord = targetWeights instanceof Map ? Object.fromEntries([...targetWeights.entries()].map(([k, v]) => [k.toUpperCase(), v])) : Object.fromEntries(Object.entries(targetWeights).map(([k, v]) => [k.toUpperCase(), v]));
-    for (const sym of Object.keys(targetRecord)) {
-      if (prices[sym] === undefined) {
-        // Try to find position or use 0
-        prices[sym] = 0;
-      }
-    }
-
-    const result = rebalanceWeights(currentWeights, targetWeights, totalValue, prices);
-
-    // If trades array, publish orders for each non-hold
-    if (Array.isArray(result)) {
-      for (const trade of result) {
-        if (trade.side === "hold" || trade.qty === 0) continue;
-        // Need price for order; use currentPrice if available else skip
-        const price = prices[trade.symbol] ?? 0;
-        if (price <= 0) continue;
-        const order: Order = {
-          symbol: trade.symbol,
-          side: trade.side as "buy" | "sell",
-          qty: Math.abs(trade.qty),
-          price,
-          confidence: 1,
-          timestamp: Date.now(),
-        };
-        this.orderHistory.push({ ...order });
-        try {
-          this.bus.publish({ type: "portfolio:order", data: { ...order } });
-        } catch (err) {
-          console.error("[PortfolioAgent] rebalance publish failed:", err);
-        }
-      }
-    }
-
-    return result;
-  }
-
   getOrderHistory(): Order[] {
     return [...this.orderHistory];
   }
@@ -446,20 +315,6 @@ export class PortfolioAgent {
     return [...this.fillHistory];
   }
 
-  getHistory(): { orders: Order[]; fills: Fill[] } {
-    return { orders: this.getOrderHistory(), fills: this.getFillHistory() };
-  }
-
-  clearHistory(): void {
-    this.orderHistory = [];
-    this.fillHistory = [];
-  }
-
-  size(): number {
-    return this.positions.size;
-  }
-
-  // For testing: direct setters
   setCash(cash: number): void {
     if (Number.isFinite(cash)) this.cash = Math.round(cash * 100) / 100;
   }
@@ -467,33 +322,6 @@ export class PortfolioAgent {
   getCash(): number {
     return this.cash;
   }
-
-  updatePosition(symbol: string, patch: Partial<Position>): void {
-    const sym = symbol.toUpperCase();
-    const existing = this.positions.get(sym);
-    if (existing) {
-      this.positions.set(sym, { ...existing, ...patch, symbol: sym });
-      this.recalcUnrealized();
-    } else if (patch.qty !== undefined && patch.avgPrice !== undefined) {
-      this.positions.set(sym, {
-        symbol: sym,
-        qty: patch.qty,
-        avgPrice: patch.avgPrice,
-        currentPrice: patch.currentPrice ?? patch.avgPrice,
-      });
-      this.recalcUnrealized();
-    }
-  }
-
-  clearPositions(): void {
-    this.positions.clear();
-    this.realizedPnL = 0;
-    this.unrealizedPnL = 0;
-  }
-
-  // -------------------------------------------------------------------------
-  // Internal
-  // -------------------------------------------------------------------------
 
   private getTotalValue(): number {
     let posValue = 0;
@@ -513,28 +341,21 @@ export class PortfolioAgent {
 
   private publishUpdate(): void {
     const snapshot = this.getPortfolio();
-    // Build serializable positions object
     const positionsObj: Record<string, Position> = {};
     for (const [k, v] of snapshot.positions.entries()) positionsObj[k] = { ...v };
-    try {
-      this.bus.publish({
-        type: "portfolio:update",
-        data: {
-          cash: snapshot.cash,
-          positions: positionsObj,
-          realizedPnL: snapshot.realizedPnL,
-          unrealizedPnL: snapshot.unrealizedPnL,
-          totalValue: snapshot.totalValue,
-          positionCount: snapshot.positionCount,
-          timestamp: Date.now(),
-        },
-      });
-    } catch (err) {
-      console.error("[PortfolioAgent] publish portfolio:update failed:", err);
-    }
+    this.bus.publish({
+      type: "portfolio.updated",
+      data: {
+        cash: snapshot.cash,
+        positions: positionsObj,
+        realizedPnL: snapshot.realizedPnL,
+        unrealizedPnL: snapshot.unrealizedPnL,
+        totalValue: snapshot.totalValue,
+        positionCount: snapshot.positionCount,
+        timestamp: Date.now(),
+      },
+      source: "portfolio-agent",
+      agentId: "portfolio",
+    });
   }
 }
-
-export const portfolioAgent = new PortfolioAgent();
-
-export default PortfolioAgent;

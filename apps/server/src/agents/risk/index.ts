@@ -1,4 +1,7 @@
-import { EventBus, eventBus as defaultBus, type FinanceEvent } from "../../core/eventBus.js";
+import { BaseAgent } from "@finance/core";
+import type { Agent } from "@finance/core";
+import { TypedEventBus } from "@finance/core";
+import type { FinanceEvent } from "@finance/shared";
 import {
   calculateExposure,
   calculateDrawdown,
@@ -6,14 +9,10 @@ import {
   calculateSharpe,
 } from "./metrics.js";
 
-// Re-export metrics for consumers / tests
 export { calculateExposure, calculateDrawdown, calculateVaR, calculateSharpe };
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 export interface RiskSignal {
+  id?: string;
   symbol: string;
   action: "buy" | "sell" | "hold";
   confidence: number;
@@ -85,14 +84,12 @@ export interface RiskMetrics {
   leverage: number;
 }
 
-// ---------------------------------------------------------------------------
-// RiskAgent
-// ---------------------------------------------------------------------------
+function generateDecisionId(): string {
+  return `risk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
-export class RiskAgent {
-  public readonly name = "Risk Agent";
-
-  private bus: EventBus;
+export class RiskAgent extends BaseAgent implements Agent {
+  private bus: TypedEventBus;
   private config: RiskConfig;
   private portfolio: PortfolioState;
   private unsubscribe: (() => void) | null = null;
@@ -100,8 +97,15 @@ export class RiskAgent {
   private returnsHistory: number[] = [];
   private maxReturnsHistory = 200;
 
-  constructor(bus?: EventBus, config?: Partial<RiskConfig>, initialPortfolio?: Partial<PortfolioState>) {
-    this.bus = bus ?? defaultBus;
+  constructor(bus?: TypedEventBus, config?: Partial<RiskConfig>, initialPortfolio?: Partial<PortfolioState>) {
+    super({
+      id: "risk",
+      name: "Risk Agent",
+      version: "0.1.0",
+      description: "Risk management with exposure, drawdown, VaR, and Sharpe analysis",
+      capabilities: ["risk-assessment", "trade-approval", "portfolio-protection"],
+    });
+    this.bus = bus ?? new TypedEventBus();
     this.config = {
       maxPositionPct: 20,
       maxDrawdownPct: 10,
@@ -118,56 +122,45 @@ export class RiskAgent {
       dailyPnL: initialPortfolio?.dailyPnL ?? 0,
       peakValue: initialPortfolio?.peakValue ?? 100000,
     };
-    // Initialize peakValue to at least totalValue if portfolio provided with positions
     const total = this.getTotalValue();
     if (total > this.portfolio.peakValue) this.portfolio.peakValue = total;
   }
 
-  // -------------------------------------------------------------------------
-  // Lifecycle
-  // -------------------------------------------------------------------------
-
-  start(): void {
-    if (this.unsubscribe) return;
+  async start(): Promise<void> {
+    await super.start();
     this.unsubscribe = this.bus.subscribe((event: FinanceEvent) => {
-      // Handle signal events
-      if (event.type === "signal:buy" || event.type === "signal:sell") {
+      if (event.type === "quant.signal" || event.type === "gateway.trade_request") {
         const signal = event.data as RiskSignal;
         if (signal && typeof signal.symbol === "string" && typeof signal.price === "number") {
           try {
             this.evaluate(signal);
           } catch (err) {
-            console.error(`[RiskAgent] evaluate error for ${signal.symbol}:`, err);
+            this.recordError(err);
           }
-        }
-      } else if (event.type === "risk:rejected") {
-        // Also handle risk:rejected logging
-        try {
-          this.handleRejected(event);
-        } catch (err) {
-          console.error("[RiskAgent] handleRejected error:", err);
         }
       }
     });
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = null;
     }
+    await super.stop();
   }
 
-  isRunning(): boolean {
-    return this.unsubscribe !== null;
+  async handleEvent(event: FinanceEvent): Promise<void> {
+    if (event.type === "quant.signal" || event.type === "gateway.trade_request") {
+      const signal = event.data as RiskSignal;
+      if (signal && typeof signal.symbol === "string" && typeof signal.price === "number") {
+        this.evaluate(signal);
+      }
+    }
   }
-
-  // -------------------------------------------------------------------------
-  // Core: evaluate
-  // -------------------------------------------------------------------------
 
   evaluate(signal: RiskSignal): RiskDecision {
-    // Normalize signal
+    this.recordActivity();
     const sym = signal.symbol.toUpperCase();
     const normalized: RiskSignal = { ...signal, symbol: sym };
 
@@ -181,74 +174,46 @@ export class RiskAgent {
 
     const reasons: string[] = [];
 
-    // ---- confidence check (threshold 0.6) ----
     const conf = typeof normalized.confidence === "number" ? normalized.confidence : 0;
     if (conf < this.config.confidenceThreshold) {
       checks.confidence = false;
       reasons.push(`low confidence ${conf} < ${this.config.confidenceThreshold}`);
     }
 
-    // Compute portfolio metrics
     const totalValue = this.getTotalValue();
     const positionValues = this.getPositionValues();
     const exposure = calculateExposure(positionValues, totalValue);
     const drawdown = calculateDrawdown(totalValue, this.portfolio.peakValue);
 
-    // ---- exposure check ----
-    // exposure = total position value / total portfolio *100
-    // fails if exposure exceeds maxPositionPct * maxOpenPositions (total allowed)
-    // or if leverage exceeds maxLeverage
     const maxTotalExposure = this.config.maxPositionPct * this.config.maxOpenPositions;
-    const leverageExposure = (positionValues.reduce((a, b) => a + b, 0) / (this.portfolio.cash > 0 ? this.portfolio.cash : 1)) * 100;
-    // Leverage approx as positionSum / cash *100 vs maxLeverage*100
-    // Simplify: leverage = positionSum / totalValue * maxLeverageScale; fail if > 100*maxLeverage?
-    // More direct: if leverageExposure > this.config.maxLeverage * 100 => fail
-    // But for empty portfolio exposure is 0 -> pass
     if (exposure > maxTotalExposure) {
       checks.exposure = false;
       reasons.push(`exposure ${exposure.toFixed(2)}% > limit ${maxTotalExposure}%`);
-    } else if (leverageExposure > this.config.maxLeverage * 100) {
-      checks.exposure = false;
-      reasons.push(`leverage ${leverageExposure.toFixed(2)}% > maxLeverage ${this.config.maxLeverage}x`);
     }
 
-    // ---- drawdown check ----
     if (drawdown > this.config.maxDrawdownPct) {
       checks.drawdown = false;
       reasons.push(`drawdown ${drawdown.toFixed(2)}% > maxDrawdown ${this.config.maxDrawdownPct}%`);
     }
 
-    // ---- concentration check ----
-    // concentration = position size for signal symbol vs total portfolio
-    // For buy: projected position = existing + new; for sell: existing exposure
     const existingPos = this.portfolio.positions.get(sym);
     const existingValue = existingPos ? this.estimatePositionValue(existingPos) : 0;
     const concentrationCurrent = totalValue > 0 ? (existingValue / totalValue) * 100 : 0;
 
-    // Estimate new position size if buy: use signal price * qty (default 100 shares or 1 if price high)
-    // To keep deterministic: qty = signal.qty ?? signal.quantity ?? 1
-    // But to respect maxPositionPct, assume notional = price * qty
-    // If qty not provided, use value = price * 10 for stocks / price * 0.1 for BTC? Simplify to price
     let projectedValue = existingValue;
     if (normalized.action === "buy") {
-      const qty = (normalized.qty ?? normalized.quantity ?? 1);
-      // If qty is provided, use price*qty else if price > 1000 use 0.1 qty for crypto scaling
-      const notional = Number.isFinite(qty) ? (normalized.price * qty) : normalized.price;
-      // For default qty 1, notional is price; for BTC ~68k this would be 68% of 100k => fail correctly for concentration
-      // For tests with AAPL ~227, notional 227 < 20% => pass
+      const qty = normalized.qty ?? normalized.quantity ?? 1;
+      const notional = Number.isFinite(qty) ? normalized.price * qty : normalized.price;
       projectedValue = existingValue + notional;
     }
 
     const concentrationProjected = totalValue > 0 ? (projectedValue / totalValue) * 100 : 0;
-    const maxConcentration = this.config.maxPositionPct;
-    // concentration check checks projected for buys, current for sells
     const concentrationToCheck = normalized.action === "buy" ? concentrationProjected : concentrationCurrent;
-    if (concentrationToCheck > maxConcentration) {
+    if (concentrationToCheck > this.config.maxPositionPct) {
       checks.concentration = false;
-      reasons.push(`concentration ${concentrationToCheck.toFixed(2)}% > maxPositionPct ${maxConcentration}%`);
+      reasons.push(`concentration ${concentrationToCheck.toFixed(2)}% > maxPositionPct ${this.config.maxPositionPct}%`);
     }
 
-    // Also check maxOpenPositions for buys of new symbol
     if (normalized.action === "buy" && !this.portfolio.positions.has(sym)) {
       if (this.portfolio.positions.size >= this.config.maxOpenPositions) {
         checks.concentration = false;
@@ -256,115 +221,59 @@ export class RiskAgent {
       }
     }
 
-    // ---- VaR check ----
-    // Use returnsHistory if available; otherwise derive synthetic returns from dailyPnL
-    // VaR expressed as % loss; compare to maxDailyLoss
     let varValue = 0;
     if (this.returnsHistory.length >= 2) {
       varValue = calculateVaR(this.returnsHistory, 0.95);
-      // Convert VaR to percentage if returns are decimals (e.g., 0.02 = 2%)
-      // If returns are already percentages (>1), keep as is; heuristic: if var < 1, multiply by 100
       const varPct = varValue < 1 && varValue > 0 ? varValue * 100 : varValue;
       if (varPct > this.config.maxDailyLoss) {
         checks.var = false;
         reasons.push(`VaR ${varPct.toFixed(2)}% > maxDailyLoss ${this.config.maxDailyLoss}%`);
       }
     } else {
-      // Fallback: dailyPnL based VaR estimate
       const dailyLossPct = totalValue > 0 ? (-this.portfolio.dailyPnL / totalValue) * 100 : 0;
       varValue = Math.max(0, dailyLossPct);
       if (varValue > this.config.maxDailyLoss) {
         checks.var = false;
         reasons.push(`daily loss ${varValue.toFixed(2)}% > maxDailyLoss ${this.config.maxDailyLoss}%`);
       }
-      // Also if explicit VaR calc on single daily loss exceeds threshold
-      // keep varValue for metrics
     }
 
     const approved = Object.values(checks).every(Boolean);
-    const reason = approved
-      ? "All risk checks passed"
-      : `Rejected: ${reasons.join("; ")}`;
+    const reason = approved ? "All risk checks passed" : `Rejected: ${reasons.join("; ")}`;
 
     const decision: RiskDecision = {
       approved,
       signal: normalized,
       reason,
       checks,
-      metrics: {
-        exposure,
-        drawdown,
-        var: varValue,
-      },
+      metrics: { exposure, drawdown, var: varValue },
     };
 
-    // Publish event
-    const eventType = approved ? "risk:approved" : "risk:rejected";
-    try {
-      this.bus.publish({
-        type: eventType,
-        data: {
-          signal: normalized,
-          reason,
-          checks,
-          metrics: { exposure, drawdown, var: varValue },
-        },
-      });
-    } catch (err) {
-      console.error(`[RiskAgent] publish failed for ${eventType}:`, err);
-    }
-
-    // Also handle rejected logging if this evaluation rejected
-    if (!approved) {
-      this.rejectedLog.push({
-        signal: normalized,
-        reason,
-        checks,
+    const eventType = approved ? "risk.approved" : "risk.rejected";
+    this.bus.publish({
+      type: eventType,
+      data: {
+        ...decision,
+        id: generateDecisionId(),
         timestamp: Date.now(),
-      });
-      // keep log bounded
+      },
+      source: "risk-agent",
+      agentId: "risk",
+    });
+
+    if (!approved) {
+      this.rejectedLog.push({ signal: normalized, reason, checks, timestamp: Date.now() });
       if (this.rejectedLog.length > 500) {
         this.rejectedLog.splice(0, this.rejectedLog.length - 500);
       }
-      console.warn(`[RiskAgent] risk:rejected ${sym} ${normalized.action} conf=${conf} reason=${reason}`);
     }
 
-    // Update peakValue if new high
     if (totalValue > this.portfolio.peakValue) {
       this.portfolio.peakValue = totalValue;
     }
 
     return decision;
   }
-
-  // -------------------------------------------------------------------------
-  // Rejected handler
-  // -------------------------------------------------------------------------
-
-  handleRejected(event: FinanceEvent): void {
-    // Log external rejections (from other agents or replay)
-    const data = event.data as { signal?: RiskSignal; reason?: string; checks?: RiskChecks } | null;
-    const sym = (data?.signal as RiskSignal | undefined)?.symbol ?? "unknown";
-    const reason = data?.reason ?? "no reason";
-    console.warn(`[RiskAgent] handleRejected logging: ${event.type} ${sym} reason=${reason}`);
-    // Also store if not already from self-evaluate (deduplicate by not adding duplicate timestamp within 10ms)
-    if (data?.signal && data?.checks) {
-      const signal = data.signal as RiskSignal;
-      this.rejectedLog.push({
-        signal,
-        reason,
-        checks: data.checks as RiskChecks,
-        timestamp: event.timestamp ?? Date.now(),
-      });
-      if (this.rejectedLog.length > 500) {
-        this.rejectedLog.splice(0, this.rejectedLog.length - 500);
-      }
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Metrics
-  // -------------------------------------------------------------------------
 
   getRiskMetrics(): RiskMetrics {
     const totalValue = this.getTotalValue();
@@ -374,7 +283,6 @@ export class RiskAgent {
     const varVal = this.returnsHistory.length >= 2 ? calculateVaR(this.returnsHistory, 0.95) : 0;
     const sharpe = this.returnsHistory.length >= 2 ? calculateSharpe(this.returnsHistory) : 0;
 
-    // concentration = max single position / total *100
     let maxConcentration = 0;
     for (const pos of this.portfolio.positions.values()) {
       const val = this.estimatePositionValue(pos);
@@ -402,10 +310,6 @@ export class RiskAgent {
     };
   }
 
-  // -------------------------------------------------------------------------
-  // Portfolio helpers
-  // -------------------------------------------------------------------------
-
   getPortfolio(): PortfolioState {
     return {
       cash: this.portfolio.cash,
@@ -413,18 +317,6 @@ export class RiskAgent {
       dailyPnL: this.portfolio.dailyPnL,
       peakValue: this.portfolio.peakValue,
     };
-  }
-
-  updatePortfolio(patch: Partial<Omit<PortfolioState, "positions">> & { positions?: Map<string, Position> }): void {
-    if (patch.cash !== undefined) this.portfolio.cash = patch.cash;
-    if (patch.dailyPnL !== undefined) this.portfolio.dailyPnL = patch.dailyPnL;
-    if (patch.peakValue !== undefined) this.portfolio.peakValue = patch.peakValue;
-    if (patch.positions !== undefined) {
-      this.portfolio.positions = new Map(patch.positions);
-    }
-    // Update peak if needed
-    const total = this.getTotalValue();
-    if (total > this.portfolio.peakValue) this.portfolio.peakValue = total;
   }
 
   addPosition(pos: Position): void {
@@ -437,28 +329,8 @@ export class RiskAgent {
     this.portfolio.positions.delete(symbol.toUpperCase());
   }
 
-  getRejectedLog(): Array<{ signal: RiskSignal; reason: string; checks: RiskChecks; timestamp: number }> {
+  getRejectedLog() {
     return [...this.rejectedLog];
-  }
-
-  clearRejectedLog(): void {
-    this.rejectedLog = [];
-  }
-
-  // For testing: inject returns history
-  setReturnsHistory(returns: number[]): void {
-    this.returnsHistory = [...returns];
-  }
-
-  getReturnsHistory(): number[] {
-    return [...this.returnsHistory];
-  }
-
-  appendReturn(ret: number): void {
-    this.returnsHistory.push(ret);
-    if (this.returnsHistory.length > this.maxReturnsHistory) {
-      this.returnsHistory.splice(0, this.returnsHistory.length - this.maxReturnsHistory);
-    }
   }
 
   getConfig(): RiskConfig {
@@ -469,13 +341,16 @@ export class RiskAgent {
     this.config = { ...this.config, ...patch };
   }
 
-  size(): number {
-    return this.portfolio.positions.size;
+  setReturnsHistory(returns: number[]): void {
+    this.returnsHistory = [...returns];
   }
 
-  // -------------------------------------------------------------------------
-  // Internal helpers
-  // -------------------------------------------------------------------------
+  appendReturn(ret: number): void {
+    this.returnsHistory.push(ret);
+    if (this.returnsHistory.length > this.maxReturnsHistory) {
+      this.returnsHistory.splice(0, this.returnsHistory.length - this.maxReturnsHistory);
+    }
+  }
 
   private getTotalValue(): number {
     let posSum = 0;
@@ -501,7 +376,3 @@ export class RiskAgent {
     return pos.qty * pos.avgPrice;
   }
 }
-
-export const riskAgent = new RiskAgent();
-
-export default RiskAgent;

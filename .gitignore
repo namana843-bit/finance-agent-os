@@ -11,6 +11,12 @@ npm-debug.log*
 .cache
 coverage
 apps/dashboard/.next
+apps/dashboard/out
 apps/server/.data
 apps/server/dist
+.freebuff
+*.tsbuildinfo
+# keep scripts/openbot.js (OpenBot-style scaffold)
+!scripts/
+!scripts/openbot.js
 C:/Users/Naman/AppData/Local/Temp/finance-*

@@ -1,25 +1,26 @@
-import { BaseTool } from "../core/tool.js";
-import type { EventBus } from "../core/eventBus.js";
+// ============================================================================
+// Event Log tool — query recent bus events. Read-only coordination helper.
+// ============================================================================
 
-// Query recent bus events. Read-only; used by agents for coordination.
-export class EventLogTool extends BaseTool<{ type?: string; limit?: number }, { events: Array<{ id: string; type: string; timestamp: number }> }> {
-  name = "event-log";
-  description = "Read recent events from the bus (read-only coordination helper)";
-  version = "0.1.0";
-  inputSchema = {
-    type: "object",
-    properties: { type: { type: "string" }, limit: { type: "number", minimum: 1, maximum: 200 } },
+import type { ToolDefinition } from "@finance/shared";
+import type { ToolContext } from "./finance-tools.js";
+
+export function eventLogTool(): ToolDefinition {
+  return {
+    id: "event_log",
+    name: "Event Log",
+    description: "Read recent events from the bus (read-only coordination helper)",
+    inputSchema: { type: "object", properties: { type: { type: "string" }, limit: { type: "number", minimum: 1, maximum: 200 } } },
+    outputSchema: { type: "object", properties: { events: { type: "array" } } },
+    permissions: { required: false },
   };
-
-  async execute(
-    input: { type?: string; limit?: number },
-    ctx?: { bus?: EventBus },
-  ): Promise<{ events: Array<{ id: string; type: string; timestamp: number }> }> {
-    const bus = ctx?.bus;
-    if (!bus) throw new Error("event-log requires bus in context");
-    const events = bus.getHistory(input.type ? { type: input.type } : undefined, input.limit ?? 20);
-    return { events: events.map((e) => ({ id: e.id, type: e.type, timestamp: e.timestamp })) };
-  }
 }
 
-export default EventLogTool;
+export function executeEventLog(
+  ctx: ToolContext,
+  input: Record<string, unknown>,
+): { events: Array<{ id: string; type: string; timestamp: number }> } {
+  const limit = Math.min(Math.max(Number(input.limit ?? 20) || 20, 1), 200);
+  const events = ctx.bus.getHistory(input.type ? { type: String(input.type) } : undefined, limit);
+  return { events: events.map((e) => ({ id: e.id, type: e.type, timestamp: e.timestamp })) };
+}

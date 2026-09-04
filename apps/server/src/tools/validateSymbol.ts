@@ -1,18 +1,23 @@
-import { BaseTool } from "../core/tool.js";
+// ============================================================================
+// Validate Symbol tool — checks finance symbol format (BTCUSDT, AAPL...).
+// Pure validation helper. No strategy, no trading.
+// ============================================================================
 
-// Validates a finance symbol (BTCUSDT, AAPL, EURUSD...). No strategy, no trading.
-export class ValidateSymbolTool extends BaseTool<{ symbol: string }, { symbol: string; valid: boolean }> {
-  name = "validate-symbol";
-  description = "Validate a finance symbol format (uppercase alphanumerics, 3-12 chars)";
-  version = "0.1.0";
-  inputSchema = { type: "object", properties: { symbol: { type: "string", minLength: 1 } }, required: ["symbol"] };
+import type { ToolDefinition } from "@finance/shared";
 
-  async execute(input: { symbol: string }): Promise<{ symbol: string; valid: boolean }> {
-    this.validate(input);
-    const symbol = String(input.symbol).toUpperCase().trim();
-    const valid = /^[A-Z0-9]{3,12}$/.test(symbol);
-    return { symbol, valid };
-  }
+export function validateSymbolTool(): ToolDefinition {
+  return {
+    id: "validate_symbol",
+    name: "Validate Symbol",
+    description: "Validate a finance symbol format (uppercase alphanumerics, 3-12 chars)",
+    inputSchema: { type: "object", properties: { symbol: { type: "string", minLength: 1 } }, required: ["symbol"] },
+    outputSchema: { type: "object", properties: { symbol: { type: "string" }, valid: { type: "boolean" } } },
+    permissions: { required: false },
+  };
 }
 
-export default ValidateSymbolTool;
+export function executeValidateSymbol(input: Record<string, unknown>): { symbol: string; valid: boolean } {
+  const symbol = String(input.symbol ?? "").toUpperCase().trim();
+  const valid = /^[A-Z0-9]{3,12}$/.test(symbol);
+  return { symbol, valid };
+}

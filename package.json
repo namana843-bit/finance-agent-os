@@ -3,13 +3,22 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "pnpm -r dev",
     "dev:server": "pnpm --filter @finance/server dev",
     "dev:dashboard": "pnpm --filter @finance/dashboard dev",
     "build": "pnpm -r build",
-    "start": "pnpm --filter @finance/server start"
+    "build:shared": "pnpm --filter @finance/shared build",
+    "build:core": "pnpm --filter @finance/core build",
+    "build:server": "pnpm --filter @finance/server build",
+    "start": "pnpm --filter @finance/server start",
+    "openbot": "node scripts/openbot.js",
+    "typecheck": "pnpm -r exec tsc --noEmit",
+    "test": "pnpm -r test"
   },
   "packageManager": "pnpm@9.0.0"
 }

@@ -3,6 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import MarketChart from "@/components/MarketChart";
 import AgentStatus from "@/components/AgentStatus";
+import BacktestPanel from "@/components/BacktestPanel";
+import OrdersPanel from "@/components/OrdersPanel";
+import MarketMeta from "@/components/MarketMeta";
+import TradeForm from "@/components/TradeForm";
 import {
   API_BASE,
   connectEvents,
@@ -166,16 +170,21 @@ export default function DashboardPage() {
       {/* Header row — market tickers + connection badge */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         {[
-          { label: "BTC", sym: "BTCUSDT", tick: btc, fallback: "68,120.50" },
-          { label: "ETH", sym: "ETHUSDT", tick: eth, fallback: "3,450.12" },
-          { label: "AAPL", sym: "AAPL", tick: aaplTick, fallback: "214.33" },
+          { label: "BTC", sym: "BTCUSDT", tick: btc },
+          { label: "ETH", sym: "ETHUSDT", tick: eth },
+          { label: "AAPL", sym: "AAPL", tick: aaplTick },
         ].map((t) => (
           <div key={t.sym} className="card px-4 py-3 flex items-center justify-between">
             <div>
               <div className="text-[11px] tracking-widest opacity-60 font-semibold">{t.label} / {t.sym.includes("USDT") ? "USDT" : "USD"}</div>
               <div className="text-xl font-bold tabular-nums">
-                {t.tick ? fmtCurrency(t.tick.price) : `$${t.fallback}`}
+                {t.tick ? fmtCurrency(t.tick.price) : <span className="opacity-30">— no data</span>}
               </div>
+              {t.tick && (t.tick as unknown as { source?: string }).source && (
+                <div className={`text-[10px] mt-1 inline-flex px-1.5 py-0.5 rounded font-bold tracking-widest border ${(t.tick as unknown as { source: string }).source === "binance" ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" : "bg-amber-500/10 text-amber-400 border-amber-500/20"}`}>
+                  {(t.tick as unknown as { source: string }).source === "binance" ? "● BINANCE" : "○ SYNTHETIC"}
+                </div>
+              )}
             </div>
             <div className="text-right">
               <div
@@ -185,7 +194,7 @@ export default function DashboardPage() {
                     : "bg-red-500/10 text-red-400 border-red-500/20"
                 }`}
               >
-                {t.tick ? fmtPercent(t.tick.changePercent) : "+0.99%"}
+                {t.tick ? fmtPercent(t.tick.changePercent) : "—"}
               </div>
               <div className="text-[11px] opacity-50 mt-1 tabular-nums">
                 {t.tick ? `vol ${t.tick.volume.toFixed(0)}` : "vol —"} • {connState === "open" ? "live" : connState}
@@ -247,26 +256,26 @@ export default function DashboardPage() {
             </div>
           </section>
 
-          {/* Portfolio summary */}
+          {/* Portfolio summary — honest: no fake numbers when API empty */}
           <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="card p-4">
               <div className="text-[11px] tracking-widest opacity-60 font-semibold">TOTAL VALUE</div>
-              <div className="text-2xl font-black tabular-nums mt-1">{portfolio ? fmtCurrency(portfolio.totalValue) : "$125,430.22"}</div>
-              <div className="text-xs opacity-60 mt-1">{portfolio?.baseCurrency ?? "USDT"} • {portfolio ? new Date(portfolio.timestamp).toLocaleTimeString() : "live"}</div>
+              <div className="text-2xl font-black tabular-nums mt-1">{portfolio ? fmtCurrency(portfolio.totalValue) : <span className="opacity-30 text-lg">— awaiting /api/portfolio</span>}</div>
+              <div className="text-xs opacity-60 mt-1">{portfolio ? `${portfolio.baseCurrency} • ${new Date(portfolio.timestamp).toLocaleTimeString()}` : "connect server to see live value"}</div>
             </div>
             <div className="card p-4">
               <div className="text-[11px] tracking-widest opacity-60 font-semibold">AVAILABLE CASH</div>
-              <div className="text-2xl font-black tabular-nums mt-1">{portfolio ? fmtCurrency(portfolio.availableCash) : "$42,100.50"}</div>
-              <div className={`text-xs font-bold mt-1 ${portfolio && portfolio.pnl.day >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                {portfolio ? `${fmtCurrency(portfolio.pnl.day)} today (${fmtPercent(portfolio.pnl.percentDay)})` : "+$1,240.33 today (+0.99%)"}
+              <div className="text-2xl font-black tabular-nums mt-1">{portfolio ? fmtCurrency(portfolio.availableCash) : <span className="opacity-30 text-lg">—</span>}</div>
+              <div className={`text-xs font-bold mt-1 ${portfolio && portfolio.pnl.day >= 0 ? "text-emerald-400" : portfolio ? "text-red-400" : "opacity-40"}`}>
+                {portfolio ? `${fmtCurrency(portfolio.pnl.day)} today (${fmtPercent(portfolio.pnl.percentDay)})` : "no fills yet"}
               </div>
             </div>
             <div className="card p-4">
               <div className="text-[11px] tracking-widest opacity-60 font-semibold">TOTAL PnL</div>
-              <div className={`text-2xl font-black tabular-nums mt-1 ${portfolio && portfolio.pnl.total >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                {portfolio ? fmtCurrency(portfolio.pnl.total) : "$12,543.22"}
+              <div className={`text-2xl font-black tabular-nums mt-1 ${!portfolio ? "opacity-30" : portfolio.pnl.total >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                {portfolio ? fmtCurrency(portfolio.pnl.total) : "—"}
               </div>
-              <div className="text-xs opacity-60 mt-1">week {portfolio ? fmtCurrency(portfolio.pnl.week) : "$3,890.12"} • all-time</div>
+              <div className="text-xs opacity-60 mt-1">{portfolio ? `week ${fmtCurrency(portfolio.pnl.week)} • all-time` : "paper mode • $100k start"}</div>
             </div>
           </section>
 
@@ -276,20 +285,20 @@ export default function DashboardPage() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div className="rounded-xl bg-white/[0.03] border border-white/5 p-3">
                 <div className="text-[11px] opacity-60 font-semibold">EXPOSURE</div>
-                <div className="text-lg font-bold">{risk ? `${(risk.exposure * 100).toFixed(1)}%` : "68.0%"}</div>
+                <div className="text-lg font-bold">{risk ? `${(risk.exposure * 100).toFixed(1)}%` : "—"}</div>
                 <div className="h-1.5 rounded-full bg-white/10 mt-2 overflow-hidden">
-                  <div className="h-full bg-violet-500" style={{ width: `${(risk?.exposure ?? 0.68) * 100}%` }} />
+                  <div className="h-full bg-violet-500" style={{ width: `${(risk?.exposure ?? 0) * 100}%` }} />
                 </div>
               </div>
               <div className="rounded-xl bg-white/[0.03] border border-white/5 p-3">
                 <div className="text-[11px] opacity-60 font-semibold">MAX DRAWDOWN</div>
-                <div className="text-lg font-bold">{risk ? `${(risk.maxDrawdown * 100).toFixed(1)}%` : "12.0%"}</div>
+                <div className="text-lg font-bold">{risk ? `${(risk.maxDrawdown * 100).toFixed(1)}%` : "—"}</div>
                 <div className="text-[11px] opacity-50">limit 20%</div>
               </div>
               <div className="rounded-xl bg-white/[0.03] border border-white/5 p-3">
                 <div className="text-[11px] opacity-60 font-semibold">SHARPE</div>
-                <div className="text-lg font-bold">{risk?.sharpe ?? 1.42}</div>
-                <div className="text-[11px] text-emerald-400">good</div>
+                <div className="text-lg font-bold">{risk ? String(risk.sharpe) : "—"}</div>
+                <div className="text-[11px] text-emerald-400">{risk ? "live" : "no data"}</div>
               </div>
               <div className="rounded-xl bg-white/[0.03] border border-white/5 p-3">
                 <div className="text-[11px] opacity-60 font-semibold">STATUS</div>
@@ -308,45 +317,45 @@ export default function DashboardPage() {
             </div>
           </section>
 
-          {/* Positions table */}
+          {/* Positions table — honest empty state, no fake SOL */}
           <section className="card p-4 sm:p-5 overflow-hidden">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-bold tracking-tight">Positions & Holdings</h2>
-              <span className="text-xs opacity-50">{portfolio?.holdings.length ?? 3} holdings</span>
+              <span className="text-xs opacity-50">{portfolio?.holdings.length ?? 0} holdings</span>
             </div>
-            <div className="overflow-x-auto -mx-4 sm:mx-0">
-              <table className="w-full text-sm min-w-[520px]">
-                <thead>
-                  <tr className="text-[11px] tracking-widest opacity-50 border-b border-white/5">
-                    <th className="text-left font-semibold py-2 px-4">Symbol</th>
-                    <th className="text-right font-semibold py-2 px-3">Qty</th>
-                    <th className="text-right font-semibold py-2 px-3">Avg</th>
-                    <th className="text-right font-semibold py-2 px-3">Mark</th>
-                    <th className="text-right font-semibold py-2 px-3">Value</th>
-                    <th className="text-right font-semibold py-2 px-4">PnL</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(portfolio?.holdings ?? [
-                    { symbol: "BTCUSDT", qty: 0.85, avgPrice: 62000, price: 68120.5, value: 57902.42, pnl: 5202.42 },
-                    { symbol: "ETHUSDT", qty: 12.5, avgPrice: 3200, price: 3450.12, value: 43126.5, pnl: 3126.5 },
-                    { symbol: "SOLUSDT", qty: 150, avgPrice: 140, price: 162.68, value: 24401.3, pnl: 3401.3 },
-                  ]).map((h) => (
-                    <tr key={h.symbol} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
-                      <td className="py-3 px-4 font-bold">{h.symbol}</td>
-                      <td className="py-3 px-3 text-right tabular-nums">{h.qty}</td>
-                      <td className="py-3 px-3 text-right tabular-nums opacity-70">{fmtCurrency(h.avgPrice)}</td>
-                      <td className="py-3 px-3 text-right tabular-nums">{fmtCurrency(h.price)}</td>
-                      <td className="py-3 px-3 text-right tabular-nums font-semibold">{fmtCurrency(h.value)}</td>
-                      <td className={`py-3 px-4 text-right tabular-nums font-bold ${h.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                        {h.pnl >= 0 ? "+" : ""}
-                        {fmtCurrency(h.pnl)}
-                      </td>
+            {!portfolio || portfolio.holdings.length === 0 ? (
+              <div className="text-sm opacity-50 py-8 text-center border border-dashed border-white/10 rounded-xl">No positions yet — paper trading starts with $100k cash. Place a trade via <code className="bg-white/10 px-1 rounded">POST /api/gateway/trade</code> or wait for quant signals.</div>
+            ) : (
+              <div className="overflow-x-auto -mx-4 sm:mx-0">
+                <table className="w-full text-sm min-w-[520px]">
+                  <thead>
+                    <tr className="text-[11px] tracking-widest opacity-50 border-b border-white/5">
+                      <th className="text-left font-semibold py-2 px-4">Symbol</th>
+                      <th className="text-right font-semibold py-2 px-3">Qty</th>
+                      <th className="text-right font-semibold py-2 px-3">Avg</th>
+                      <th className="text-right font-semibold py-2 px-3">Mark</th>
+                      <th className="text-right font-semibold py-2 px-3">Value</th>
+                      <th className="text-right font-semibold py-2 px-4">PnL</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {portfolio.holdings.map((h) => (
+                      <tr key={h.symbol} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
+                        <td className="py-3 px-4 font-bold">{h.symbol}</td>
+                        <td className="py-3 px-3 text-right tabular-nums">{h.qty}</td>
+                        <td className="py-3 px-3 text-right tabular-nums opacity-70">{fmtCurrency(h.avgPrice)}</td>
+                        <td className="py-3 px-3 text-right tabular-nums">{fmtCurrency(h.price)}</td>
+                        <td className="py-3 px-3 text-right tabular-nums font-semibold">{fmtCurrency(h.value)}</td>
+                        <td className={`py-3 px-4 text-right tabular-nums font-bold ${h.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                          {h.pnl >= 0 ? "+" : ""}
+                          {fmtCurrency(h.pnl)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </section>
         </div>
 
@@ -357,29 +366,28 @@ export default function DashboardPage() {
           </section>
 
           <section className="card p-4 sm:p-5">
+            <BacktestPanel />
+          </section>
+
+          <section className="card p-4 sm:p-5">
+            <OrdersPanel />
+          </section>
+
+          <section className="card p-4 sm:p-5">
+            <MarketMeta symbol={btc?.symbol ?? "BTCUSDT"} />
+          </section>
+
+          <section className="card p-4 sm:p-5">
+            <TradeForm />
+          </section>
+
+          <section className="card p-4 sm:p-5">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-bold tracking-tight">Signals Feed</h2>
               <span className="text-xs opacity-50">{signals.length} recent</span>
             </div>
             {signals.length === 0 ? (
-              <div className="space-y-2">
-                {[
-                  { t: "quant.signal", msg: "LONG BTC 62% confidence — RSI 54, MACD cross", ago: "12s ago" },
-                  { t: "risk.alert", msg: "Exposure 0.68 within limit • ok", ago: "38s ago" },
-                  { t: "quant.signal", msg: "NEUTRAL ETH — hold, vol low", ago: "1m ago" },
-                ].map((s, i) => (
-                  <div key={i} className="rounded-xl bg-white/[0.03] border border-white/5 px-3 py-2.5">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold tracking-widest ${s.t.includes("risk") ? "bg-amber-500/15 text-amber-400" : "bg-violet-500/15 text-violet-300"}`}>
-                        {s.t.toUpperCase()}
-                      </span>
-                      <span className="text-[11px] opacity-50 ml-auto">{s.ago}</span>
-                    </div>
-                    <div className="text-xs mt-1 leading-relaxed opacity-90">{s.msg}</div>
-                  </div>
-                ))}
-                <div className="text-[11px] opacity-40 text-center pt-1">live signals appear here via SSE</div>
-              </div>
+              <div className="text-xs opacity-40 text-center py-6 border border-dashed border-white/10 rounded-xl">No signals yet — quant emits only actionable buy/sell (≥60% + 2/4 confluence). Will appear via SSE.</div>
             ) : (
               <div className="space-y-2 max-h-[320px] overflow-auto pr-1">
                 {signals.map((e) => (
