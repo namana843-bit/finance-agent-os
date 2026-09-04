@@ -28,6 +28,7 @@ import { AgentMemory } from "../memory/agent-memory.js";
 import { createFinanceEnvironment } from "../environment/index.js";
 import { FinanceEnvironmentService } from "../environment/service.js";
 import { SupervisorAgent } from "../agents/supervisor/index.js";
+import { StrategyLabService } from "../strategy-lab/service.js";
 
 // Service IDs — canonical identifiers for service lookup
 export const SERVICE_IDS = {
@@ -41,6 +42,7 @@ export const SERVICE_IDS = {
   AGENT_MEMORY: "agent-memory",
   STRATEGY_REGISTRY: "strategy-registry",
   FINANCE_ENVIRONMENT: "finance-environment",
+  STRATEGY_LAB: "strategy-lab",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -501,6 +503,15 @@ export function createRuntime(): FinanceRuntime {
   });
   runtime.registerService(new FinanceEnvironmentService(financeEnv, bus));
 
+  // Strategy Lab — Idea -> Strategy -> Backtest -> Performance -> Risk -> Paper Candidate
+  // Reuses BacktestEngine + modular StrategyRegistry + FinanceEnvironment; paper-only.
+  const strategyLabService = new StrategyLabService({
+    bus,
+    strategyRegistry: strategyRegistryService.getInstance(),
+    market: financeEnv.market,
+  });
+  runtime.registerService(strategyLabService);
+
   return runtime;
 }
 
@@ -558,6 +569,10 @@ export function getFinanceEnvironment(): import("../environment/types.js").Finan
 
 export function getSupervisor(): SupervisorAgent | undefined {
   return runtime?.getAgentRegistry().get("supervisor") as SupervisorAgent | undefined;
+}
+
+export function getStrategyLab(): import("../strategy-lab/strategy-lab.js").StrategyLab | undefined {
+  return getService<import("../strategy-lab/service.js").StrategyLabService>(SERVICE_IDS.STRATEGY_LAB)?.getInstance();
 }
 
 // ---------------------------------------------------------------------------
