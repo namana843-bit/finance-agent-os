@@ -1,7 +1,8 @@
 // ============================================================================
 // SupervisorAgent — receives a finance task and produces a deterministic
 // execution plan using AgentRegistry / ToolRegistry / EventBus.
-// Example: "Analyze BTC" -> Market -> Research -> Strategy -> Risk -> Final
+// Phase 5: Enforces LoopGuard, structured TradeProposal gating, deterministic
+// quant signal ingestion, secret sanitization, and structured trace memory.
 // ============================================================================
 
 import { BaseAgent } from "@finance/core";
@@ -10,9 +11,24 @@ import { TypedEventBus } from "@finance/core";
 import type { AgentRegistry, ToolRegistry } from "@finance/core";
 import type { FinanceEvent } from "@finance/shared";
 import { createPlan, type Plan, type PlanStep, type ValidationResult } from "./planner.js";
+import { LoopGuard } from "../../core/loop-guard.js";
+import {
+  type TradeProposal,
+  validateTradeProposal,
+  createTradeProposal,
+} from "./proposal.js";
+import { agentMemory, type AgentLoopTrace } from "../../memory/agent-memory.js";
 
 export { createPlan, extractSymbol, classifyTask, stripPlan } from "./planner.js";
 export type { Plan, PlanStep, TaskKind, ValidationResult } from "./planner.js";
+export { LoopGuard } from "../../core/loop-guard.js";
+export {
+  type TradeProposal,
+  type EntryParameters,
+  type RiskParameters,
+  validateTradeProposal,
+  createTradeProposal,
+} from "./proposal.js";
 
 // ---------------------------------------------------------------------------
 // Execution result
@@ -47,7 +63,15 @@ export interface PlanExecution {
 // ---------------------------------------------------------------------------
 
 export interface ExecutionPipelineLike {
-  execute(signal: Record<string, unknown>): Promise<{ success: boolean; stage: string; reason: string; order?: unknown; riskDecision?: unknown; correlationId: string; signalId: string }>;
+  execute(signal: Record<string, unknown>): Promise<{
+    success: boolean;
+    stage: string;
+    reason: string;
+    order?: unknown;
+    riskDecision?: unknown;
+    correlationId: string;
+    signalId: string;
+  }>;
 }
 
 export interface SupervisorOptions {
@@ -55,8 +79,11 @@ export interface SupervisorOptions {
   agentRegistry?: AgentRegistry;
   toolRegistry?: ToolRegistry;
   executionPipeline?: ExecutionPipelineLike;
+  loopGuard?: LoopGuard;
   /** Fail-fast: abort on first step failure. Default: true */
   failFast?: boolean;
+  /** Automatically process actionable quant signals into trade proposals */
+  autoOrchestrateSignals?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +95,9 @@ export class SupervisorAgent extends BaseAgent implements Agent {
   private agentRegistry?: AgentRegistry;
   private toolRegistry?: ToolRegistry;
   private executionPipeline?: ExecutionPipelineLike;
+  private loopGuard: LoopGuard;
   private failFast: boolean;
+  private autoOrchestrateSignals: boolean;
   private unsubscribe: (() => void) | null = null;
   private executions = new Map<string, PlanExecution>();
   private lastPlan: Plan | null = null;
@@ -77,15 +106,17 @@ export class SupervisorAgent extends BaseAgent implements Agent {
     super({
       id: "supervisor",
       name: "Supervisor Agent",
-      version: "0.1.0",
-      description: "Deterministic planner: task -> Market -> Research -> Strategy -> Risk -> Final",
-      capabilities: ["task-planning", "deterministic-routing", "execution-orchestration"],
+      version: "0.2.0",
+      description: "Deterministic planner & reliable trade proposal orchestrator with anti-loop protection",
+      capabilities: ["task-planning", "deterministic-routing", "execution-orchestration", "proposal-gating"],
     });
     this.bus = opts.bus ?? new TypedEventBus();
     this.agentRegistry = opts.agentRegistry;
     this.toolRegistry = opts.toolRegistry;
     this.executionPipeline = opts.executionPipeline;
+    this.loopGuard = opts.loopGuard ?? new LoopGuard();
     this.failFast = opts.failFast ?? true;
+    this.autoOrchestrateSignals = opts.autoOrchestrateSignals ?? false;
   }
 
   // Allow late binding (useful when runtime creates registries after agent)
@@ -102,15 +133,24 @@ export class SupervisorAgent extends BaseAgent implements Agent {
     return this.bus;
   }
 
+  getLoopGuard(): LoopGuard {
+    return this.loopGuard;
+  }
+
   async start(): Promise<void> {
     await super.start();
-    // Subscribe to supervisor tasks via EventBus (external trigger)
+    // Subscribe to supervisor tasks & quant signals via EventBus
     this.unsubscribe = this.bus.subscribe((event: FinanceEvent) => {
       if (event.type === "supervisor.task" || event.type === "supervisor.execute") {
         const data = event.data as { task?: string; correlationId?: string } | null;
         const task = typeof data?.task === "string" ? data.task : typeof event.data === "string" ? event.data : "";
         if (task) {
           void this.submitTask(task, data?.correlationId).catch((err) => this.recordError(err));
+        }
+      } else if (event.type === "quant.signal" && this.autoOrchestrateSignals) {
+        const signal = event.data as Record<string, unknown> | null;
+        if (signal && (signal.action === "buy" || signal.action === "sell")) {
+          void this.orchestrateTradeProposal(signal, { correlationId: event.correlationId }).catch((err) => this.recordError(err));
         }
       }
     });
@@ -129,6 +169,284 @@ export class SupervisorAgent extends BaseAgent implements Agent {
       const data = event.data as { task?: string; correlationId?: string } | null;
       const task = typeof data?.task === "string" ? data.task : typeof event.data === "string" ? event.data : "";
       if (task) await this.submitTask(task, data?.correlationId);
+    } else if (event.type === "quant.signal" && this.autoOrchestrateSignals) {
+      const signal = event.data as Record<string, unknown> | null;
+      if (signal && (signal.action === "buy" || signal.action === "sell")) {
+        await this.orchestrateTradeProposal(signal, { correlationId: event.correlationId });
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Structured Trade Proposal Orchestration (Phase 5)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Orchestrates an end-to-end trade proposal through validation, anti-recursion guards,
+   * risk evaluation, broker execution, and memory trace recording.
+   * Prevents raw free-form text or unvalidated calls from placing orders.
+   */
+  async orchestrateTradeProposal(
+    proposalOrSignal: TradeProposal | Record<string, unknown>,
+    opts?: { skipCooldown?: boolean; correlationId?: string }
+  ): Promise<{
+    success: boolean;
+    stage: string;
+    reason: string;
+    proposal?: TradeProposal;
+    order?: unknown;
+    riskDecision?: unknown;
+    executionResult?: unknown;
+  }> {
+    let proposal: TradeProposal;
+
+    // 1. Structure validation
+    if ("entryParameters" in proposalOrSignal && "riskParameters" in proposalOrSignal) {
+      const validation = validateTradeProposal(proposalOrSignal);
+      if (!validation.valid || !validation.proposal) {
+        const reason = validation.reason ?? "Invalid TradeProposal format";
+        agentMemory.recordTrace({
+          traceId: String(proposalOrSignal.proposalId ?? `err-${Date.now()}`),
+          correlationId: opts?.correlationId ?? "unknown",
+          symbol: String(proposalOrSignal.symbol ?? "UNKNOWN"),
+          proposal: proposalOrSignal,
+          outcome: "rejected_by_guard",
+          reason,
+          timestamp: Date.now(),
+        });
+        return { success: false, stage: "validation", reason };
+      }
+      proposal = validation.proposal;
+    } else {
+      // Input is raw quantitative signal or parameter object
+      const raw = proposalOrSignal as Record<string, unknown>;
+      const sym = typeof raw.symbol === "string" ? raw.symbol.trim() : "";
+      const price = typeof raw.price === "number" && Number.isFinite(raw.price) && raw.price > 0 ? raw.price : undefined;
+      const quantity = typeof raw.quantity === "number" && Number.isFinite(raw.quantity) && raw.quantity > 0 ? raw.quantity : (typeof raw.qty === "number" && Number.isFinite(raw.qty) && raw.qty > 0 ? raw.qty : undefined);
+      const side = raw.side === "sell" || raw.action === "sell" ? "sell" : raw.side === "buy" || raw.action === "buy" ? "buy" : undefined;
+
+      if (!sym || price === undefined || quantity === undefined || !side) {
+        const reason = "Conversational or unstructured input cannot execute trade: missing required quantitative parameters (symbol, price, quantity, side/action)";
+        agentMemory.recordTrace({
+          traceId: `err-${Date.now()}`,
+          correlationId: opts?.correlationId ?? "unknown",
+          symbol: sym || "UNKNOWN",
+          proposal: raw,
+          outcome: "rejected_by_guard",
+          reason,
+          timestamp: Date.now(),
+        });
+        return { success: false, stage: "validation", reason };
+      }
+
+      try {
+        proposal = createTradeProposal({
+          proposalId: typeof raw.id === "string" ? raw.id : typeof raw.proposalId === "string" ? raw.proposalId : undefined,
+          correlationId: opts?.correlationId ?? (typeof raw.correlationId === "string" ? raw.correlationId : undefined),
+          symbol: sym,
+          side,
+          quantity,
+          price,
+          strategy: String(raw.strategy ?? "quantitative-confluence"),
+          confidence: typeof raw.confidence === "number" ? raw.confidence : 0.8,
+          reasoning: String(raw.reason ?? raw.reasoning ?? "Quantitative confluence signal"),
+          entryParameters: {
+            targetEntryPrice: price,
+            orderType: "market",
+          },
+          riskParameters: {
+            maxSlippagePct: 0.01,
+            positionLimitPct: 0.2,
+          },
+          timeframe: typeof raw.timeframe === "string" ? raw.timeframe : "tick",
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        agentMemory.recordTrace({
+          traceId: `err-${Date.now()}`,
+          correlationId: opts?.correlationId ?? "unknown",
+          symbol: sym || "UNKNOWN",
+          proposal: raw,
+          outcome: "rejected_by_guard",
+          reason,
+          timestamp: Date.now(),
+        });
+        return { success: false, stage: "validation", reason };
+      }
+    }
+
+    // 2. Loop Guard: duplicate event suppression
+    if (this.loopGuard.isDuplicateEvent(proposal.proposalId)) {
+      const reason = `Duplicate proposal event suppressed: ${proposal.proposalId}`;
+      agentMemory.recordTrace({
+        traceId: proposal.proposalId,
+        correlationId: proposal.correlationId,
+        symbol: proposal.symbol,
+        proposal,
+        outcome: "rejected_by_guard",
+        reason,
+        timestamp: Date.now(),
+      });
+      this.bus.publish({
+        type: "supervisor.proposal_rejected",
+        data: { proposalId: proposal.proposalId, reason, stage: "loop_guard" },
+        source: "supervisor-agent",
+        agentId: this.id,
+        correlationId: proposal.correlationId,
+      });
+      return { success: false, stage: "loop_guard", reason, proposal };
+    }
+
+    // 3. Loop Guard: symbol burst cooldown
+    if (!opts?.skipCooldown) {
+      const cooldown = this.loopGuard.checkSymbolCooldown(proposal.symbol);
+      if (!cooldown.allowed) {
+        const reason = `Symbol burst cooldown active for ${proposal.symbol} (wait ${cooldown.waitMs}ms)`;
+        agentMemory.recordTrace({
+          traceId: proposal.proposalId,
+          correlationId: proposal.correlationId,
+          symbol: proposal.symbol,
+          proposal,
+          outcome: "rejected_by_guard",
+          reason,
+          timestamp: Date.now(),
+        });
+        this.bus.publish({
+          type: "supervisor.proposal_rejected",
+          data: { proposalId: proposal.proposalId, reason, stage: "loop_guard" },
+          source: "supervisor-agent",
+          agentId: this.id,
+          correlationId: proposal.correlationId,
+        });
+        return { success: false, stage: "loop_guard", reason, proposal };
+      }
+    }
+
+    // 4. Loop Guard: recursion depth limit
+    const traceCheck = this.loopGuard.enterTrace(proposal.correlationId);
+    if (!traceCheck.allowed) {
+      const reason = traceCheck.reason!;
+      agentMemory.recordTrace({
+        traceId: proposal.proposalId,
+        correlationId: proposal.correlationId,
+        symbol: proposal.symbol,
+        proposal,
+        outcome: "rejected_by_guard",
+        reason,
+        timestamp: Date.now(),
+      });
+      this.bus.publish({
+        type: "supervisor.proposal_rejected",
+        data: { proposalId: proposal.proposalId, reason, stage: "loop_guard" },
+        source: "supervisor-agent",
+        agentId: this.id,
+        correlationId: proposal.correlationId,
+      });
+      return { success: false, stage: "loop_guard", reason, proposal };
+    }
+
+    try {
+      // 5. Emit proposal created event
+      this.bus.publish({
+        type: "supervisor.proposal_created",
+        data: { proposal, timestamp: Date.now() },
+        source: "supervisor-agent",
+        agentId: this.id,
+        correlationId: proposal.correlationId,
+      });
+
+      if (!this.executionPipeline) {
+        agentMemory.recordTrace({
+          traceId: proposal.proposalId,
+          correlationId: proposal.correlationId,
+          symbol: proposal.symbol,
+          proposal,
+          outcome: "held",
+          reason: "Execution pipeline not configured",
+          timestamp: Date.now(),
+        });
+        return {
+          success: true,
+          stage: "proposal_only",
+          reason: "Execution pipeline not configured",
+          proposal,
+        };
+      }
+
+      // 6. Route through execution pipeline
+      const pipelineSignal = {
+        id: proposal.proposalId,
+        symbol: proposal.symbol,
+        side: proposal.side,
+        quantity: proposal.quantity,
+        price: proposal.price,
+        type: proposal.entryParameters.orderType,
+        agentId: this.id,
+        strategy: proposal.strategy,
+        confidence: proposal.confidence,
+        timestamp: proposal.timestamp,
+        correlationId: proposal.correlationId,
+        proposal,
+      };
+
+      const pipelineResult = await this.executionPipeline.execute(pipelineSignal as Record<string, unknown>);
+      const isCompleted = pipelineResult.success && pipelineResult.stage === "completed";
+      const outcome = isCompleted ? "executed" : pipelineResult.stage === "risk" ? "rejected_by_risk" : "execution_failed";
+
+      // 7. Record sanitized trace in agent memory
+      agentMemory.recordTrace({
+        traceId: proposal.proposalId,
+        correlationId: proposal.correlationId,
+        symbol: proposal.symbol,
+        proposal,
+        riskDecision: pipelineResult.riskDecision,
+        executionResult: pipelineResult.order,
+        outcome,
+        reason: pipelineResult.reason,
+        timestamp: Date.now(),
+      });
+
+      // 8. Publish outcome event
+      this.bus.publish({
+        type: isCompleted ? "supervisor.proposal_executed" : "supervisor.proposal_rejected",
+        data: {
+          proposalId: proposal.proposalId,
+          stage: pipelineResult.stage,
+          reason: pipelineResult.reason,
+          order: pipelineResult.order,
+          riskDecision: pipelineResult.riskDecision,
+          timestamp: Date.now(),
+        },
+        source: "supervisor-agent",
+        agentId: this.id,
+        correlationId: proposal.correlationId,
+      });
+
+      return {
+        success: isCompleted,
+        stage: pipelineResult.stage,
+        reason: pipelineResult.reason,
+        proposal,
+        order: pipelineResult.order,
+        riskDecision: pipelineResult.riskDecision,
+        executionResult: pipelineResult,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.recordError(err);
+      agentMemory.recordTrace({
+        traceId: proposal.proposalId,
+        correlationId: proposal.correlationId,
+        symbol: proposal.symbol,
+        proposal,
+        outcome: "execution_failed",
+        reason: msg,
+        timestamp: Date.now(),
+      });
+      return { success: false, stage: "error", reason: msg, proposal };
+    } finally {
+      this.loopGuard.exitTrace(proposal.correlationId);
+      this.loopGuard.recordEvent(proposal.proposalId);
     }
   }
 
@@ -249,32 +567,41 @@ export class SupervisorAgent extends BaseAgent implements Agent {
 
       if (!step.toolId) {
         // Execution pipeline integration: route trade execution through
-        // Signal -> Risk -> Permission -> Paper with audit/observability.
-        // Keeps supervisor deterministic while enforcing reliability gates.
+        // structured proposal validation -> LoopGuard -> Risk Gate -> Paper broker
         if (step.agentId === "execution" && this.executionPipeline) {
           try {
-            const pipelineSignal = {
-              id: `${plan.id}:${step.id}`,
-              symbol: String((step.input as Record<string, unknown>).symbol ?? plan.symbol ?? "BTCUSDT"),
-              side: String((step.input as Record<string, unknown>).side ?? "buy") as "buy" | "sell",
-              quantity: Number((step.input as Record<string, unknown>).quantity ?? 0.05),
-              price: Number((step.input as Record<string, unknown>).price ?? 50000),
-              type: "market" as const,
-              agentId: "supervisor",
-              strategy: plan.kind,
-              confidence: 0.85,
-              timestamp: Date.now(),
-              correlationId: plan.id,
-            };
-            const pipelineResult = await this.executionPipeline.execute(pipelineSignal as Record<string, unknown>);
-            const isOk = pipelineResult.success && pipelineResult.stage === "completed";
+            const rawInput = step.input as Record<string, unknown>;
+            const proposalResult = await this.orchestrateTradeProposal(
+              {
+                proposalId: `${plan.id}:${step.id}`,
+                correlationId: plan.id,
+                symbol: String(rawInput.symbol ?? plan.symbol ?? "BTCUSDT"),
+                side: (rawInput.side === "sell" ? "sell" : "buy") as "buy" | "sell",
+                quantity: Number(rawInput.quantity ?? 0.05),
+                price: Number(rawInput.price ?? 50000),
+                strategy: plan.kind,
+                confidence: 0.85,
+                reasoning: step.description ?? `Execution of ${plan.task}`,
+                entryParameters: {
+                  targetEntryPrice: Number(rawInput.price ?? 50000),
+                  orderType: "market",
+                },
+                riskParameters: {
+                  maxSlippagePct: 0.01,
+                  positionLimitPct: 0.2,
+                },
+              },
+              { skipCooldown: true, correlationId: plan.id }
+            );
+
+            const isOk = proposalResult.success && proposalResult.stage === "completed";
             result = {
               stepId: step.id,
               agentId: step.agentId,
               input: step.input,
               status: isOk ? "completed" : "failed",
-              output: pipelineResult,
-              error: isOk ? undefined : pipelineResult.reason,
+              output: proposalResult.executionResult ?? proposalResult,
+              error: isOk ? undefined : proposalResult.reason,
               durationMs: Date.now() - stepStartedAt,
             };
             this.bus.publish({
@@ -284,9 +611,9 @@ export class SupervisorAgent extends BaseAgent implements Agent {
                 stepId: step.id,
                 agentId: step.agentId,
                 status: result.status,
-                output: pipelineResult,
-                pipelineStage: pipelineResult.stage,
-                reason: pipelineResult.reason,
+                output: result.output,
+                pipelineStage: proposalResult.stage,
+                reason: proposalResult.reason,
                 durationMs: result.durationMs,
                 timestamp: Date.now(),
               },

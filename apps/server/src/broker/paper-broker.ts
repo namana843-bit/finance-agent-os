@@ -916,6 +916,11 @@ export class PaperBroker {
     }
   }
 
+  getPosition(symbol: string): PaperPosition | undefined {
+    const p = this.positions.get(symbol);
+    return p ? { ...p } : undefined;
+  }
+
   getPortfolio(): PaperPortfolio {
     const positions = [...this.positions.values()].map((p) => ({ ...p }));
     const unrealizedPnl = positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);

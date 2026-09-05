@@ -17,7 +17,7 @@ import type { PaperBroker } from "../broker/paper-broker.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import type { OrderManager } from "../order-manager/order-manager.js";
 import { validateSignal, validateNotional } from "./validation.js";
-import { checkPermission, type PermissionInput } from "./permission.js";
+import { checkPermission, DEFAULT_PERMISSION, type PermissionInput } from "./permission.js";
 import { PipelineAuditLog } from "./audit.js";
 import type { PipelineSignal, PipelineConfig, PipelineResult, AuditEntry } from "./types.js";
 import { DEFAULT_PIPELINE_CONFIG, PIPELINE_EVENTS } from "./types.js";
@@ -25,7 +25,7 @@ import { DEFAULT_PIPELINE_CONFIG, PIPELINE_EVENTS } from "./types.js";
 export interface ExecutionPipelineDeps {
   bus: TypedEventBus;
   riskAgent: RiskAgent;
-  gateway: FinanceGateway;
+  gateway?: FinanceGateway;
   paperBroker: PaperBroker;
   orderManager?: OrderManager;
   auditLogger?: AuditLogger;
@@ -41,7 +41,7 @@ export class ExecutionPipeline {
   readonly id = "execution-pipeline";
   private bus: TypedEventBus;
   private riskAgent: RiskAgent;
-  private gateway: FinanceGateway;
+  private gateway?: FinanceGateway;
   private paperBroker: PaperBroker;
   private orderManager?: OrderManager;
   private auditLogger?: AuditLogger;
@@ -75,9 +75,9 @@ export class ExecutionPipeline {
     this.config.liveTradingEnabled = true;
   }
   disableLiveTrading(): void { this.config.liveTradingEnabled = false; }
-  setAgentPermissions(agentId: string, perms: Partial<PermissionInput>): void { this.gateway.setAgentPermissions(agentId, perms as unknown as Record<string, unknown>); }
-  getAgentPermissions(agentId: string): PermissionInput { return this.gateway.getAgentPermissions(agentId) as unknown as PermissionInput; }
-  resetDailyCounts(): void { this.dailyCounts.clear(); this.gateway.resetDailyCounts(); this.completedByCorrelation.clear(); this.inflight.clear(); }
+  setAgentPermissions(agentId: string, perms: Partial<PermissionInput>): void { this.gateway?.setAgentPermissions?.(agentId, perms as unknown as Record<string, unknown>); }
+  getAgentPermissions(agentId: string): PermissionInput { return (this.gateway?.getAgentPermissions?.(agentId) as unknown as PermissionInput) ?? DEFAULT_PERMISSION; }
+  resetDailyCounts(): void { this.dailyCounts.clear(); this.gateway?.resetDailyCounts?.(); this.completedByCorrelation.clear(); this.inflight.clear(); }
   setOrderManager(om: OrderManager): void { this.orderManager = om; }
 
   // Cancel/reject delegation to OrderManager with audit
@@ -204,7 +204,7 @@ export class ExecutionPipeline {
     }
 
     try {
-      const perms = this.gateway.getAgentPermissions(normalized.agentId) as unknown as PermissionInput;
+      const perms = this.getAgentPermissions(normalized.agentId);
       const daily = this.dailyCounts.get(normalized.agentId) ?? 0;
       const permResult = checkPermission(normalized, perms, daily);
       if (!permResult.allowed) {
@@ -257,9 +257,11 @@ export class ExecutionPipeline {
           mo && (managedOrder = mo);
           canonicalOrderId = (mo as { id: string }).id;
           this.orderIdempotency.set(idempotencyKey, canonicalOrderId);
-          // Move to PENDING -> SUBMITTED with ordering guarantee
-          this.orderManager.updateStatus(canonicalOrderId, "PENDING");
-          this.orderManager.updateStatus(canonicalOrderId, "SUBMITTED");
+          // Move to PENDING -> SUBMITTED with ordering guarantee if CREATED
+          if ((mo as { status: string }).status === "CREATED") {
+            this.orderManager.updateStatus(canonicalOrderId, "PENDING");
+            this.orderManager.updateStatus(canonicalOrderId, "SUBMITTED");
+          }
         }
       }
 
