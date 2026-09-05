@@ -21,11 +21,12 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @finance/shared build
       - run: pnpm --filter @finance/dashboard build
       - uses: actions/configure-pages@v4
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: apps/dashboard/out
+          path: apps/dashboard/dist
   deploy:
     needs: build
     runs-on: ubuntu-latest
