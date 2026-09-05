@@ -1,6 +1,7 @@
 // ============================================================================
 // Finance Agent OS — Paper Broker
-// Phase 14: Realistic paper trading simulation
+// Realistic paper trading simulation with limit orders, slippage, fees,
+// lifecycle events, and consistency.
 // ============================================================================
 
 import { v4 as uuidv4 } from "uuid";
@@ -20,11 +21,12 @@ export interface PaperOrder {
   type: "market" | "limit";
   quantity: number;
   price: number;
-  status: "pending" | "filled" | "cancelled" | "rejected";
+  status: "pending" | "submitted" | "filled" | "cancelled" | "rejected";
   createdAt: number;
   filledAt?: number;
   filledPrice?: number;
   fee?: number;
+  reason?: string;
 }
 
 export interface PaperPosition {
@@ -47,13 +49,13 @@ export interface PaperPortfolio {
 }
 
 export class PaperBroker {
-  private config: PaperBrokerConfig;
+  public config: PaperBrokerConfig;
+  public priceCache = new Map<string, number>();
   private cash: number;
   private positions = new Map<string, PaperPosition>();
-  private orders: PaperOrder[] = [];
-  private realizedPnl = 0;
+  private orders = new Map<string, PaperOrder>();
   private orderHistory: PaperOrder[] = [];
-  private priceCache = new Map<string, number>();
+  private realizedPnl = 0;
 
   constructor(private bus: TypedEventBus, config?: Partial<PaperBrokerConfig>) {
     this.config = {
@@ -65,60 +67,191 @@ export class PaperBroker {
     };
     this.cash = this.config.initialCash;
 
-    // Listen for market ticks to update prices
+    // Listen for market ticks to update prices and trigger pending limit orders
     bus.subscribeTo("market.tick", (event) => {
-      const tick = event.data as { symbol: string; price: number };
-      if (tick && tick.symbol) {
-        this.priceCache.set(tick.symbol.toUpperCase(), tick.price);
-        this.updatePositionPrices(tick.symbol.toUpperCase(), tick.price);
+      const tick = event.data as { symbol?: string; price?: number };
+      if (tick?.symbol && typeof tick.price === "number" && Number.isFinite(tick.price) && tick.price > 0) {
+        this.updatePrice(tick.symbol, tick.price);
       }
     });
   }
 
-  async createOrder(symbol: string, side: "buy" | "sell", quantity: number, type: "market" | "limit" = "market", price?: number): Promise<PaperOrder> {
-    const sym = symbol.toUpperCase();
-    const currentPrice = this.priceCache.get(sym) ?? price ?? 0;
+  /**
+   * Update market price for a symbol, recalculate position PnL,
+   * and process any pending limit orders.
+   */
+  updatePrice(symbol: string, price: number): void {
+    const sym = String(symbol ?? "").trim().toUpperCase();
+    if (!sym || typeof price !== "number" || !Number.isFinite(price) || price <= 0) return;
 
-    if (currentPrice <= 0) {
-      return this.rejectOrder(sym, side, quantity, "No price available");
+    this.priceCache.set(sym, price);
+    this.updatePositionPrices(sym, price);
+    this.matchLimitOrders(sym, price);
+  }
+
+  async createOrder(
+    symbol: string,
+    side: "buy" | "sell",
+    quantity: number,
+    type: "market" | "limit" = "market",
+    price?: number,
+  ): Promise<PaperOrder> {
+    const sym = String(symbol ?? "").trim().toUpperCase();
+
+    if (!sym) {
+      return this.rejectOrder("", side, quantity, type, "Invalid symbol");
     }
 
-    const orderPrice = type === "market" ? currentPrice : (price ?? currentPrice);
+    if (side !== "buy" && side !== "sell") {
+      return this.rejectOrder(sym, side, quantity, type, "Invalid side: must be 'buy' or 'sell'");
+    }
 
-    // Validate
+    if (typeof quantity !== "number" || !Number.isFinite(quantity) || quantity <= 0) {
+      return this.rejectOrder(sym, side, quantity, type, "Invalid quantity: must be a positive number");
+    }
+
+    if (type !== "market" && type !== "limit") {
+      return this.rejectOrder(sym, side, quantity, type, "Invalid order type: must be 'market' or 'limit'");
+    }
+
+    if (type === "market") {
+      const currentPrice = this.priceCache.get(sym) ?? price ?? 0;
+      if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+        return this.rejectOrder(sym, side, quantity, type, "No price available");
+      }
+
+      // Apply slippage for market orders
+      const slippageAmount = currentPrice * this.config.slippage;
+      const fillPrice = side === "buy" ? currentPrice + slippageAmount : currentPrice - slippageAmount;
+      const fee = fillPrice * quantity * this.config.fee;
+
+      // Validate cash/position before creating
+      if (side === "buy") {
+        const requiredCash = fillPrice * quantity + fee;
+        if (requiredCash > this.cash) {
+          return this.rejectOrder(
+            sym,
+            side,
+            quantity,
+            type,
+            `Insufficient cash: need ${requiredCash.toFixed(2)}, have ${this.cash.toFixed(2)}`,
+          );
+        }
+      } else {
+        const pos = this.positions.get(sym);
+        if (!pos || pos.quantity < quantity) {
+          return this.rejectOrder(
+            sym,
+            side,
+            quantity,
+            type,
+            `Insufficient position: need ${quantity}, have ${pos?.quantity ?? 0}`,
+          );
+        }
+      }
+
+      // Create order in 'pending' state
+      const order: PaperOrder = {
+        id: uuidv4(),
+        symbol: sym,
+        side,
+        type: "market",
+        quantity,
+        price: currentPrice,
+        status: "pending",
+        createdAt: Date.now(),
+      };
+
+      this.orders.set(order.id, order);
+      this.orderHistory.push(order);
+
+      // Emit order.created
+      this.bus.publish({
+        type: "order.created",
+        data: {
+          orderId: order.id,
+          symbol: sym,
+          side,
+          type,
+          quantity,
+          price: currentPrice,
+          timestamp: order.createdAt,
+        },
+        source: "paper-broker",
+        agentId: "execution",
+      });
+
+      // Simulate latency
+      if (this.config.latencyMs > 0) {
+        await new Promise((r) => setTimeout(r, this.config.latencyMs));
+      }
+
+      // Transition to 'submitted'
+      order.status = "submitted";
+      this.bus.publish({
+        type: "order.submitted",
+        data: {
+          orderId: order.id,
+          symbol: sym,
+          side,
+          quantity,
+          price: fillPrice,
+          timestamp: Date.now(),
+        },
+        source: "paper-broker",
+        agentId: "execution",
+      });
+
+      // Execute fill
+      this.fillMarketOrder(order, fillPrice, fee);
+      return order;
+    }
+
+    // Limit order
+    if (price === undefined || typeof price !== "number" || !Number.isFinite(price) || price <= 0) {
+      return this.rejectOrder(sym, side, quantity, type, "Invalid price for limit order: must be a positive number");
+    }
+
+    // Validate cash / position at creation time
     if (side === "buy") {
-      const requiredCash = orderPrice * quantity * (1 + this.config.fee);
+      const estimatedFee = price * quantity * this.config.fee;
+      const requiredCash = price * quantity + estimatedFee;
       if (requiredCash > this.cash) {
-        return this.rejectOrder(sym, side, quantity, `Insufficient cash: need ${requiredCash.toFixed(2)}, have ${this.cash.toFixed(2)}`);
+        return this.rejectOrder(
+          sym,
+          side,
+          quantity,
+          type,
+          `Insufficient cash: need ${requiredCash.toFixed(2)}, have ${this.cash.toFixed(2)}`,
+        );
       }
     } else {
       const pos = this.positions.get(sym);
       if (!pos || pos.quantity < quantity) {
-        return this.rejectOrder(sym, side, quantity, `Insufficient position: need ${quantity}, have ${pos?.quantity ?? 0}`);
+        return this.rejectOrder(
+          sym,
+          side,
+          quantity,
+          type,
+          `Insufficient position: need ${quantity}, have ${pos?.quantity ?? 0}`,
+        );
       }
     }
 
-    // Apply slippage for market orders
-    let fillPrice = orderPrice;
-    if (type === "market") {
-      const slippageAmount = orderPrice * this.config.slippage;
-      fillPrice = side === "buy" ? orderPrice + slippageAmount : orderPrice - slippageAmount;
-    }
-
-    // Create order
+    // Create limit order in 'pending' state
     const order: PaperOrder = {
       id: uuidv4(),
       symbol: sym,
       side,
-      type,
+      type: "limit",
       quantity,
-      price: orderPrice,
+      price,
       status: "pending",
       createdAt: Date.now(),
     };
 
-    this.orders.push(order);
-    this.orderHistory.push({ ...order });
+    this.orders.set(order.id, order);
+    this.orderHistory.push(order);
 
     // Emit order.created
     this.bus.publish({
@@ -129,7 +262,7 @@ export class PaperBroker {
         side,
         type,
         quantity,
-        price: orderPrice,
+        price,
         timestamp: order.createdAt,
       },
       source: "paper-broker",
@@ -141,7 +274,8 @@ export class PaperBroker {
       await new Promise((r) => setTimeout(r, this.config.latencyMs));
     }
 
-    // Emit order.submitted
+    // Transition to 'submitted'
+    order.status = "submitted";
     this.bus.publish({
       type: "order.submitted",
       data: {
@@ -149,34 +283,65 @@ export class PaperBroker {
         symbol: sym,
         side,
         quantity,
-        price: fillPrice,
+        price,
         timestamp: Date.now(),
       },
       source: "paper-broker",
       agentId: "execution",
     });
 
-    // Execute
+    // Limit orders do NOT fill immediately — they remain open until matching market tick
+    return order;
+  }
+
+  cancelOrder(orderId: string): PaperOrder | null {
+    const order = this.orders.get(orderId);
+    if (!order || (order.status !== "pending" && order.status !== "submitted")) {
+      return null;
+    }
+
+    order.status = "cancelled";
+
+    this.bus.publish({
+      type: "order.cancelled",
+      data: {
+        orderId: order.id,
+        symbol: order.symbol,
+        side: order.side,
+        quantity: order.quantity,
+        price: order.price,
+        timestamp: Date.now(),
+      },
+      source: "paper-broker",
+      agentId: "execution",
+    });
+
+    return order;
+  }
+
+  private fillMarketOrder(order: PaperOrder, fillPrice: number, fee: number): void {
     order.status = "filled";
     order.filledAt = Date.now();
     order.filledPrice = fillPrice;
-    order.fee = fillPrice * quantity * this.config.fee;
+    order.fee = fee;
 
-    if (side === "buy") {
-      const cost = fillPrice * quantity + order.fee;
+    if (order.side === "buy") {
+      const cost = fillPrice * order.quantity + fee;
       this.cash -= cost;
 
-      const existing = this.positions.get(sym);
+      const existing = this.positions.get(order.symbol);
       if (existing) {
-        const totalQty = existing.quantity + quantity;
-        const avgPrice = (existing.entryPrice * existing.quantity + fillPrice * quantity) / totalQty;
+        const totalQty = existing.quantity + order.quantity;
+        const avgPrice = (existing.entryPrice * existing.quantity + fillPrice * order.quantity) / totalQty;
         existing.quantity = totalQty;
         existing.entryPrice = avgPrice;
+        existing.currentPrice = fillPrice;
+        existing.unrealizedPnl = (fillPrice - avgPrice) * totalQty;
       } else {
-        this.positions.set(sym, {
-          symbol: sym,
+        this.positions.set(order.symbol, {
+          symbol: order.symbol,
           side: "long",
-          quantity,
+          quantity: order.quantity,
           entryPrice: fillPrice,
           currentPrice: fillPrice,
           unrealizedPnl: 0,
@@ -184,52 +349,183 @@ export class PaperBroker {
         });
       }
     } else {
-      const pos = this.positions.get(sym)!;
-      const realized = (fillPrice - pos.entryPrice) * quantity;
+      const pos = this.positions.get(order.symbol)!;
+      const realized = (fillPrice - pos.entryPrice) * order.quantity;
       this.realizedPnl += realized;
-      this.cash += fillPrice * quantity - order.fee;
+      this.cash += fillPrice * order.quantity - fee;
 
-      pos.quantity -= quantity;
+      pos.quantity -= order.quantity;
       if (pos.quantity <= 0.0000001) {
-        this.positions.delete(sym);
+        this.positions.delete(order.symbol);
+      } else {
+        pos.unrealizedPnl = (fillPrice - pos.entryPrice) * pos.quantity;
       }
     }
 
-    // Publish events
     this.bus.publish({
       type: "order.filled",
       data: {
         orderId: order.id,
-        symbol: sym,
-        side,
-        quantity,
+        symbol: order.symbol,
+        side: order.side,
+        quantity: order.quantity,
         price: fillPrice,
-        fee: order.fee,
+        fee,
         timestamp: order.filledAt,
       },
       source: "paper-broker",
       agentId: "execution",
     });
-
-    return order;
   }
 
-  private rejectOrder(symbol: string, side: "buy" | "sell", quantity: number, reason: string): PaperOrder {
+  private matchLimitOrders(symbol: string, currentPrice: number): void {
+    for (const order of this.orders.values()) {
+      if (order.symbol !== symbol) continue;
+      if (order.status !== "submitted" && order.status !== "pending") continue;
+      if (order.type !== "limit") continue;
+
+      if (order.side === "buy" && currentPrice <= order.price) {
+        const fillPrice = order.price;
+        const fee = fillPrice * order.quantity * this.config.fee;
+        const cost = fillPrice * order.quantity + fee;
+
+        if (this.cash < cost) {
+          order.status = "rejected";
+          order.reason = `Insufficient cash at fill time: need ${cost.toFixed(2)}, have ${this.cash.toFixed(2)}`;
+          this.bus.publish({
+            type: "order.rejected",
+            data: {
+              orderId: order.id,
+              symbol: order.symbol,
+              side: order.side,
+              reason: order.reason,
+              timestamp: Date.now(),
+            },
+            source: "paper-broker",
+            agentId: "execution",
+          });
+          continue;
+        }
+
+        this.cash -= cost;
+        const existing = this.positions.get(symbol);
+        if (existing) {
+          const totalQty = existing.quantity + order.quantity;
+          const avgPrice = (existing.entryPrice * existing.quantity + fillPrice * order.quantity) / totalQty;
+          existing.quantity = totalQty;
+          existing.entryPrice = avgPrice;
+          existing.currentPrice = currentPrice;
+          existing.unrealizedPnl = (currentPrice - avgPrice) * totalQty;
+        } else {
+          this.positions.set(symbol, {
+            symbol,
+            side: "long",
+            quantity: order.quantity,
+            entryPrice: fillPrice,
+            currentPrice,
+            unrealizedPnl: (currentPrice - fillPrice) * order.quantity,
+            openedAt: Date.now(),
+          });
+        }
+
+        order.status = "filled";
+        order.filledAt = Date.now();
+        order.filledPrice = fillPrice;
+        order.fee = fee;
+
+        this.bus.publish({
+          type: "order.filled",
+          data: {
+            orderId: order.id,
+            symbol: order.symbol,
+            side: order.side,
+            quantity: order.quantity,
+            price: fillPrice,
+            fee,
+            timestamp: order.filledAt,
+          },
+          source: "paper-broker",
+          agentId: "execution",
+        });
+      } else if (order.side === "sell" && currentPrice >= order.price) {
+        const pos = this.positions.get(symbol);
+        if (!pos || pos.quantity < order.quantity) {
+          order.status = "rejected";
+          order.reason = `Insufficient position at fill time: need ${order.quantity}, have ${pos?.quantity ?? 0}`;
+          this.bus.publish({
+            type: "order.rejected",
+            data: {
+              orderId: order.id,
+              symbol: order.symbol,
+              side: order.side,
+              reason: order.reason,
+              timestamp: Date.now(),
+            },
+            source: "paper-broker",
+            agentId: "execution",
+          });
+          continue;
+        }
+
+        const fillPrice = order.price;
+        const fee = fillPrice * order.quantity * this.config.fee;
+        const realized = (fillPrice - pos.entryPrice) * order.quantity;
+        this.realizedPnl += realized;
+        this.cash += fillPrice * order.quantity - fee;
+
+        pos.quantity -= order.quantity;
+        if (pos.quantity <= 0.0000001) {
+          this.positions.delete(symbol);
+        } else {
+          pos.unrealizedPnl = (currentPrice - pos.entryPrice) * pos.quantity;
+        }
+
+        order.status = "filled";
+        order.filledAt = Date.now();
+        order.filledPrice = fillPrice;
+        order.fee = fee;
+
+        this.bus.publish({
+          type: "order.filled",
+          data: {
+            orderId: order.id,
+            symbol: order.symbol,
+            side: order.side,
+            quantity: order.quantity,
+            price: fillPrice,
+            fee,
+            timestamp: order.filledAt,
+          },
+          source: "paper-broker",
+          agentId: "execution",
+        });
+      }
+    }
+  }
+
+  private rejectOrder(
+    symbol: string,
+    side: "buy" | "sell",
+    quantity: number,
+    type: "market" | "limit" = "market",
+    reason: string,
+  ): PaperOrder {
     const order: PaperOrder = {
       id: uuidv4(),
       symbol,
-      side,
-      type: "market",
-      quantity,
+      side: side === "buy" || side === "sell" ? side : "buy",
+      type: type === "market" || type === "limit" ? type : "market",
+      quantity: typeof quantity === "number" && Number.isFinite(quantity) && quantity > 0 ? quantity : 0,
       price: 0,
       status: "rejected",
+      reason,
       createdAt: Date.now(),
     };
-    this.orderHistory.push({ ...order });
+    this.orderHistory.push(order);
 
     this.bus.publish({
       type: "order.rejected",
-      data: { orderId: order.id, symbol, side, reason, timestamp: Date.now() },
+      data: { orderId: order.id, symbol, side: order.side, reason, timestamp: Date.now() },
       source: "paper-broker",
       agentId: "execution",
     });
@@ -237,7 +533,7 @@ export class PaperBroker {
     return order;
   }
 
-  private updatePositionPrices(symbol: string, price: number): void {
+  updatePositionPrices(symbol: string, price: number): void {
     const pos = this.positions.get(symbol);
     if (pos) {
       pos.currentPrice = price;
@@ -246,7 +542,7 @@ export class PaperBroker {
   }
 
   getPortfolio(): PaperPortfolio {
-    const positions = [...this.positions.values()];
+    const positions = [...this.positions.values()].map((p) => ({ ...p }));
     const unrealizedPnl = positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
     const positionValue = positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
 
@@ -261,10 +557,13 @@ export class PaperBroker {
   }
 
   getOrderHistory(): PaperOrder[] {
-    return [...this.orderHistory];
+    return this.orderHistory.map((o) => ({ ...o }));
   }
 
   getOpenOrders(): PaperOrder[] {
-    return this.orders.filter((o) => o.status === "pending");
+    return Array.from(this.orders.values())
+      .filter((o) => o.status === "pending" || o.status === "submitted")
+      .map((o) => ({ ...o }));
   }
 }
+

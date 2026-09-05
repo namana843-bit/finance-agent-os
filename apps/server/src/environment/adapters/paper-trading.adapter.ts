@@ -39,15 +39,10 @@ export class PaperTradingAdapter implements PaperTradingPort, PortfolioPort {
   }
 
   async cancelOrder(_orderId: string): Promise<{ orderId: string; status: string }> {
-    // PaperBroker currently auto-fills; cancellation is a no-op but we expose it for API parity.
-    // In future, this will interact with order-manager. For now, return cancelled if order exists.
     const id = String(_orderId ?? "").trim();
     if (!id) throw new Error("orderId is required");
-    // Check open orders
-    const open = this.broker.getOpenOrders();
-    const found = open.find((o) => o.id === id);
-    if (found) {
-      // No real cancellation in current PaperBroker — simulate
+    const cancelled = this.broker.cancelOrder(id);
+    if (cancelled) {
       return { orderId: id, status: "cancelled" };
     }
     return { orderId: id, status: "not_found" };
@@ -114,13 +109,8 @@ export class PaperTradingAdapter implements PaperTradingPort, PortfolioPort {
     return this.broker;
   }
 
-  /** Direct price seeding for tests (paper broker uses priceCache) */
+  /** Direct price seeding for tests (paper broker uses priceCache and updates limits) */
   seedPrice(symbol: string, price: number): void {
-    // Publish a synthetic tick so PaperBroker's priceCache updates
-    // Use the broker's bus if available; fallback to direct map manipulation
-    const anyBroker = this.broker as unknown as { priceCache: Map<string, number> };
-    if (anyBroker.priceCache) {
-      anyBroker.priceCache.set(symbol.toUpperCase(), price);
-    }
+    this.broker.updatePrice(symbol, price);
   }
 }
