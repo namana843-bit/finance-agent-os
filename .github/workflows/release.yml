@@ -37,6 +37,8 @@ jobs:
 
       - name: Build & Package Desktop Executable
         run: pnpm --filter @finance/dashboard electron:build
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
       - name: Upload Binaries to GitHub Release
         uses: softprops/action-gh-release@v2
