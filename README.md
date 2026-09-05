@@ -3,7 +3,7 @@
 [![CI](https://github.com/namana843-bit/finance-agent-os/actions/workflows/ci.yml/badge.svg)](https://github.com/namana843-bit/finance-agent-os/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e.svg)](LICENSE)
 
-An event-driven autonomous financial operating system powered by specialized, collaborating trading agents (`AlphaQuant` → `RiskSentinel` → `ExecRouter` → `MarketIntel` → `PortfolioLead`) communicating over a high-throughput **`TypedEventBus`** with `FinanceGateway` and institutional paper/live risk controls.
+An OpenBot-style event-driven trading platform powered by specialized multi-agents (`Supervisor` → `Market` → `Quant` → `Risk` → `Portfolio` → `Execution`) with SSE Event API and Electron/React Desktop Dashboard.
 
 ---
 
