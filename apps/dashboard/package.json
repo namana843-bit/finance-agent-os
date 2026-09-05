@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "electron:dev": "electron electron/main.cjs",
     "electron:start": "electron electron/main.cjs",
-    "electron:build": "pnpm --filter @finance/shared build && tsc && vite build && electron-builder --config electron-builder.json"
+    "electron:build": "tsc && vite build && electron-builder --config electron-builder.json"
   },
   "dependencies": {
     "clsx": "^2.1.1",

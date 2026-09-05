@@ -31,12 +31,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build Core & Shared Packages
-        run: |
-          pnpm --filter @finance/shared build
-          pnpm --filter @finance/core build
+        run: pnpm -r build
 
       - name: Build & Package Desktop Executable
-        run: pnpm --filter @finance/dashboard electron:build
+        working-directory: apps/dashboard
+        run: pnpm run electron:build
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
