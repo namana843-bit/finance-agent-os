@@ -192,6 +192,7 @@ export interface RiskDecision {
   requestedQuantity: number;
   approvedQuantity: number;
   riskMetrics: RiskMetrics;
+  ticket?: unknown;
   timestamp: number;
   correlationId: string;
 }

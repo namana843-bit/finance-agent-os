@@ -8,8 +8,10 @@ import {
   calculateVaR,
   calculateSharpe,
 } from "./metrics.js";
+import { issueRiskTicket, type RiskApprovalTicket } from "../../risk-engine/ticket.js";
 
-export { calculateExposure, calculateDrawdown, calculateVaR, calculateSharpe };
+export { calculateExposure, calculateDrawdown, calculateVaR, calculateSharpe, issueRiskTicket };
+export type { RiskApprovalTicket };
 
 export interface RiskSignal {
   id?: string;
@@ -22,6 +24,10 @@ export interface RiskSignal {
   indicators?: unknown;
   qty?: number;
   quantity?: number;
+  stopLoss?: number;
+  correlationId?: string;
+  agentId?: string;
+  strategy?: string;
 }
 
 export interface RiskConfig {
@@ -31,6 +37,11 @@ export interface RiskConfig {
   maxLeverage: number;
   maxOpenPositions: number;
   confidenceThreshold: number;
+  maxPositionSize?: number;
+  staleThresholdMs?: number;
+  allowedSymbols?: string[];
+  blockedSymbols?: string[];
+  requireStopLoss?: boolean;
 }
 
 export interface Position {
@@ -54,6 +65,9 @@ export interface RiskChecks {
   concentration: boolean;
   confidence: boolean;
   var: boolean;
+  validity?: boolean;
+  freshness?: boolean;
+  restrictions?: boolean;
 }
 
 export interface RiskDecision {
@@ -61,6 +75,7 @@ export interface RiskDecision {
   signal: RiskSignal;
   reason: string;
   checks: RiskChecks;
+  ticket?: RiskApprovalTicket;
   metrics?: {
     exposure: number;
     drawdown: number;
@@ -170,10 +185,50 @@ export class RiskAgent extends BaseAgent implements Agent {
       concentration: true,
       confidence: true,
       var: true,
+      validity: true,
+      freshness: true,
+      restrictions: true,
     };
 
     const reasons: string[] = [];
+    const isBuy = normalized.action === "buy" || (normalized as unknown as { side?: string }).side === "buy";
+    const qty = normalized.qty ?? normalized.quantity ?? 1;
 
+    // 0. Validity check (quantity and price)
+    if (!Number.isFinite(qty) || qty <= 0 || Number.isNaN(qty)) {
+      checks.validity = false;
+      reasons.push(`Invalid quantity: ${qty}`);
+    }
+    if (!Number.isFinite(normalized.price) || normalized.price <= 0 || Number.isNaN(normalized.price)) {
+      checks.validity = false;
+      reasons.push(`Invalid price: ${normalized.price}`);
+    }
+
+    // 1. Freshness / Stale data check
+    const sigTime = normalized.timestamp;
+    const staleLimit = this.config.staleThresholdMs ?? 30_000;
+    if (sigTime && Date.now() - sigTime > staleLimit) {
+      checks.freshness = false;
+      reasons.push(`Stale market data: age ${Date.now() - sigTime}ms exceeds limit ${staleLimit}ms`);
+    }
+
+    // 2. Symbol restrictions check
+    if (this.config.blockedSymbols?.some(s => s.toUpperCase() === sym)) {
+      checks.restrictions = false;
+      reasons.push(`Symbol ${sym} is restricted/blacklisted`);
+    }
+    if (this.config.allowedSymbols && this.config.allowedSymbols.length > 0 && !this.config.allowedSymbols.some(s => s.toUpperCase() === sym)) {
+      checks.restrictions = false;
+      reasons.push(`Symbol ${sym} is not in allowed symbols list`);
+    }
+
+    // 3. Stop-loss requirement
+    if (this.config.requireStopLoss && (!normalized.stopLoss || normalized.stopLoss <= 0)) {
+      checks.restrictions = false;
+      reasons.push(`Mandatory stop-loss missing for trade on ${sym}`);
+    }
+
+    // 4. Confidence threshold
     const conf = typeof normalized.confidence === "number" ? normalized.confidence : 0;
     if (conf < this.config.confidenceThreshold) {
       checks.confidence = false;
@@ -199,12 +254,22 @@ export class RiskAgent extends BaseAgent implements Agent {
     const existingPos = this.portfolio.positions.get(sym);
     const existingValue = existingPos ? this.estimatePositionValue(existingPos) : 0;
     const concentrationCurrent = totalValue > 0 ? (existingValue / totalValue) * 100 : 0;
-    const isBuy = normalized.action === "buy" || (normalized as unknown as { side?: string }).side === "buy";
-    let projectedValue = existingValue;
-    if (isBuy) {
-      const qty = normalized.qty ?? normalized.quantity ?? 1;
-      const notional = Number.isFinite(qty) ? normalized.price * qty : normalized.price;
-      projectedValue = existingValue + notional;
+    const notional = Number.isFinite(qty) && Number.isFinite(normalized.price) ? normalized.price * qty : 0;
+    const projectedValue = isBuy ? existingValue + notional : existingValue;
+
+    // Margin / Cash check
+    if (isBuy && notional > this.portfolio.cash) {
+      checks.exposure = false;
+      reasons.push(`Insufficient cash/margin: required ${notional.toFixed(2)} > cash ${this.portfolio.cash.toFixed(2)}`);
+    }
+
+    // Max position size (quantity) check
+    if (isBuy && this.config.maxPositionSize) {
+      const currentQty = existingPos ? existingPos.qty : 0;
+      if (currentQty + qty > this.config.maxPositionSize) {
+        checks.concentration = false;
+        reasons.push(`Projected position size ${currentQty + qty} > maxPositionSize ${this.config.maxPositionSize}`);
+      }
     }
 
     const concentrationProjected = totalValue > 0 ? (projectedValue / totalValue) * 100 : 0;
@@ -241,22 +306,57 @@ export class RiskAgent extends BaseAgent implements Agent {
     const approved = Object.values(checks).every(Boolean);
     const reason = approved ? "All risk checks passed" : `Rejected: ${reasons.join("; ")}`;
 
+    const decisionId = generateDecisionId();
+    const sigCorrelation = normalized.correlationId;
+    const sigId = normalized.id;
+
+    let ticket: RiskApprovalTicket | undefined = undefined;
+    if (approved) {
+      ticket = issueRiskTicket({
+        correlationId: sigCorrelation ?? sigId ?? decisionId,
+        riskDecisionId: decisionId,
+        symbol: sym,
+        side: isBuy ? "buy" : "sell",
+        maxQuantity: qty,
+        maxPrice: normalized.price,
+        agentId: normalized.agentId ?? "risk",
+        strategy: normalized.strategy,
+      });
+    }
+
     const decision: RiskDecision = {
       approved,
       signal: normalized,
       reason,
       checks,
+      ticket,
       metrics: { exposure, drawdown, var: varValue },
     };
 
     const eventType = approved ? "risk.approved" : "risk.rejected";
-    const sigCorrelation = (normalized as unknown as { correlationId?: string }).correlationId;
-    const sigId = (normalized as unknown as { id?: string }).id;
     this.bus.publish({
       type: eventType,
       data: {
         ...decision,
-        id: generateDecisionId(),
+        id: decisionId,
+        ticket,
+        correlationId: sigCorrelation ?? sigId,
+        timestamp: Date.now(),
+      },
+      source: "risk-agent",
+      agentId: "risk",
+      correlationId: sigCorrelation ?? sigId,
+    });
+
+    // Also publish audit event
+    this.bus.publish({
+      type: approved ? "audit.risk_approved" : "audit.risk_rejected",
+      data: {
+        decisionId,
+        approved,
+        reason,
+        symbol: sym,
+        ticketId: ticket?.ticketId,
         correlationId: sigCorrelation ?? sigId,
         timestamp: Date.now(),
       },

@@ -174,16 +174,27 @@ export class ExecutionPipeline {
       const decision = this.riskAgent.evaluate(riskSignal as never) as RiskDecision;
       riskDecision = decision as unknown as RiskDecision;
       const approved = (decision as unknown as { approved: boolean }).approved;
-      if (this.config.requireRiskApproval && !approved) {
-        const reason = (decision as unknown as { reason: string }).reason ?? "Risk engine rejected";
-        pushAudit("risk", PIPELINE_EVENTS.RISK_REJECTED, false, reason, { riskDecision: decision });
-        this.bus.publish({ type: PIPELINE_EVENTS.RISK_REJECTED, data: { signalId, correlationId, reason, riskDecision: decision, timestamp: Date.now() }, source: "execution-pipeline", correlationId });
-        const r = this.result(false, "risk", reason, correlationId, signalId, auditIds, started, riskDecision);
-        this.bus.publish({ type: PIPELINE_EVENTS.REJECTED, data: { ...r }, source: "execution-pipeline", correlationId });
-        return r;
+      const ticket = (decision as unknown as { ticket?: unknown })?.ticket;
+      if (this.config.requireRiskApproval) {
+        if (!approved) {
+          const reason = (decision as unknown as { reason: string }).reason ?? "Risk engine rejected";
+          pushAudit("risk", PIPELINE_EVENTS.RISK_REJECTED, false, reason, { riskDecision: decision });
+          this.bus.publish({ type: PIPELINE_EVENTS.RISK_REJECTED, data: { signalId, correlationId, reason, riskDecision: decision, timestamp: Date.now() }, source: "execution-pipeline", correlationId });
+          const r = this.result(false, "risk", reason, correlationId, signalId, auditIds, started, riskDecision);
+          this.bus.publish({ type: PIPELINE_EVENTS.REJECTED, data: { ...r }, source: "execution-pipeline", correlationId });
+          return r;
+        }
+        if (!ticket) {
+          const reason = "Risk engine approved but failed to issue a valid RiskApprovalTicket";
+          pushAudit("risk", PIPELINE_EVENTS.RISK_REJECTED, false, reason, { riskDecision: decision });
+          this.bus.publish({ type: PIPELINE_EVENTS.RISK_REJECTED, data: { signalId, correlationId, reason, riskDecision: decision, timestamp: Date.now() }, source: "execution-pipeline", correlationId });
+          const r = this.result(false, "risk", reason, correlationId, signalId, auditIds, started, riskDecision);
+          this.bus.publish({ type: PIPELINE_EVENTS.REJECTED, data: { ...r }, source: "execution-pipeline", correlationId });
+          return r;
+        }
       }
-      pushAudit("risk", PIPELINE_EVENTS.RISK_CHECKED, true, (decision as unknown as { reason: string }).reason ?? "risk approved", { riskDecision: decision });
-      this.bus.publish({ type: PIPELINE_EVENTS.RISK_CHECKED, data: { signalId, correlationId, riskDecision: decision, timestamp: Date.now() }, source: "execution-pipeline", correlationId });
+      pushAudit("risk", PIPELINE_EVENTS.RISK_CHECKED, true, (decision as unknown as { reason: string }).reason ?? "risk approved", { riskDecision: decision, ticket });
+      this.bus.publish({ type: PIPELINE_EVENTS.RISK_CHECKED, data: { signalId, correlationId, riskDecision: decision, ticket, timestamp: Date.now() }, source: "execution-pipeline", correlationId });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       pushAudit("risk", PIPELINE_EVENTS.RISK_REJECTED, false, `risk error: ${reason}`, {});
@@ -258,7 +269,12 @@ export class ExecutionPipeline {
         normalized.quantity,
         normalized.type ?? "market",
         normalized.price,
-        { clientOrderId: signalId, correlationId, idempotencyKey: signalId },
+        {
+          clientOrderId: signalId,
+          correlationId,
+          idempotencyKey: signalId,
+          riskApprovalTicket: (riskDecision as unknown as { ticket?: unknown })?.ticket as any,
+        },
       );
       if (order.status === "rejected") {
         if (this.orderManager && canonicalOrderId) this.orderManager.rejectOrder(canonicalOrderId, order.reason ?? "broker rejected");

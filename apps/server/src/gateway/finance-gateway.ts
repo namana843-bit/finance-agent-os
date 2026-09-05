@@ -7,6 +7,7 @@
 import { v4 as uuidv4 } from "uuid";
 import type { TypedEventBus } from "@finance/core";
 import type { FinanceEvent } from "@finance/shared";
+import { issueRiskTicket, type RiskApprovalTicket } from "../risk-engine/ticket.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -19,6 +20,7 @@ export interface GatewayConfig {
   liveTradingEnabled: boolean;
   maxPendingRequests: number;
   requestTimeoutMs: number;
+  requireRiskTicket?: boolean;
 }
 
 export interface TradeRequest {
@@ -33,6 +35,7 @@ export interface TradeRequest {
   strategy?: string;
   agentId: string;
   correlationId?: string;
+  ticket?: RiskApprovalTicket;
 }
 
 export interface GatewayDecision {
@@ -44,6 +47,7 @@ export interface GatewayDecision {
   executionMode: ExecutionMode;
   timestamp: number;
   correlationId: string;
+  ticket?: RiskApprovalTicket;
 }
 
 export interface GatewayStats {
@@ -211,12 +215,29 @@ export class FinanceGateway {
         this.pendingRequests.delete(requestId);
       };
 
-      const onDecision = (approved: boolean) => {
+      const onDecision = (approved: boolean, ticket?: RiskApprovalTicket) => {
         cleanup();
 
         if (!approved) {
           this.rejectedRequests++;
-          resolve(this.makeDecision(requestId, false, approved ? "All checks passed" : "Risk engine rejected", approved, false, correlationId));
+          resolve(this.makeDecision(requestId, false, "Risk engine rejected", false, false, correlationId));
+          return;
+        }
+
+        const riskTicket = ticket ?? (this.config.requireRiskTicket ? undefined : issueRiskTicket({
+          correlationId,
+          riskDecisionId: `gw-${requestId}`,
+          symbol: request.symbol,
+          side: request.side,
+          maxQuantity: request.quantity,
+          maxPrice: request.price,
+          agentId: request.agentId,
+          strategy: request.strategy,
+        }));
+
+        if (!riskTicket && this.config.requireRiskTicket) {
+          this.rejectedRequests++;
+          resolve(this.makeDecision(requestId, false, "Risk approval rejected: missing verified risk approval ticket", false, false, correlationId));
           return;
         }
 
@@ -224,7 +245,7 @@ export class FinanceGateway {
         const portfolioOk = this.checkPortfolioConstraints(request);
         if (!portfolioOk) {
           this.rejectedRequests++;
-          resolve(this.makeDecision(requestId, false, "Portfolio constraints violated", true, false, correlationId));
+          resolve(this.makeDecision(requestId, false, "Portfolio constraints violated", true, false, correlationId, riskTicket));
           return;
         }
 
@@ -234,16 +255,16 @@ export class FinanceGateway {
           (this.agentDailyOrders.get(request.agentId) ?? 0) + 1,
         );
 
-        const decision = this.makeDecision(requestId, true, "All gateway checks passed", true, true, correlationId);
+        const decision = this.makeDecision(requestId, true, "All gateway checks passed", true, true, correlationId, riskTicket);
         this.requestHistory.push(decision);
         if (this.requestHistory.length > 2000) {
           this.requestHistory.splice(0, this.requestHistory.length - 2000);
         }
 
-        // Emit approval and forward as order.created — with proper ids and correlation for canonical lifecycle
+        // Emit approval and forward as order.created — with proper ids, correlation, and ticket for canonical lifecycle
         this.bus.publish({
           type: "gateway.approved",
-          data: { ...decision, request },
+          data: { ...decision, request, ticket },
           source: "finance-gateway",
           correlationId,
         });
@@ -263,6 +284,7 @@ export class FinanceGateway {
             strategy: request.strategy,
             agent: request.agentId,
             executionMode: this.config.executionMode,
+            ticket,
             timestamp: Date.now(),
           },
           source: "finance-gateway",
@@ -274,9 +296,9 @@ export class FinanceGateway {
       };
 
       const unsubApprove = this.bus.subscribeTo("risk.approved", (event: FinanceEvent) => {
-        const data = event.data as { correlationId?: string; id?: string };
+        const data = event.data as { correlationId?: string; id?: string; ticket?: RiskApprovalTicket };
         if (data?.correlationId === correlationId || data?.id === requestId) {
-          onDecision(true);
+          onDecision(true, data?.ticket);
         }
       });
 
@@ -414,6 +436,7 @@ export class FinanceGateway {
     riskApproved: boolean,
     portfolioApproved: boolean,
     correlationId: string,
+    ticket?: RiskApprovalTicket,
   ): GatewayDecision {
     const decision: GatewayDecision = {
       requestId,
@@ -424,11 +447,8 @@ export class FinanceGateway {
       executionMode: this.config.executionMode,
       timestamp: Date.now(),
       correlationId,
+      ticket,
     };
-    this.requestHistory.push(decision);
-    if (this.requestHistory.length > 2000) {
-      this.requestHistory.splice(0, this.requestHistory.length - 2000);
-    }
     return decision;
   }
 

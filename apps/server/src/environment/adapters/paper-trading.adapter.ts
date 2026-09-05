@@ -35,7 +35,10 @@ export class PaperTradingAdapter implements PaperTradingPort, PortfolioPort {
     if (type === "limit" && (params.price === undefined || !Number.isFinite(Number(params.price)))) {
       throw new Error("price is required for limit orders");
     }
-    return this.broker.createOrder(symbol, side, quantity, type, params.price);
+    return this.broker.createOrder(symbol, side, quantity, type, params.price, {
+      riskApprovalTicket: (params as unknown as { riskApprovalTicket?: import("../../broker/paper-broker.js").RiskApprovalTicket }).riskApprovalTicket,
+      bypassRiskGate: (params as unknown as { bypassRiskGate?: boolean }).bypassRiskGate,
+    });
   }
 
   async cancelOrder(_orderId: string): Promise<{ orderId: string; status: string }> {

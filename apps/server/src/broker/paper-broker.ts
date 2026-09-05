@@ -7,6 +7,9 @@
 
 import { v4 as uuidv4 } from "uuid";
 import type { TypedEventBus } from "@finance/core";
+import { verifyRiskTicket, markTicketRedeemed, type RiskApprovalTicket } from "../risk-engine/ticket.js";
+
+export type { RiskApprovalTicket };
 
 export interface PaperBrokerConfig {
   initialCash: number;
@@ -14,6 +17,7 @@ export interface PaperBrokerConfig {
   fee: number;
   latencyMs: number;
   allowShort: boolean;
+  requireRiskApproval?: boolean;
 }
 
 export interface PaperOrder {
@@ -109,7 +113,13 @@ export class PaperBroker {
     quantity: number,
     type: "market" | "limit" = "market",
     price?: number,
-    opts?: { clientOrderId?: string; correlationId?: string; idempotencyKey?: string },
+    opts?: {
+      clientOrderId?: string;
+      correlationId?: string;
+      idempotencyKey?: string;
+      riskApprovalTicket?: RiskApprovalTicket;
+      bypassRiskGate?: boolean;
+    },
   ): Promise<PaperOrder> {
     const sym = String(symbol ?? "").trim().toUpperCase();
     // Idempotent duplicate protection by clientOrderId / idempotencyKey
@@ -137,6 +147,60 @@ export class PaperBroker {
 
     if (type !== "market" && type !== "limit") {
       return this.rejectOrder(sym, side, quantity, type, "Invalid order type: must be 'market' or 'limit'");
+    }
+
+    // Phase 4: Strict Risk Gate enforcement at broker boundary
+    if (this.config.requireRiskApproval && !opts?.bypassRiskGate) {
+      const ticket = opts?.riskApprovalTicket;
+      if (!ticket) {
+        this.bus.publish({
+          type: "audit.risk_bypass_attempt",
+          data: {
+            symbol: sym,
+            side,
+            quantity,
+            price,
+            reason: "Order attempted without mandatory RiskApprovalTicket",
+            correlationId: opts?.correlationId,
+            timestamp: Date.now(),
+          },
+          source: "paper-broker",
+          agentId: "broker",
+          correlationId: opts?.correlationId,
+        });
+        return this.rejectOrder(sym, side, quantity, type, "Risk approval missing: direct execution blocked by Risk Gate");
+      }
+
+      const verification = verifyRiskTicket(ticket, {
+        symbol: sym,
+        side,
+        quantity,
+        price,
+        correlationId: opts?.correlationId,
+      });
+
+      if (!verification.valid) {
+        this.bus.publish({
+          type: "audit.risk_bypass_attempt",
+          data: {
+            symbol: sym,
+            side,
+            quantity,
+            price,
+            ticketId: ticket.ticketId,
+            reason: verification.reason,
+            correlationId: opts?.correlationId,
+            timestamp: Date.now(),
+          },
+          source: "paper-broker",
+          agentId: "broker",
+          correlationId: opts?.correlationId,
+        });
+        return this.rejectOrder(sym, side, quantity, type, `Risk approval invalid: ${verification.reason}`);
+      }
+
+      // Mark redeemed to prevent ticket replay attacks
+      markTicketRedeemed(ticket.ticketId, ticket.expiresAt);
     }
 
     const pos = this.positions.get(sym);

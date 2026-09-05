@@ -179,7 +179,7 @@ class PaperBrokerService implements ServiceLifecycle {
   };
 
   constructor(bus: import("@finance/core").TypedEventBus) {
-    this.broker = new PaperBroker(bus);
+    this.broker = new PaperBroker(bus, { requireRiskApproval: true });
   }
 
   async initialize(): Promise<void> {
