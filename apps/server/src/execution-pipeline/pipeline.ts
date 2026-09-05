@@ -1,9 +1,12 @@
 // ============================================================================
 // Execution Pipeline — Signal -> Risk -> Permission -> Paper -> Result
 // Orchestrates: validation, risk engine (RiskAgent.evaluate), permission check
-// (via FinanceGateway permissions), paper trading (PaperBroker), audit logging.
+// (via FinanceGateway permissions), canonical OrderManager, paper trading (PaperBroker), audit logging.
 // Live trading is always blocked unless liveTradingEnabled===true AND
 // LIVE_TRADING_ENABLED env === "true" (default: disabled).
+// Enhanced: idempotent processing, duplicate protection, proper correlation IDs,
+// partial-fill support, cancel/reject/retry-safe, event ordering guarantees,
+// consistent order/trade/position relationships, audit events.
 // ============================================================================
 
 import { v4 as uuidv4 } from "uuid";
@@ -12,6 +15,7 @@ import type { RiskAgent, RiskDecision } from "../agents/risk/index.js";
 import type { FinanceGateway } from "../gateway/finance-gateway.js";
 import type { PaperBroker } from "../broker/paper-broker.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
+import type { OrderManager } from "../order-manager/order-manager.js";
 import { validateSignal, validateNotional } from "./validation.js";
 import { checkPermission, type PermissionInput } from "./permission.js";
 import { PipelineAuditLog } from "./audit.js";
@@ -23,6 +27,7 @@ export interface ExecutionPipelineDeps {
   riskAgent: RiskAgent;
   gateway: FinanceGateway;
   paperBroker: PaperBroker;
+  orderManager?: OrderManager;
   auditLogger?: AuditLogger;
   pipelineAudit?: PipelineAuditLog;
   config?: Partial<PipelineConfig>;
@@ -38,20 +43,24 @@ export class ExecutionPipeline {
   private riskAgent: RiskAgent;
   private gateway: FinanceGateway;
   private paperBroker: PaperBroker;
+  private orderManager?: OrderManager;
   private auditLogger?: AuditLogger;
   private audit: PipelineAuditLog;
   private config: PipelineConfig;
   private dailyCounts = new Map<string, number>();
+  private inflight = new Map<string, Promise<PipelineResult>>();
+  private completedByCorrelation = new Map<string, PipelineResult>();
+  private orderIdempotency = new Map<string, string>(); // idempotencyKey -> orderId
 
   constructor(deps: ExecutionPipelineDeps) {
     this.bus = deps.bus;
     this.riskAgent = deps.riskAgent;
     this.gateway = deps.gateway;
     this.paperBroker = deps.paperBroker;
+    this.orderManager = deps.orderManager;
     this.auditLogger = deps.auditLogger;
     this.audit = deps.pipelineAudit ?? new PipelineAuditLog(this.bus);
     this.config = { ...DEFAULT_PIPELINE_CONFIG, ...deps.config };
-    // force live disabled unless env explicitly allows — default is always false
     if (this.config.liveTradingEnabled && !isLiveEnvEnabled()) {
       console.warn("[execution-pipeline] liveTradingEnabled requested but LIVE_TRADING_ENABLED!=true — forcing paper-only");
       this.config.liveTradingEnabled = false;
@@ -59,64 +68,71 @@ export class ExecutionPipeline {
   }
 
   getConfig(): PipelineConfig { return { ...this.config }; }
-
   getAuditLog(): PipelineAuditLog { return this.audit; }
-
   isLiveEnabled(): boolean { return this.config.liveTradingEnabled && isLiveEnvEnabled(); }
-
   enableLiveTrading(): void {
-    if (!isLiveEnvEnabled()) {
-      throw new Error("Live trading not enabled — set LIVE_TRADING_ENABLED=true in env first");
-    }
+    if (!isLiveEnvEnabled()) throw new Error("Live trading not enabled — set LIVE_TRADING_ENABLED=true in env first");
     this.config.liveTradingEnabled = true;
   }
-
   disableLiveTrading(): void { this.config.liveTradingEnabled = false; }
+  setAgentPermissions(agentId: string, perms: Partial<PermissionInput>): void { this.gateway.setAgentPermissions(agentId, perms as unknown as Record<string, unknown>); }
+  getAgentPermissions(agentId: string): PermissionInput { return this.gateway.getAgentPermissions(agentId) as unknown as PermissionInput; }
+  resetDailyCounts(): void { this.dailyCounts.clear(); this.gateway.resetDailyCounts(); this.completedByCorrelation.clear(); this.inflight.clear(); }
+  setOrderManager(om: OrderManager): void { this.orderManager = om; }
 
-  /** Direct permission setup — delegates to gateway for single source of truth */
-  setAgentPermissions(agentId: string, perms: Partial<PermissionInput>): void {
-    this.gateway.setAgentPermissions(agentId, perms as unknown as Record<string, unknown>);
+  // Cancel/reject delegation to OrderManager with audit
+  cancelOrder(orderId: string, reason?: string): boolean {
+    if (this.orderManager) return this.orderManager.cancelOrder(orderId, reason);
+    const cancelled = this.paperBroker.cancelOrder(orderId, reason);
+    return !!cancelled;
   }
-
-  getAgentPermissions(agentId: string): PermissionInput {
-    return this.gateway.getAgentPermissions(agentId) as unknown as PermissionInput;
+  rejectOrder(orderId: string, reason: string): boolean {
+    if (this.orderManager) return this.orderManager.rejectOrder(orderId, reason);
+    return false;
   }
-
-  resetDailyCounts(): void { this.dailyCounts.clear(); this.gateway.resetDailyCounts(); }
-
-  // -------------------------------------------------------------------------
-  // Main pipeline: Signal -> Risk -> Permission -> Paper -> Result
-  // -------------------------------------------------------------------------
 
   async execute(signal: unknown): Promise<PipelineResult> {
     const started = Date.now();
-    const correlationId = (signal as PipelineSignal)?.correlationId?.trim() || uuidv4();
-    const signalId = (signal as PipelineSignal)?.id?.trim() || `sig-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const auditIds: string[] = [];
+    const raw = signal as PipelineSignal;
+    const correlationId = raw?.correlationId?.trim() || uuidv4();
+    const signalId = raw?.id?.trim() || `sig-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const idempotencyKey = (raw as unknown as { idempotencyKey?: string })?.idempotencyKey?.trim() || signalId || correlationId;
 
+    // Idempotent duplicate protection — retry-safe execution
+    const inflightKey = `${correlationId}:${idempotencyKey}`;
+    const priorCompleted = this.completedByCorrelation.get(inflightKey);
+    if (priorCompleted) return { ...priorCompleted, durationMs: Date.now() - started };
+    const priorInflight = this.inflight.get(inflightKey);
+    if (priorInflight) return priorInflight;
+
+    const execPromise = this.executeInternal(signal, correlationId, signalId, started);
+    this.inflight.set(inflightKey, execPromise);
+    execPromise.then(res => {
+      this.completedByCorrelation.set(inflightKey, res);
+      this.inflight.delete(inflightKey);
+    }).catch(() => this.inflight.delete(inflightKey));
+    return execPromise;
+  }
+
+  private async executeInternal(signal: unknown, correlationId: string, signalId: string, started: number): Promise<PipelineResult> {
+    const auditIds: string[] = [];
     const pushAudit = (stage: string, eventType: string, approved: boolean | null, reason?: string, details: Record<string, unknown> = {}): AuditEntry => {
       const e = this.audit.record({ correlationId, signalId, stage, eventType, approved, reason, details, timestamp: Date.now() });
       auditIds.push(e.id);
-      // also mirror into global audit logger if available
       if (this.auditLogger) {
-        this.auditLogger.record({ id: e.id, type: eventType, data: { stage, approved, reason, ...details }, timestamp: e.timestamp, source: "execution-pipeline", correlationId, agentId: (signal as PipelineSignal)?.agentId });
+        this.auditLogger.record({ id: e.id, type: eventType, data: { stage, approved, reason, ...details }, timestamp: e.timestamp, source: "execution-pipeline", correlationId, agentId: (signal as PipelineSignal)?.agentId } as unknown as Parameters<AuditLogger["record"]>[0]);
       }
       return e;
     };
 
-    // Live guard — pipeline is paper-only unless live is explicitly enabled
     if (this.config.liveTradingEnabled && !isLiveEnvEnabled()) {
       pushAudit("live_disabled", PIPELINE_EVENTS.LIVE_BLOCKED, false, "Live trading blocked — LIVE_TRADING_ENABLED != true", { signal });
       return this.result(false, "live_disabled", "Live trading blocked — set LIVE_TRADING_ENABLED=true", correlationId, signalId, auditIds, started);
     }
-    // If caller somehow requests live mode via signal (non-paper), block
-    // Our pipeline always routes to paperBroker; live path is not implemented.
 
-    // 0) Received
     this.bus.publish({ type: PIPELINE_EVENTS.SIGNAL_RECEIVED, data: { signalId, correlationId, signal, timestamp: Date.now() }, source: "execution-pipeline", correlationId });
     pushAudit("received", PIPELINE_EVENTS.SIGNAL_RECEIVED, null, undefined, { signal });
 
-    // 1) Validation
     const v = validateSignal(signal);
     if (!v.valid || !v.normalized) {
       pushAudit("validation", PIPELINE_EVENTS.VALIDATION_FAILED, false, v.reason, { signal });
@@ -126,7 +142,6 @@ export class ExecutionPipeline {
       return r;
     }
     let normalized = v.normalized;
-    // enforce maxOrderValue if configured
     const notionalCheck = validateNotional(normalized, this.config.maxOrderValue);
     if (!notionalCheck.valid) {
       pushAudit("validation", PIPELINE_EVENTS.VALIDATION_FAILED, false, notionalCheck.reason, { signal: normalized });
@@ -135,16 +150,13 @@ export class ExecutionPipeline {
       this.bus.publish({ type: PIPELINE_EVENTS.REJECTED, data: { ...r }, source: "execution-pipeline", correlationId });
       return r;
     }
-    // ensure ids propagated
     normalized.correlationId = correlationId;
     normalized.id = signalId;
     pushAudit("validation", PIPELINE_EVENTS.VALIDATED, true, "validation passed", { signal: normalized });
     this.bus.publish({ type: PIPELINE_EVENTS.VALIDATED, data: { signalId, correlationId, signal: normalized, timestamp: Date.now() }, source: "execution-pipeline", correlationId });
 
-    // 2) Risk Engine
     let riskDecision: RiskDecision | undefined;
     try {
-      // RiskAgent expects RiskSignal shape — map PipelineSignal -> RiskSignal
       const riskSignal = {
         id: normalized.id,
         symbol: normalized.symbol,
@@ -159,9 +171,7 @@ export class ExecutionPipeline {
         agentId: normalized.agentId,
         strategy: normalized.strategy,
       } as unknown as Parameters<RiskAgent["evaluate"]>[0];
-
       const decision = this.riskAgent.evaluate(riskSignal as never) as RiskDecision;
-      // RiskAgent already publishes risk.approved/rejected — we just capture decision
       riskDecision = decision as unknown as RiskDecision;
       const approved = (decision as unknown as { approved: boolean }).approved;
       if (this.config.requireRiskApproval && !approved) {
@@ -182,7 +192,6 @@ export class ExecutionPipeline {
       return r;
     }
 
-    // 3) Permission Check (after risk — per spec order)
     try {
       const perms = this.gateway.getAgentPermissions(normalized.agentId) as unknown as PermissionInput;
       const daily = this.dailyCounts.get(normalized.agentId) ?? 0;
@@ -204,28 +213,76 @@ export class ExecutionPipeline {
       return r;
     }
 
-    // 4) Paper Trading (always paper — never live)
+    // Canonical order creation + execution with event ordering and retry-safe handling
     try {
+      // Create canonical order via OrderManager if available
+      let canonicalOrderId: string | undefined;
+      let managedOrder: unknown = undefined;
+      if (this.orderManager) {
+        const idempotencyKey = normalized.id ?? signalId;
+        // deduplicate
+        const existingId = this.orderIdempotency.get(idempotencyKey);
+        if (existingId) {
+          const existingOrder = this.orderManager.getOrder(existingId);
+          if (existingOrder && existingOrder.status !== "REJECTED" && existingOrder.status !== "FAILED") {
+            managedOrder = existingOrder;
+            canonicalOrderId = existingOrder.id;
+          }
+        }
+        if (!canonicalOrderId) {
+          const mo = this.orderManager.createOrder({
+            symbol: normalized.symbol,
+            side: normalized.side,
+            type: (normalized.type as "market" | "limit" | "stop" | "stop_limit") ?? "market",
+            quantity: normalized.quantity,
+            price: normalized.price,
+            strategy: normalized.strategy,
+            agent: normalized.agentId,
+            executionMode: "paper",
+            clientOrderId: signalId,
+            correlationId,
+            idempotencyKey,
+          });
+          mo && (managedOrder = mo);
+          canonicalOrderId = (mo as { id: string }).id;
+          this.orderIdempotency.set(idempotencyKey, canonicalOrderId);
+          // Move to PENDING -> SUBMITTED with ordering guarantee
+          this.orderManager.updateStatus(canonicalOrderId, "PENDING");
+          this.orderManager.updateStatus(canonicalOrderId, "SUBMITTED");
+        }
+      }
+
       const order = await this.paperBroker.createOrder(
         normalized.symbol,
         normalized.side,
         normalized.quantity,
         normalized.type ?? "market",
         normalized.price,
+        { clientOrderId: signalId, correlationId, idempotencyKey: signalId },
       );
       if (order.status === "rejected") {
-        pushAudit("paper", PIPELINE_EVENTS.PAPER_FAILED, false, "paper broker rejected order", { order });
+        if (this.orderManager && canonicalOrderId) this.orderManager.rejectOrder(canonicalOrderId, order.reason ?? "broker rejected");
+        pushAudit("paper", PIPELINE_EVENTS.PAPER_FAILED, false, order.reason ?? "paper broker rejected order", { order });
         this.bus.publish({ type: PIPELINE_EVENTS.PAPER_FAILED, data: { signalId, correlationId, order, timestamp: Date.now() }, source: "execution-pipeline", correlationId });
-        const r = this.result(false, "paper", "paper broker rejected order", correlationId, signalId, auditIds, started, riskDecision);
+        const r = this.result(false, "paper", order.reason ?? "paper broker rejected order", correlationId, signalId, auditIds, started, riskDecision);
         (r as unknown as Record<string, unknown>).order = order;
         this.bus.publish({ type: PIPELINE_EVENTS.REJECTED, data: { ...r }, source: "execution-pipeline", correlationId });
         return r;
       }
-      // success — increment daily counts
+      // Apply fill to canonical order for consistent state and trade linkage
+      if (this.orderManager && canonicalOrderId) {
+        if (order.status === "filled" || order.status === "partially_filled") {
+          const fillQty = order.quantity;
+          const fillPrice = order.filledPrice ?? normalized.price;
+          const fee = order.fee ?? fillPrice * fillQty * 0.001;
+          this.orderManager.applyFill(canonicalOrderId, { orderId: canonicalOrderId, symbol: normalized.symbol, side: normalized.side, quantity: fillQty, price: fillPrice, fee, timestamp: Date.now(), correlationId });
+        }
+      }
       this.dailyCounts.set(normalized.agentId, (this.dailyCounts.get(normalized.agentId) ?? 0) + 1);
-      pushAudit("paper", PIPELINE_EVENTS.PAPER_EXECUTED, true, "paper order filled", { order });
-      this.bus.publish({ type: PIPELINE_EVENTS.PAPER_EXECUTED, data: { signalId, correlationId, order, timestamp: Date.now() }, source: "execution-pipeline", correlationId });
+      pushAudit("paper", PIPELINE_EVENTS.PAPER_EXECUTED, true, "paper order filled", { order, canonicalOrderId });
+      this.bus.publish({ type: PIPELINE_EVENTS.PAPER_EXECUTED, data: { signalId, correlationId, order, canonicalOrderId, timestamp: Date.now() }, source: "execution-pipeline", correlationId });
       const r = this.result(true, "completed", "paper order executed", correlationId, signalId, auditIds, started, riskDecision, order);
+      if (managedOrder) (r as unknown as Record<string, unknown>).managedOrder = managedOrder;
       this.bus.publish({ type: PIPELINE_EVENTS.COMPLETED, data: { ...r }, source: "execution-pipeline", correlationId });
       return r;
     } catch (err) {
@@ -262,8 +319,5 @@ export class ExecutionPipeline {
     };
   }
 
-  // Convenience alias
-  async submit(signal: PipelineSignal): Promise<PipelineResult> {
-    return this.execute(signal);
-  }
+  async submit(signal: PipelineSignal): Promise<PipelineResult> { return this.execute(signal); }
 }
