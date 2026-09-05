@@ -336,8 +336,8 @@ describe("SupervisorAgent — execution + events", () => {
     bus.subscribeTo("supervisor.plan_completed", () => { completed = true; });
 
     bus.publish({ type: "supervisor.task", data: { task: "Analyze BTC" }, source: "test" });
-    // Give async handler a tick
-    await new Promise((r) => setTimeout(r, 50));
+    // Give async handler time to complete all steps with pacing delay
+    await new Promise((r) => setTimeout(r, 4500));
     expect(completed).toBe(true);
 
     // Also direct submitTask
