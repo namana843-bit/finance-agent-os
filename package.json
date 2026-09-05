@@ -8,9 +8,13 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "pnpm -r dev",
+    "dev": "pnpm -r --parallel dev",
     "dev:server": "pnpm --filter @finance/server dev",
-    "dev:dashboard": "pnpm --filter @finance/dashboard dev",
+    "dev:desktop": "pnpm --filter @finance/dashboard dev",
+    "desktop:dev": "pnpm -r --parallel dev",
+    "desktop:electron": "pnpm --filter @finance/dashboard electron:dev",
+    "desktop:build": "pnpm --filter @finance/dashboard build",
+    "desktop:start": "pnpm --filter @finance/dashboard electron:start",
     "build": "pnpm -r build",
     "build:shared": "pnpm --filter @finance/shared build",
     "build:core": "pnpm --filter @finance/core build",

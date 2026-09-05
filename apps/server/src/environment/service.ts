@@ -12,7 +12,7 @@ export class FinanceEnvironmentService implements ServiceLifecycle {
     id: "finance-environment",
     name: "Finance Environment",
     version: "0.1.0",
-    description: "OpenMausBot-inspired environment: market/portfolio/paper/backtest (no live orders)",
+    description: "Finance Agent OS environment: market/portfolio/paper/backtest (no live orders)",
     status: "registered",
   };
 

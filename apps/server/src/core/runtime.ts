@@ -30,6 +30,7 @@ import { FinanceEnvironmentService } from "../environment/service.js";
 import { SupervisorAgent } from "../agents/supervisor/index.js";
 import { StrategyLabService } from "../strategy-lab/service.js";
 import { ExecutionPipelineService } from "../execution-pipeline/service.js";
+import { DialogueEngine } from "../chat/dialogue-engine.js";
 
 // Service IDs — canonical identifiers for service lookup
 export const SERVICE_IDS = {
@@ -45,6 +46,7 @@ export const SERVICE_IDS = {
   FINANCE_ENVIRONMENT: "finance-environment",
   STRATEGY_LAB: "strategy-lab",
   EXECUTION_PIPELINE: "execution-pipeline",
+  DIALOGUE_ENGINE: "dialogue-engine",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -395,6 +397,44 @@ class StrategyRegistryService implements ServiceLifecycle {
   }
 }
 
+class DialogueEngineService implements ServiceLifecycle {
+  private engine: DialogueEngine;
+  private info: ServiceInfo = {
+    id: SERVICE_IDS.DIALOGUE_ENGINE,
+    name: "Dialogue Engine",
+    version: "0.1.0",
+    description: "Multi-agent conversational dialogue layer for Finance Agent OS",
+    status: "registered",
+  };
+
+  constructor(bus: import("@finance/core").TypedEventBus) {
+    this.engine = new DialogueEngine(bus);
+  }
+
+  async initialize(): Promise<void> {
+    this.info.status = "initialized";
+  }
+
+  async start(): Promise<void> {
+    this.info.status = "active";
+    console.log(`[service:${this.info.id}] started`);
+  }
+
+  async stop(): Promise<void> {
+    this.engine.destroy();
+    this.info.status = "stopped";
+    console.log(`[service:${this.info.id}] stopped`);
+  }
+
+  getHealth(): ServiceInfo {
+    return { ...this.info };
+  }
+
+  getInstance(): DialogueEngine {
+    return this.engine;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Runtime Factory
 // ---------------------------------------------------------------------------
@@ -496,7 +536,7 @@ export function createRuntime(): FinanceRuntime {
   const agentMemoryService = new AgentMemoryService();
   runtime.registerService(agentMemoryService);
 
-  // Finance Environment — OpenMausBot-inspired abstraction for agents
+  // Finance Environment — Finance Agent OS abstraction for agents
   // Composes Binance market-data adapter (BinanceMarketDataAdapter) + Paper Trading adapter (PaperTradingAdapter)
   // No live orders — paper only. Agents interact exclusively via environment.
   const financeEnv = createFinanceEnvironment({
@@ -524,6 +564,10 @@ export function createRuntime(): FinanceRuntime {
     auditLogger: auditLoggerService.getInstance(),
   });
   runtime.registerService(executionPipelineService);
+
+  // Dialogue Engine — Finance Agent OS Conversational Dialogue Layer
+  const dialogueEngineService = new DialogueEngineService(bus);
+  runtime.registerService(dialogueEngineService);
 
   // Connect full OS: User -> Desktop (supervisor.task) -> Supervisor -> Tools/Environment -> Risk -> Paper
   // Supervisor trade steps now route through ExecutionPipeline so permissions/audit/Risk gates are enforced.
@@ -587,6 +631,10 @@ export function getFinanceEnvironment(): import("../environment/types.js").Finan
 
 export function getSupervisor(): SupervisorAgent | undefined {
   return runtime?.getAgentRegistry().get("supervisor") as SupervisorAgent | undefined;
+}
+
+export function getDialogueEngine(): DialogueEngine | undefined {
+  return getService<DialogueEngineService>(SERVICE_IDS.DIALOGUE_ENGINE)?.getInstance();
 }
 
 export function getStrategyLab(): import("../strategy-lab/strategy-lab.js").StrategyLab | undefined {

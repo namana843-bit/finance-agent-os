@@ -48,7 +48,7 @@ export async function fetchBinancePrice(symbol: string): Promise<number | null> 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2000);
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    const res: any = await fetch(url, { signal: controller.signal });
     if (!res.ok) return null;
     const data = (await res.json()) as { symbol: string; price: string };
     const n = Number(data.price);
