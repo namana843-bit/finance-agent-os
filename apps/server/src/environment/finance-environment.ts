@@ -1,6 +1,6 @@
 // ============================================================================
 // Finance Agent OS — Finance Environment
-// Finance Agent OS Environment: agents interact with market/portfolio/
+// OpenMausBot-inspired Environment: agents interact with market/portfolio/
 // backtesting/paper trading only through this abstraction.
 // Composition: marketDataPort + portfolioPort + paperTradingPort + backtestPort
 // No live orders — trading port delegates exclusively to PaperBroker.

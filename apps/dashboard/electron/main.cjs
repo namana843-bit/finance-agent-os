@@ -10,7 +10,7 @@ function createWindow() {
     height: 920,
     minWidth: 1080,
     minHeight: 720,
-    title: "Finance Agent OS — Autonomous Multi-Agent Trading Platform",
+    title: "OpenMausBot — Autonomous Finance Agent OS Desktop",
     backgroundColor: "#0a0a0a",
     show: false,
     titleBarStyle: "hiddenInset",

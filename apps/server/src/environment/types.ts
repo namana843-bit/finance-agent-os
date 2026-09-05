@@ -1,6 +1,6 @@
 // ============================================================================
 // Finance Agent OS — Finance Environment Types
-// Finance Agent OS: Environment is the sandbox agents interact with.
+// OpenMausBot-inspired: Environment is the sandbox agents interact with.
 // Provides market data, portfolio, paper trading, backtesting via adapters.
 // Exchange-specific code lives only in adapters; environment is agnostic.
 // ============================================================================
@@ -63,7 +63,7 @@ export interface BacktestPort {
 }
 
 // ---------------------------------------------------------------------------
-// FinanceEnvironment — composition of ports (Finance Agent Environment)
+// FinanceEnvironment — composition of ports (OpenMausBot Environment analogue)
 // ---------------------------------------------------------------------------
 
 export interface FinanceEnvironment {

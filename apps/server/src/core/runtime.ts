@@ -403,7 +403,7 @@ class DialogueEngineService implements ServiceLifecycle {
     id: SERVICE_IDS.DIALOGUE_ENGINE,
     name: "Dialogue Engine",
     version: "0.1.0",
-    description: "Multi-agent conversational dialogue layer for Finance Agent OS",
+    description: "Multi-agent conversational dialogue layer for OpenMausBot",
     status: "registered",
   };
 
@@ -536,7 +536,7 @@ export function createRuntime(): FinanceRuntime {
   const agentMemoryService = new AgentMemoryService();
   runtime.registerService(agentMemoryService);
 
-  // Finance Environment — Finance Agent OS abstraction for agents
+  // Finance Environment — OpenMausBot-inspired abstraction for agents
   // Composes Binance market-data adapter (BinanceMarketDataAdapter) + Paper Trading adapter (PaperTradingAdapter)
   // No live orders — paper only. Agents interact exclusively via environment.
   const financeEnv = createFinanceEnvironment({
@@ -565,7 +565,7 @@ export function createRuntime(): FinanceRuntime {
   });
   runtime.registerService(executionPipelineService);
 
-  // Dialogue Engine — Finance Agent OS Conversational Dialogue Layer
+  // Dialogue Engine — OpenMausBot Conversational Dialogue Layer
   const dialogueEngineService = new DialogueEngineService(bus);
   runtime.registerService(dialogueEngineService);
 

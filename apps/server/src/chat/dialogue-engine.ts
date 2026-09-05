@@ -1,5 +1,5 @@
 // ============================================================================
-// DialogueEngine — Finance Agent OS Conversational Dialogue Layer
+// DialogueEngine — OpenMausBot Conversational Dialogue Layer
 // Converts backend financial events (quant signals, risk checks, supervisor plans,
 // order fills) into natural language dialogue with agent avatars and roles.
 // Manages channels (#trading-floor, #signals-alerts, #trade-approvals) and DMs.
@@ -189,7 +189,7 @@ export class DialogueEngine {
 
   public async handleUserMessage(content: string, channelId = "trading-floor"): Promise<ChatMessage> {
     const userProfile = DEFAULT_AGENT_PROFILES.user;
-    
+
     // Post user message
     const userMsg = this.postMessage({
       channelId,
@@ -238,7 +238,7 @@ export class DialogueEngine {
           senderColor: quant.color,
           content: `Running quantitative scans for BTCUSDT and ETHUSDT. Calculating RSI(14), MACD(12,26,9) and EMA crossovers...`,
         });
-        
+
         this.bus.publish({
           type: "quant.scan_request",
           data: { symbol: "BTCUSDT", query: trimmed },
@@ -590,7 +590,7 @@ export class DialogueEngine {
         senderAvatar: sup.avatar,
         senderRole: sup.role,
         senderColor: sup.color,
-        content: `👋 **Welcome to Finance Agent OS Desktop!**\nAll specialized financial agents are online and connected to the high-throughput TypedEventBus. Type commands like \`Analyze BTC\` or \`Paper trade ETH 0.5\` to initiate multi-agent collaboration.`,
+        content: `👋 **Welcome to OpenMausBot Finance Desktop!**\nAll 6 specialized financial agents are online and connected to the high-throughput TypedEventBus. Type commands like \`Analyze BTC\` or \`Paper trade ETH 0.5\` to initiate multi-agent collaboration.`,
         timestamp: baseTime,
       },
       {

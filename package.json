@@ -8,10 +8,10 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "pnpm -r --parallel dev",
+    "dev": "pnpm -r dev",
     "dev:server": "pnpm --filter @finance/server dev",
     "dev:desktop": "pnpm --filter @finance/dashboard dev",
-    "desktop:dev": "pnpm -r --parallel dev",
+    "desktop:dev": "pnpm -r dev",
     "desktop:electron": "pnpm --filter @finance/dashboard electron:dev",
     "desktop:build": "pnpm --filter @finance/dashboard build",
     "desktop:start": "pnpm --filter @finance/dashboard electron:start",

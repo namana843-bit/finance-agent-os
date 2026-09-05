@@ -428,14 +428,14 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     const sendComment = (comment: string) => {
       try {
         reply.raw.write(`: ${comment}\n\n`);
-      } catch {}
+      } catch { }
     };
 
     sendComment("connected");
     if (typeof (reply.raw as unknown as { flushHeaders?: () => void }).flushHeaders === "function") {
       try {
         (reply.raw as unknown as { flushHeaders: () => void }).flushHeaders();
-      } catch {}
+      } catch { }
     }
 
     if (shouldReplay) {
@@ -834,19 +834,20 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/chat/history — Finance Agent OS dialogue history
+  // GET /api/chat/history — OpenMausBot dialogue history
   // -------------------------------------------------------------------------
-  app.get("/api/chat/history", async (req) => {
-    const q = req.query as { channelId?: string; limit?: string };
-    const dialogue = getDialogueEngine();
-    if (!dialogue) return { messages: [] };
-    const limit = q.limit ? parseInt(q.limit, 10) : 100;
-    return { messages: dialogue.getHistory(q.channelId, limit) };
+  app.get<{
+    Querystring: { channelId?: string; limit?: string };
+  }>("/api/chat/history", async (request) => {
+    const engine = getDialogueEngine();
+    if (!engine) return { messages: [] };
+    const limit = request.query.limit ? parseInt(request.query.limit, 10) : 100;
+    return { messages: engine.getHistory(request.query.channelId, limit) };
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/chat — Finance Agent OS user message / agent prompt
-  // -------------------------------------------------------------------------------------------------------
+  // POST /api/chat — OpenMausBot user message / agent prompt
+  // -------------------------------------------------------------------------
   app.post<{
     Body: { content?: string; channelId?: string };
   }>("/api/chat", async (request, reply) => {
