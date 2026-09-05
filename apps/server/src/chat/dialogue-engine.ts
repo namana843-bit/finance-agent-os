@@ -442,6 +442,9 @@ export class DialogueEngine {
         case "supervisor.step_started": {
           const sup = this.getAgentProfile("supervisor");
           const stepName = data.stepId || data.agentId || "Step";
+          const agentId = data.agentId || "supervisor";
+          const agentProfile = this.getAgentProfile(agentId);
+
           this.postMessage({
             channelId: data.channelId || "trading-floor",
             senderId: sup.id,
@@ -449,7 +452,7 @@ export class DialogueEngine {
             senderAvatar: sup.avatar,
             senderRole: sup.role,
             senderColor: sup.color,
-            content: `⏳ Starting Step: **${stepName}** (${data.description || "Executing..."})`,
+            content: `📣 **Supervisor:** Assigning step \`${stepName}\` to **${agentProfile.name}** ${agentProfile.avatar}. (${data.description || "Processing payload..."})`,
           });
           break;
         }
@@ -468,8 +471,46 @@ export class DialogueEngine {
             senderAvatar: profile.avatar,
             senderRole: profile.role,
             senderColor: profile.color,
-            content: `✅ **${profile.name}:** ${summary}`,
+            content: `${profile.avatar} **${profile.name}:** Finished my step! ${summary}`,
           });
+
+          // Inter-Agent Conversational Reaction Handoff Loop
+          setTimeout(() => {
+            if (agentId === "market") {
+              const quant = this.getAgentProfile("quant");
+              this.postMessage({
+                channelId: "trading-floor",
+                senderId: quant.id,
+                senderName: quant.name,
+                senderAvatar: quant.avatar,
+                senderRole: quant.role,
+                senderColor: quant.color,
+                content: `📈 **Quant Agent:** Thanks ${profile.name}! I've received the live ticks. Calculating RSI(14) and MACD signals now...`,
+              });
+            } else if (agentId === "quant") {
+              const risk = this.getAgentProfile("risk");
+              this.postMessage({
+                channelId: "trading-floor",
+                senderId: risk.id,
+                senderName: risk.name,
+                senderAvatar: risk.avatar,
+                senderRole: risk.role,
+                senderColor: risk.color,
+                content: `🛡️ **Risk Officer:** Copy that, ${profile.name}. Reviewing signal against max drawdown (20%) and portfolio exposure limits...`,
+              });
+            } else if (agentId === "risk") {
+              const exec = this.getAgentProfile("execution");
+              this.postMessage({
+                channelId: "trading-floor",
+                senderId: exec.id,
+                senderName: exec.name,
+                senderAvatar: exec.avatar,
+                senderRole: exec.role,
+                senderColor: exec.color,
+                content: `⚡ **Execution Broker:** Risk cleared! Staging trade proposal and awaiting trader sign-off or paper execution.`,
+              });
+            }
+          }, 400);
           break;
         }
 
@@ -509,6 +550,20 @@ export class DialogueEngine {
             senderColor: quant.color,
             content: `📈 Alpha Signal generated for **${symbol}**: **${action}** with **${confidence}% confidence**. ${reason}`,
           });
+
+          // Inter-agent direct response from Risk Officer
+          setTimeout(() => {
+            const risk = this.getAgentProfile("risk");
+            this.postMessage({
+              channelId: "trading-floor",
+              senderId: risk.id,
+              senderName: risk.name,
+              senderAvatar: risk.avatar,
+              senderRole: risk.role,
+              senderColor: risk.color,
+              content: `🛡️ **Risk Officer:** @Quant Agent, evaluating your **${action} ${symbol}** signal. Checking VaR and position allocation bounds...`,
+            });
+          }, 350);
           break;
         }
 
@@ -529,6 +584,21 @@ export class DialogueEngine {
             senderColor: risk.color,
             content: `🛡️ **Risk Assessment [${statusText}]:** ${reason} (Portfolio Exposure: ${exposure})`,
           });
+
+          if (approved) {
+            setTimeout(() => {
+              const exec = this.getAgentProfile("execution");
+              this.postMessage({
+                channelId: "trading-floor",
+                senderId: exec.id,
+                senderName: exec.name,
+                senderAvatar: exec.avatar,
+                senderRole: exec.role,
+                senderColor: exec.color,
+                content: `⚡ **Execution Broker:** @Risk Officer acknowledged! Preparing order routing for paper brokerage.`,
+              });
+            }, 300);
+          }
           break;
         }
 
@@ -548,6 +618,20 @@ export class DialogueEngine {
             senderColor: exec.color,
             content: `⚡ **Order Filled:** ${side} ${qty} ${symbol} @ ${price}. Paper trade executed.`,
           });
+
+          // Portfolio agent confirms asset update to supervisor
+          setTimeout(() => {
+            const pf = this.getAgentProfile("portfolio");
+            this.postMessage({
+              channelId: "trading-floor",
+              senderId: pf.id,
+              senderName: pf.name,
+              senderAvatar: pf.avatar,
+              senderRole: pf.role,
+              senderColor: pf.color,
+              content: `💼 **Portfolio Manager:** @Execution Broker order confirmed. Balance & positions recalculated.`,
+            });
+          }, 350);
           break;
         }
 
