@@ -22,6 +22,9 @@ import { PipelineAuditLog } from "./audit.js";
 import type { PipelineSignal, PipelineConfig, PipelineResult, AuditEntry } from "./types.js";
 import { DEFAULT_PIPELINE_CONFIG, PIPELINE_EVENTS } from "./types.js";
 
+import type { KillSwitch } from "../safety/kill-switch.js";
+import type { HardLimitsValidator } from "../safety/hard-limits.js";
+
 export interface ExecutionPipelineDeps {
   bus: TypedEventBus;
   riskAgent: RiskAgent;
@@ -31,6 +34,8 @@ export interface ExecutionPipelineDeps {
   auditLogger?: AuditLogger;
   pipelineAudit?: PipelineAuditLog;
   config?: Partial<PipelineConfig>;
+  killSwitch?: KillSwitch;
+  hardLimits?: HardLimitsValidator;
 }
 
 function isLiveEnvEnabled(): boolean {
@@ -47,6 +52,8 @@ export class ExecutionPipeline {
   private auditLogger?: AuditLogger;
   private audit: PipelineAuditLog;
   private config: PipelineConfig;
+  private killSwitch?: KillSwitch;
+  private hardLimits?: HardLimitsValidator;
   private dailyCounts = new Map<string, number>();
   private inflight = new Map<string, Promise<PipelineResult>>();
   private completedByCorrelation = new Map<string, PipelineResult>();
@@ -59,6 +66,8 @@ export class ExecutionPipeline {
     this.paperBroker = deps.paperBroker;
     this.orderManager = deps.orderManager;
     this.auditLogger = deps.auditLogger;
+    this.killSwitch = deps.killSwitch;
+    this.hardLimits = deps.hardLimits;
     this.audit = deps.pipelineAudit ?? new PipelineAuditLog(this.bus);
     this.config = { ...DEFAULT_PIPELINE_CONFIG, ...deps.config };
     if (this.config.liveTradingEnabled && !isLiveEnvEnabled()) {
@@ -79,6 +88,8 @@ export class ExecutionPipeline {
   getAgentPermissions(agentId: string): PermissionInput { return (this.gateway?.getAgentPermissions?.(agentId) as unknown as PermissionInput) ?? DEFAULT_PERMISSION; }
   resetDailyCounts(): void { this.dailyCounts.clear(); this.gateway?.resetDailyCounts?.(); this.completedByCorrelation.clear(); this.inflight.clear(); }
   setOrderManager(om: OrderManager): void { this.orderManager = om; }
+  setKillSwitch(ks: KillSwitch): void { this.killSwitch = ks; }
+  setHardLimits(hl: HardLimitsValidator): void { this.hardLimits = hl; }
 
   // Cancel/reject delegation to OrderManager with audit
   cancelOrder(orderId: string, reason?: string): boolean {
@@ -125,6 +136,14 @@ export class ExecutionPipeline {
       return e;
     };
 
+    // 0. Kill Switch Safety Gate
+    if (this.killSwitch?.isHalted()) {
+      const ksDetails = this.killSwitch.getTriggerDetails();
+      const reason = `Execution blocked: Emergency Kill Switch is TRIGGERED (${ksDetails.triggeredReason ?? "Emergency halt"})`;
+      pushAudit("kill_switch", "PIPELINE_KILL_SWITCH_BLOCKED", false, reason, { signal });
+      return this.result(false, "kill_switch", reason, correlationId, signalId, auditIds, started);
+    }
+
     if (this.config.liveTradingEnabled && !isLiveEnvEnabled()) {
       pushAudit("live_disabled", PIPELINE_EVENTS.LIVE_BLOCKED, false, "Live trading blocked — LIVE_TRADING_ENABLED != true", { signal });
       return this.result(false, "live_disabled", "Live trading blocked — set LIVE_TRADING_ENABLED=true", correlationId, signalId, auditIds, started);
@@ -150,6 +169,37 @@ export class ExecutionPipeline {
       this.bus.publish({ type: PIPELINE_EVENTS.REJECTED, data: { ...r }, source: "execution-pipeline", correlationId });
       return r;
     }
+
+    // Hard Non-Bypassable Limits Check
+    if (this.hardLimits) {
+      const positions = this.paperBroker.getPositions();
+      const balance = this.paperBroker.getBalance();
+      const openOrdersCount = this.orderManager?.getOpenOrders?.()?.length ?? 0;
+      const hlResult = this.hardLimits.evaluate({
+        symbol: normalized.symbol,
+        side: normalized.side,
+        quantity: normalized.quantity,
+        price: normalized.price,
+        currentPositions: positions.map((p: { symbol: string; quantity: number; currentPrice?: number; entryPrice?: number }) => ({
+          symbol: p.symbol,
+          quantity: p.quantity,
+          currentPrice: p.currentPrice ?? p.entryPrice ?? normalized.price,
+        })),
+        currentOpenOrdersCount: openOrdersCount,
+        currentDailyLoss: 0,
+        currentDailyOrdersCount: this.dailyCounts.get(normalized.agentId ?? "default") ?? 0,
+        accountEquity: balance.equity ?? balance.cash ?? 100_000,
+      });
+
+      if (!hlResult.allowed) {
+        const reason = hlResult.violations.map((vio) => `[${vio.code}] ${vio.message}`).join("; ");
+        pushAudit("hard_limits", "PIPELINE_HARD_LIMIT_BREACHED", false, reason, { violations: hlResult.violations });
+        const r = this.result(false, "hard_limits", reason, correlationId, signalId, auditIds, started);
+        this.bus.publish({ type: PIPELINE_EVENTS.REJECTED, data: { ...r }, source: "execution-pipeline", correlationId });
+        return r;
+      }
+    }
+
     normalized.correlationId = correlationId;
     normalized.id = signalId;
     pushAudit("validation", PIPELINE_EVENTS.VALIDATED, true, "validation passed", { signal: normalized });

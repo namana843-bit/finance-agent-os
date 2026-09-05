@@ -921,6 +921,15 @@ export class PaperBroker {
     return p ? { ...p } : undefined;
   }
 
+  getPositions(): PaperPosition[] {
+    return this.getPortfolio().positions;
+  }
+
+  getBalance(): { cash: number; equity: number } {
+    const p = this.getPortfolio();
+    return { cash: p.cash, equity: p.equity };
+  }
+
   getPortfolio(): PaperPortfolio {
     const positions = [...this.positions.values()].map((p) => ({ ...p }));
     const unrealizedPnl = positions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
