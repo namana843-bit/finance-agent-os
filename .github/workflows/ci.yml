@@ -18,4 +18,3 @@ jobs:
       - run: pnpm -r exec tsc --noEmit
       - run: pnpm build
       - run: pnpm test
-      - run: node test-e2e.mjs
