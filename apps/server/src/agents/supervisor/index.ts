@@ -234,6 +234,9 @@ export class SupervisorAgent extends BaseAgent implements Agent {
     for (const step of plan.steps) {
       const stepStartedAt = Date.now();
 
+      // Smooth step pacing delay for realistic inter-agent handoff feel
+      await new Promise((resolve) => setTimeout(resolve, 600));
+
       this.bus.publish({
         type: "supervisor.step_started",
         data: { planId: plan.id, stepId: step.id, agentId: step.agentId, toolId: step.toolId ?? null, input: step.input, timestamp: stepStartedAt },
