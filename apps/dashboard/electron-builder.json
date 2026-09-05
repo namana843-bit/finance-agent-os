@@ -1,0 +1,29 @@
+{
+  "appId": "com.financeagentos.desktop",
+  "productName": "Finance Agent OS",
+  "directories": {
+    "output": "dist-electron"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "package.json"
+  ],
+  "win": {
+    "target": ["nsis", "portable"],
+    "artifactName": "Finance-Agent-OS-Setup-${version}.${ext}"
+  },
+  "mac": {
+    "target": ["dmg"],
+    "category": "public.app-category.finance",
+    "artifactName": "Finance-Agent-OS-${version}.${ext}"
+  },
+  "linux": {
+    "target": ["AppImage"],
+    "artifactName": "Finance-Agent-OS-${version}.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true
+  }
+}
