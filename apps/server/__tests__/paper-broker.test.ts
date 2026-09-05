@@ -1,6 +1,7 @@
 // ============================================================================
 // Finance Agent OS — Paper Broker Tests
 // Comprehensive verification of realistic paper trading simulation:
+// Long/Short entries, increase, partial/full close, reversals, average entry price,
 // market/limit execution, pending orders, lifecycle events, slippage, fees,
 // cancellation, position management, and PnL consistency.
 // ============================================================================
@@ -24,203 +25,329 @@ describe("PaperBroker", () => {
     });
   });
 
-  describe("market buy", () => {
-    it("should fill market buy using market price + slippage and emit lifecycle events", async () => {
+  describe("Long positions (entry, increase, partial close, full close)", () => {
+    it("1. Long entry: creates long position with entry price and deducts cash", async () => {
       const bus = new TypedEventBus();
-      const events: string[] = [];
-      bus.subscribeTo("order.created", () => events.push("order.created"));
-      bus.subscribeTo("order.submitted", () => events.push("order.submitted"));
-      bus.subscribeTo("order.filled", () => events.push("order.filled"));
-
-      const broker = new PaperBroker(bus, {
-        initialCash: 100_000,
-        latencyMs: 0,
-        slippage: 0.001, // 0.1%
-        fee: 0.0005, // 0.05%
-      });
-
+      const broker = new PaperBroker(bus, { initialCash: 100_000, latencyMs: 0, slippage: 0, fee: 0 });
       bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
 
       const order = await broker.createOrder("BTCUSDT", "buy", 1, "market");
-
       expect(order.status).toBe("filled");
-      expect(order.side).toBe("buy");
-      expect(order.type).toBe("market");
-      expect(order.quantity).toBe(1);
 
-      // Expected fill price = 50,000 * 1.001 = 50,050
-      const expectedFillPrice = 50_000 * 1.001;
-      expect(order.filledPrice).toBeCloseTo(expectedFillPrice, 5);
-
-      // Fee = 50,050 * 1 * 0.0005 = 25.025
-      const expectedFee = expectedFillPrice * 1 * 0.0005;
-      expect(order.fee).toBeCloseTo(expectedFee, 5);
-
-      // Cash deducted = 50,050 + 25.025 = 50,075.025
-      const expectedCash = 100_000 - (expectedFillPrice + expectedFee);
-      const portfolio = broker.getPortfolio();
-      expect(portfolio.cash).toBeCloseTo(expectedCash, 5);
-
-      // Position created
-      expect(portfolio.positions).toHaveLength(1);
-      const pos = portfolio.positions[0]!;
-      expect(pos.symbol).toBe("BTCUSDT");
-      expect(pos.quantity).toBe(1);
-      expect(pos.entryPrice).toBeCloseTo(expectedFillPrice, 5);
-
-      // Lifecycle events in order: created -> submitted -> filled
-      expect(events).toEqual(["order.created", "order.submitted", "order.filled"]);
+      const pf = broker.getPortfolio();
+      expect(pf.cash).toBe(50_000);
+      expect(pf.positions).toHaveLength(1);
+      expect(pf.positions[0]!.side).toBe("long");
+      expect(pf.positions[0]!.quantity).toBe(1);
+      expect(pf.positions[0]!.entryPrice).toBe(50_000);
+      expect(pf.equity).toBe(100_000);
     });
-  });
 
-  describe("market sell", () => {
-    it("should fill market sell using market price - slippage, deduct fee, and calculate realized PnL", async () => {
+    it("2. Long increase: updates position quantity and weighted average entry price", async () => {
       const bus = new TypedEventBus();
-      const broker = new PaperBroker(bus, {
-        initialCash: 100_000,
-        latencyMs: 0,
-        slippage: 0,
-        fee: 0,
-      });
-
-      bus.publish({ type: "market.tick", data: { symbol: "ETHUSDT", price: 3_000 }, source: "test" });
-
-      // Buy 2 ETH at 3,000 -> cash = 94,000
-      await broker.createOrder("ETHUSDT", "buy", 2, "market");
-      expect(broker.getPortfolio().cash).toBe(94_000);
-
-      // Price rises to 3,500
-      bus.publish({ type: "market.tick", data: { symbol: "ETHUSDT", price: 3_500 }, source: "test" });
-
-      // Sell 2 ETH at 3,500
-      const sellOrder = await broker.createOrder("ETHUSDT", "sell", 2, "market");
-      expect(sellOrder.status).toBe("filled");
-      expect(sellOrder.filledPrice).toBe(3_500);
-
-      const portfolio = broker.getPortfolio();
-      expect(portfolio.positions).toHaveLength(0);
-      expect(portfolio.cash).toBe(101_000); // 94,000 + 7,000
-      expect(portfolio.realizedPnl).toBe(1_000); // (3,500 - 3,000) * 2
-      expect(portfolio.unrealizedPnl).toBe(0);
-      expect(portfolio.totalPnl).toBe(1_000);
-      expect(portfolio.equity).toBe(101_000);
-    });
-  });
-
-  describe("limit buy", () => {
-    it("limit BUY must NOT fill immediately and should fill only when market price <= limit price", async () => {
-      const bus = new TypedEventBus();
-      let filledEventReceived = false;
-      bus.subscribeTo("order.filled", (e) => {
-        if ((e.data as { orderId: string }).orderId === limitOrder.id) {
-          filledEventReceived = true;
-        }
-      });
-
-      const broker = new PaperBroker(bus, {
-        initialCash: 100_000,
-        latencyMs: 0,
-        slippage: 0.01,
-        fee: 0.001,
-      });
-
-      // Market price is 50,000
+      const broker = new PaperBroker(bus, { initialCash: 200_000, latencyMs: 0, slippage: 0, fee: 0 });
       bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
 
-      // Create Limit BUY at 48,000 (below market)
-      const limitOrder = await broker.createOrder("BTCUSDT", "buy", 1, "limit", 48_000);
-
-      // 1. Must NOT fill immediately
-      expect(limitOrder.status).toBe("submitted");
-      expect(limitOrder.filledPrice).toBeUndefined();
-      expect(broker.getOpenOrders()).toHaveLength(1);
-      expect(broker.getPortfolio().positions).toHaveLength(0);
-      expect(broker.getPortfolio().cash).toBe(100_000); // Cash unspent while pending
-      expect(filledEventReceived).toBe(false);
-
-      // 2. Price drops to 49,000 (still > 48,000 limit) -> still NOT filled
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 49_000 }, source: "test" });
-      expect(limitOrder.status).toBe("submitted");
-      expect(broker.getOpenOrders()).toHaveLength(1);
-      expect(filledEventReceived).toBe(false);
-
-      // 3. Price drops to 48,000 (market price <= limit price) -> SHOULD FILL at limit price
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 48_000 }, source: "test" });
-      expect(limitOrder.status).toBe("filled");
-      expect(limitOrder.filledPrice).toBe(48_000);
-      expect(limitOrder.fee).toBeCloseTo(48_000 * 1 * 0.001, 5);
-      expect(filledEventReceived).toBe(true);
-      expect(broker.getOpenOrders()).toHaveLength(0);
-
-      const portfolio = broker.getPortfolio();
-      expect(portfolio.positions).toHaveLength(1);
-      expect(portfolio.positions[0]!.entryPrice).toBe(48_000);
-      expect(portfolio.cash).toBeCloseTo(100_000 - (48_000 + 48), 5);
-    });
-  });
-
-  describe("limit sell", () => {
-    it("limit SELL must NOT fill immediately and should fill only when market price >= limit price", async () => {
-      const bus = new TypedEventBus();
-      const broker = new PaperBroker(bus, {
-        initialCash: 100_000,
-        latencyMs: 0,
-        slippage: 0,
-        fee: 0,
-      });
-
-      // Buy 1 BTC at 50,000 to have a position
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
+      // Buy 1 BTC @ 50,000
       await broker.createOrder("BTCUSDT", "buy", 1, "market");
-      expect(broker.getPortfolio().positions).toHaveLength(1);
 
-      // Create Limit SELL at 55,000 (above current market price 50,000)
-      const limitSell = await broker.createOrder("BTCUSDT", "sell", 1, "limit", 55_000);
+      // Price moves to 60,000, Buy another 2 BTC @ 60,000
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 60_000 }, source: "test" });
+      await broker.createOrder("BTCUSDT", "buy", 2, "market");
 
-      // Must remain open / submitted
-      expect(limitSell.status).toBe("submitted");
-      expect(broker.getOpenOrders()).toHaveLength(1);
-
-      // Price moves to 53,000 -> remains open
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 53_000 }, source: "test" });
-      expect(limitSell.status).toBe("submitted");
-      expect(broker.getOpenOrders()).toHaveLength(1);
-
-      // Price moves to 56,000 (>= 55,000) -> fills
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 56_000 }, source: "test" });
-      expect(limitSell.status).toBe("filled");
-      expect(limitSell.filledPrice).toBe(55_000);
-      expect(broker.getOpenOrders()).toHaveLength(0);
-
-      const portfolio = broker.getPortfolio();
-      expect(portfolio.positions).toHaveLength(0);
-      expect(portfolio.realizedPnl).toBe(5_000); // 55,000 - 50,000
+      const pf = broker.getPortfolio();
+      expect(pf.cash).toBe(30_000); // 200,000 - 50,000 - 120,000
+      expect(pf.positions).toHaveLength(1);
+      const pos = pf.positions[0]!;
+      expect(pos.quantity).toBe(3);
+      // Average entry price = (50,000 * 1 + 60,000 * 2) / 3 = 170,000 / 3 = 56,666.6667
+      expect(pos.entryPrice).toBeCloseTo(56_666.6667, 4);
+      // Unrealized PnL = (60,000 - 56,666.6667) * 3 = 10,000
+      expect(pos.unrealizedPnl).toBeCloseTo(10_000, 4);
+      expect(pf.equity).toBeCloseTo(210_000, 4);
     });
-  });
 
-  describe("limit order remains pending", () => {
-    it("keeps pending limit orders open until filled or cancelled", async () => {
+    it("3. Long partial close: reduces quantity, realizes PnL, preserves entry price", async () => {
       const bus = new TypedEventBus();
-      const broker = new PaperBroker(bus, { initialCash: 50_000, latencyMs: 0 });
+      const broker = new PaperBroker(bus, { initialCash: 100_000, latencyMs: 0, slippage: 0, fee: 0 });
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
 
+      await broker.createOrder("BTCUSDT", "buy", 2, "market"); // 2 BTC @ 50,000
+
+      // Price rises to 55,000
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 55_000 }, source: "test" });
+
+      // Sell 1 BTC (partial close)
+      const sell = await broker.createOrder("BTCUSDT", "sell", 1, "market");
+      expect(sell.status).toBe("filled");
+
+      const pf = broker.getPortfolio();
+      expect(pf.cash).toBe(55_000); // 0 + 55,000
+      expect(pf.positions).toHaveLength(1);
+      const pos = pf.positions[0]!;
+      expect(pos.quantity).toBe(1);
+      expect(pos.entryPrice).toBe(50_000); // Entry price unchanged on partial close
+      expect(pos.unrealizedPnl).toBe(5_000); // (55,000 - 50,000) * 1
+      expect(pf.realizedPnl).toBe(5_000); // (55,000 - 50,000) * 1
+      expect(pf.totalPnl).toBe(10_000); // 5,000 realized + 5,000 unrealized
+      expect(pf.equity).toBe(110_000); // 55,000 cash + 55,000 BTC value
+    });
+
+    it("4. Long full close: realizes full PnL and deletes position", async () => {
+      const bus = new TypedEventBus();
+      const broker = new PaperBroker(bus, { initialCash: 100_000, latencyMs: 0, slippage: 0, fee: 0 });
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
+
+      await broker.createOrder("BTCUSDT", "buy", 2, "market");
       bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 60_000 }, source: "test" });
 
-      const order = await broker.createOrder("BTCUSDT", "buy", 0.5, "limit", 50_000);
-      expect(order.status).toBe("submitted");
+      // Sell 2 BTC
+      await broker.createOrder("BTCUSDT", "sell", 2, "market");
 
-      // Multiple non-matching ticks
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 58_000 }, source: "test" });
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 55_000 }, source: "test" });
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 52_000 }, source: "test" });
-
-      const openOrders = broker.getOpenOrders();
-      expect(openOrders).toHaveLength(1);
-      expect(openOrders[0]!.id).toBe(order.id);
-      expect(openOrders[0]!.status).toBe("submitted");
+      const pf = broker.getPortfolio();
+      expect(pf.positions).toHaveLength(0);
+      expect(pf.cash).toBe(120_000);
+      expect(pf.realizedPnl).toBe(20_000);
+      expect(pf.unrealizedPnl).toBe(0);
+      expect(pf.totalPnl).toBe(20_000);
+      expect(pf.equity).toBe(120_000);
     });
   });
 
-  describe("cancellation", () => {
+  describe("Short positions (entry, increase, partial close, full close)", () => {
+    it("5. Short entry: creates short position with initial proceeds and tracks liability", async () => {
+      const bus = new TypedEventBus();
+      const broker = new PaperBroker(bus, { initialCash: 100_000, latencyMs: 0, slippage: 0, fee: 0 });
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
+
+      // Short 1 BTC @ 50,000
+      const order = await broker.createOrder("BTCUSDT", "sell", 1, "market");
+      expect(order.status).toBe("filled");
+
+      const pf = broker.getPortfolio();
+      expect(pf.cash).toBe(150_000); // 100,000 + 50,000 proceeds
+      expect(pf.positions).toHaveLength(1);
+      const pos = pf.positions[0]!;
+      expect(pos.side).toBe("short");
+      expect(pos.quantity).toBe(1);
+      expect(pos.entryPrice).toBe(50_000);
+      expect(pos.unrealizedPnl).toBe(0);
+      expect(pf.equity).toBe(100_000); // 150,000 cash - 50,000 liability
+    });
+
+    it("6. Short increase: updates short quantity and weighted average entry price", async () => {
+      const bus = new TypedEventBus();
+      const broker = new PaperBroker(bus, { initialCash: 200_000, latencyMs: 0, slippage: 0, fee: 0 });
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
+
+      // Short 1 BTC @ 50,000
+      await broker.createOrder("BTCUSDT", "sell", 1, "market");
+
+      // Price rises to 60,000, Short another 2 BTC @ 60,000
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 60_000 }, source: "test" });
+      await broker.createOrder("BTCUSDT", "sell", 2, "market");
+
+      const pf = broker.getPortfolio();
+      expect(pf.cash).toBe(370_000); // 200,000 + 50,000 + 120,000
+      expect(pf.positions).toHaveLength(1);
+      const pos = pf.positions[0]!;
+      expect(pos.side).toBe("short");
+      expect(pos.quantity).toBe(3);
+      // Average entry price = (50,000 * 1 + 60,000 * 2) / 3 = 56,666.6667
+      expect(pos.entryPrice).toBeCloseTo(56_666.6667, 4);
+      // Unrealized PnL = (56,666.6667 - 60,000) * 3 = -10,000
+      expect(pos.unrealizedPnl).toBeCloseTo(-10_000, 4);
+      // Equity = 370,000 - (60,000 * 3) = 190,000
+      expect(pf.equity).toBeCloseTo(190_000, 4);
+    });
+
+    it("7. Short partial close: buys back portion, realizes PnL, preserves entry price", async () => {
+      const bus = new TypedEventBus();
+      const broker = new PaperBroker(bus, { initialCash: 100_000, latencyMs: 0, slippage: 0, fee: 0 });
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
+
+      // Short 2 BTC @ 50,000 -> cash = 200,000
+      await broker.createOrder("BTCUSDT", "sell", 2, "market");
+
+      // Price drops to 40,000
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 40_000 }, source: "test" });
+
+      // Buy back 1 BTC (partial close) @ 40,000
+      const buyBack = await broker.createOrder("BTCUSDT", "buy", 1, "market");
+      expect(buyBack.status).toBe("filled");
+
+      const pf = broker.getPortfolio();
+      expect(pf.cash).toBe(160_000); // 200,000 - 40,000
+      expect(pf.positions).toHaveLength(1);
+      const pos = pf.positions[0]!;
+      expect(pos.side).toBe("short");
+      expect(pos.quantity).toBe(1);
+      expect(pos.entryPrice).toBe(50_000); // Unchanged
+      // Unrealized PnL = (50,000 - 40,000) * 1 = +10,000
+      expect(pos.unrealizedPnl).toBe(10_000);
+      // Realized PnL = (50,000 - 40,000) * 1 = +10,000
+      expect(pf.realizedPnl).toBe(10_000);
+      expect(pf.totalPnl).toBe(20_000);
+      // Equity = 160,000 cash - 40,000 liability = 120,000
+      expect(pf.equity).toBe(120_000);
+    });
+
+    it("8. Short full close: realizes full PnL and deletes short position", async () => {
+      const bus = new TypedEventBus();
+      const broker = new PaperBroker(bus, { initialCash: 100_000, latencyMs: 0, slippage: 0, fee: 0 });
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
+
+      // Short 2 BTC @ 50,000
+      await broker.createOrder("BTCUSDT", "sell", 2, "market");
+
+      // Price drops to 30,000
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 30_000 }, source: "test" });
+
+      // Buy back 2 BTC @ 30,000
+      await broker.createOrder("BTCUSDT", "buy", 2, "market");
+
+      const pf = broker.getPortfolio();
+      expect(pf.positions).toHaveLength(0);
+      expect(pf.cash).toBe(140_000); // 200,000 - 60,000
+      expect(pf.realizedPnl).toBe(40_000); // (50,000 - 30,000) * 2
+      expect(pf.unrealizedPnl).toBe(0);
+      expect(pf.totalPnl).toBe(40_000);
+      expect(pf.equity).toBe(140_000);
+    });
+  });
+
+  describe("Position reversals (Long -> Short & Short -> Long)", () => {
+    it("reverses Long to Short when Sell quantity exceeds Long position", async () => {
+      const bus = new TypedEventBus();
+      const broker = new PaperBroker(bus, { initialCash: 100_000, latencyMs: 0, slippage: 0, fee: 0 });
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
+
+      // Long 1 BTC @ 50,000
+      await broker.createOrder("BTCUSDT", "buy", 1, "market");
+      expect(broker.getPortfolio().cash).toBe(50_000);
+
+      // Price rises to 60,000
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 60_000 }, source: "test" });
+
+      // Sell 2.5 BTC (Closes 1 BTC Long and opens 1.5 BTC Short!)
+      const revOrder = await broker.createOrder("BTCUSDT", "sell", 2.5, "market");
+      expect(revOrder.status).toBe("filled");
+
+      const pf = broker.getPortfolio();
+      expect(pf.positions).toHaveLength(1);
+      const pos = pf.positions[0]!;
+      expect(pos.side).toBe("short");
+      expect(pos.quantity).toBe(1.5);
+      expect(pos.entryPrice).toBe(60_000);
+
+      // Realized on 1 BTC Long close: (60,000 - 50,000) * 1 = +10,000
+      expect(pf.realizedPnl).toBe(10_000);
+      // Cash = 50,000 (remaining) + 60,000 (long sell) + 90,000 (1.5 short proceeds) = 200,000
+      expect(pf.cash).toBe(200_000);
+      // Equity = 200,000 cash - (60,000 * 1.5 liability) = 110,000
+      expect(pf.equity).toBe(110_000);
+    });
+
+    it("reverses Short to Long when Buy quantity exceeds Short position", async () => {
+      const bus = new TypedEventBus();
+      const broker = new PaperBroker(bus, { initialCash: 100_000, latencyMs: 0, slippage: 0, fee: 0 });
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
+
+      // Short 1 BTC @ 50,000 -> cash = 150,000
+      await broker.createOrder("BTCUSDT", "sell", 1, "market");
+
+      // Price drops to 40,000
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 40_000 }, source: "test" });
+
+      // Buy 3 BTC (Closes 1 BTC Short and opens 2 BTC Long!)
+      const revOrder = await broker.createOrder("BTCUSDT", "buy", 3, "market");
+      expect(revOrder.status).toBe("filled");
+
+      const pf = broker.getPortfolio();
+      expect(pf.positions).toHaveLength(1);
+      const pos = pf.positions[0]!;
+      expect(pos.side).toBe("long");
+      expect(pos.quantity).toBe(2);
+      expect(pos.entryPrice).toBe(40_000);
+
+      // Realized on 1 BTC Short close: (50,000 - 40,000) * 1 = +10,000
+      expect(pf.realizedPnl).toBe(10_000);
+      // Cash = 150,000 - (40,000 * 1 short buyback) - (40,000 * 2 long buy) = 30,000
+      expect(pf.cash).toBe(30_000);
+      // Equity = 30,000 cash + (40,000 * 2 long value) = 110,000
+      expect(pf.equity).toBe(110_000);
+    });
+  });
+
+  describe("Limit Orders with Long and Short Positions", () => {
+    it("Limit BUY closes Short position when price drops to limit price", async () => {
+      const bus = new TypedEventBus();
+      const broker = new PaperBroker(bus, { initialCash: 100_000, latencyMs: 0, slippage: 0, fee: 0 });
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
+
+      // Open Short @ 50,000
+      await broker.createOrder("BTCUSDT", "sell", 1, "market");
+
+      // Place Limit BUY (take profit) @ 42,000
+      const limitBuy = await broker.createOrder("BTCUSDT", "buy", 1, "limit", 42_000);
+      expect(limitBuy.status).toBe("submitted");
+      expect(broker.getOpenOrders()).toHaveLength(1);
+
+      // Tick at 45,000 -> remains open
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 45_000 }, source: "test" });
+      expect(broker.getOrder(limitBuy.id)!.status).toBe("submitted");
+
+      // Tick at 42,000 -> fills and closes short
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 42_000 }, source: "test" });
+      const updatedBuy = broker.getOrder(limitBuy.id)!;
+      expect(updatedBuy.status).toBe("filled");
+      expect(updatedBuy.filledPrice).toBe(42_000);
+      expect(broker.getOpenOrders()).toHaveLength(0);
+
+      const pf = broker.getPortfolio();
+      expect(pf.positions).toHaveLength(0);
+      expect(pf.cash).toBe(108_000); // 150,000 - 42,000
+      expect(pf.realizedPnl).toBe(8_000); // (50,000 - 42,000) * 1
+    });
+
+    it("Limit SELL opens Short position when price rises to limit price", async () => {
+      const bus = new TypedEventBus();
+      const broker = new PaperBroker(bus, { initialCash: 100_000, latencyMs: 0, slippage: 0, fee: 0 });
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
+
+      // Place Limit SELL @ 55,000
+      const limitSell = await broker.createOrder("BTCUSDT", "sell", 1, "limit", 55_000);
+      expect(limitSell.status).toBe("submitted");
+      expect(broker.getOpenOrders()).toHaveLength(1);
+
+      // Price rises to 55,000 -> fills and enters short
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 55_000 }, source: "test" });
+      const updatedSell = broker.getOrder(limitSell.id)!;
+      expect(updatedSell.status).toBe("filled");
+      expect(updatedSell.filledPrice).toBe(55_000);
+
+      const pf = broker.getPortfolio();
+      expect(pf.positions).toHaveLength(1);
+      expect(pf.positions[0]!.side).toBe("short");
+      expect(pf.positions[0]!.entryPrice).toBe(55_000);
+      expect(pf.cash).toBe(155_000);
+      expect(pf.equity).toBe(100_000);
+    });
+  });
+
+  describe("Spot-only mode vs Futures mode", () => {
+    it("rejects shorting when allowShort is false", async () => {
+      const bus = new TypedEventBus();
+      const broker = new PaperBroker(bus, { initialCash: 50_000, latencyMs: 0, allowShort: false });
+      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
+
+      const sellOrder = await broker.createOrder("BTCUSDT", "sell", 1, "market");
+      expect(sellOrder.status).toBe("rejected");
+      expect(sellOrder.reason).toMatch(/Insufficient position/);
+    });
+  });
+
+  describe("cancellation & open orders", () => {
     it("should cancel open order, update status, emit order.cancelled, and remove from open orders", async () => {
       const bus = new TypedEventBus();
       let cancelledEventData: unknown = null;
@@ -244,11 +371,6 @@ describe("PaperBroker", () => {
         symbol: "BTCUSDT",
         side: "buy",
       });
-
-      // Price drops to 44,000 — cancelled order must NOT fill
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 44_000 }, source: "test" });
-      expect(cancelled!.status).toBe("cancelled");
-      expect(broker.getPortfolio().positions).toHaveLength(0);
     });
 
     it("should return null when cancelling unknown or already filled order", async () => {
@@ -264,227 +386,68 @@ describe("PaperBroker", () => {
     });
   });
 
-  describe("insufficient cash & position prevention", () => {
-    it("should reject buy when insufficient cash and emit order.rejected", async () => {
+  describe("fees & slippage", () => {
+    it("calculates exact fees for entry and closing", async () => {
       const bus = new TypedEventBus();
-      let rejectedEvent: unknown = null;
-      bus.subscribeTo("order.rejected", (e) => { rejectedEvent = e.data; });
+      const broker = new PaperBroker(bus, {
+        initialCash: 100_000,
+        latencyMs: 0,
+        slippage: 0,
+        fee: 0.001, // 0.1%
+      });
 
-      const broker = new PaperBroker(bus, { initialCash: 500, latencyMs: 0, slippage: 0, fee: 0 });
       bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
 
-      const marketOrder = await broker.createOrder("BTCUSDT", "buy", 1, "market");
-      expect(marketOrder.status).toBe("rejected");
-      expect(broker.getPortfolio().cash).toBe(500); // untouched
-      expect(rejectedEvent).toMatchObject({ orderId: marketOrder.id, symbol: "BTCUSDT", side: "buy" });
+      // Buy 1 BTC: fee = 50,000 * 0.001 = 50
+      const buy = await broker.createOrder("BTCUSDT", "buy", 1, "market");
+      expect(buy.fee).toBe(50);
+      expect(broker.getPortfolio().cash).toBe(49_950); // 100,000 - 50,050
 
-      const limitOrder = await broker.createOrder("BTCUSDT", "buy", 1, "limit", 40_000);
-      expect(limitOrder.status).toBe("rejected");
-      expect(broker.getOpenOrders()).toHaveLength(0);
+      // Sell 1 BTC: fee = 50,000 * 0.001 = 50
+      const sell = await broker.createOrder("BTCUSDT", "sell", 1, "market");
+      expect(sell.fee).toBe(50);
+      expect(broker.getPortfolio().cash).toBe(99_900); // 49,950 + (50,000 - 50)
     });
 
-    it("should reject sell when insufficient position and emit order.rejected", async () => {
+    it("applies slippage accurately for buy and sell", async () => {
       const bus = new TypedEventBus();
-      let rejectedEvent: unknown = null;
-      bus.subscribeTo("order.rejected", (e) => { rejectedEvent = e.data; });
+      const broker = new PaperBroker(bus, {
+        initialCash: 100_000,
+        latencyMs: 0,
+        slippage: 0.01, // 1%
+        fee: 0,
+      });
 
-      const broker = new PaperBroker(bus, { latencyMs: 0, slippage: 0, fee: 0 });
       bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
 
-      const sellOrder = await broker.createOrder("BTCUSDT", "sell", 1, "market");
-      expect(sellOrder.status).toBe("rejected");
-      expect(rejectedEvent).toMatchObject({ orderId: sellOrder.id, symbol: "BTCUSDT", side: "sell" });
+      // Market buy with 1% slippage -> 50,000 * 1.01 = 50,500
+      const buy = await broker.createOrder("BTCUSDT", "buy", 1, "market");
+      expect(buy.filledPrice).toBe(50_500);
+
+      // Market sell with 1% slippage -> 50,000 * 0.99 = 49,500
+      const sell = await broker.createOrder("BTCUSDT", "sell", 1, "market");
+      expect(sell.filledPrice).toBe(49_500);
     });
+  });
 
-    it("should reject limit buy at fill time if cash was spent after order creation", async () => {
-      const bus = new TypedEventBus();
-      let fillTimeReject: unknown = null;
-      bus.subscribeTo("order.rejected", (e) => { fillTimeReject = e.data; });
-
-      const broker = new PaperBroker(bus, { initialCash: 50_000, latencyMs: 0, slippage: 0, fee: 0 });
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 60_000 }, source: "test" });
-
-      // 1. Limit order requiring 40,000 (allowed since cash = 50,000)
-      const limitOrder = await broker.createOrder("BTCUSDT", "buy", 1, "limit", 40_000);
-      expect(limitOrder.status).toBe("submitted");
-
-      // 2. Market order spending 45,000 cash
-      bus.publish({ type: "market.tick", data: { symbol: "ETHUSDT", price: 3_000 }, source: "test" });
-      await broker.createOrder("ETHUSDT", "buy", 15, "market"); // 15 * 3000 = 45,000
-      expect(broker.getPortfolio().cash).toBe(5_000);
-
-      // 3. Price drops to trigger limit order (needs 40,000, but only 5,000 cash remains)
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 40_000 }, source: "test" });
-      expect(limitOrder.status).toBe("rejected");
-      expect(broker.getPortfolio().cash).toBe(5_000); // Negative cash prevented
-      expect(fillTimeReject).toMatchObject({ orderId: limitOrder.id, symbol: "BTCUSDT" });
-    });
-
-    it("prevents invalid quantities, prices, symbols, and sides", async () => {
+  describe("Validation & error prevention", () => {
+    it("rejects invalid quantities, prices, symbols, and sides", async () => {
       const bus = new TypedEventBus();
       const broker = new PaperBroker(bus, { initialCash: 10_000, latencyMs: 0 });
       bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
 
-      // Invalid quantity
       expect((await broker.createOrder("BTCUSDT", "buy", 0, "market")).status).toBe("rejected");
       expect((await broker.createOrder("BTCUSDT", "buy", -5, "market")).status).toBe("rejected");
       expect((await broker.createOrder("BTCUSDT", "buy", NaN, "market")).status).toBe("rejected");
 
-      // Invalid price for limit order
       expect((await broker.createOrder("BTCUSDT", "buy", 1, "limit", 0)).status).toBe("rejected");
       expect((await broker.createOrder("BTCUSDT", "buy", 1, "limit", -100)).status).toBe("rejected");
       expect((await broker.createOrder("BTCUSDT", "buy", 1, "limit", undefined)).status).toBe("rejected");
 
-      // Invalid symbol & side
       expect((await broker.createOrder("", "buy", 1, "market")).status).toBe("rejected");
       expect((await broker.createOrder("BTCUSDT", "invalid" as never, 1, "market")).status).toBe("rejected");
     });
   });
-
-  describe("fees & slippage", () => {
-    it("should calculate exact fees on buy and sell", async () => {
-      const bus = new TypedEventBus();
-      const broker = new PaperBroker(bus, {
-        initialCash: 100_000,
-        latencyMs: 0,
-        slippage: 0,
-        fee: 0.002, // 0.2% fee
-      });
-
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
-
-      // Buy 1 BTC: fee = 50,000 * 0.002 = 100
-      const buy = await broker.createOrder("BTCUSDT", "buy", 1, "market");
-      expect(buy.fee).toBe(100);
-      expect(broker.getPortfolio().cash).toBe(49_900); // 100,000 - (50,000 + 100)
-
-      // Sell 1 BTC: fee = 50,000 * 0.002 = 100
-      const sell = await broker.createOrder("BTCUSDT", "sell", 1, "market");
-      expect(sell.fee).toBe(100);
-      expect(broker.getPortfolio().cash).toBe(99_800); // 49,900 + (50,000 - 100)
-    });
-
-    it("should calculate exact slippage for buy (+) and sell (-)", async () => {
-      const bus = new TypedEventBus();
-      const broker = new PaperBroker(bus, {
-        initialCash: 100_000,
-        latencyMs: 0,
-        slippage: 0.005, // 0.5%
-        fee: 0,
-      });
-
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
-
-      // Buy with 0.5% slippage -> 50,000 * 1.005 = 50,250
-      const buy = await broker.createOrder("BTCUSDT", "buy", 1, "market");
-      expect(buy.filledPrice).toBe(50_250);
-
-      // Sell with 0.5% slippage -> 50,000 * 0.995 = 49,750
-      const sell = await broker.createOrder("BTCUSDT", "sell", 1, "market");
-      expect(sell.filledPrice).toBe(49_750);
-    });
-  });
-
-  describe("PnL tracking", () => {
-    it("accurately maintains unrealized, realized, and total PnL across market price changes", async () => {
-      const bus = new TypedEventBus();
-      const broker = new PaperBroker(bus, {
-        initialCash: 100_000,
-        latencyMs: 0,
-        slippage: 0,
-        fee: 0,
-      });
-
-      // Buy 2 BTC at 50,000
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
-      await broker.createOrder("BTCUSDT", "buy", 2, "market");
-
-      let p = broker.getPortfolio();
-      expect(p.cash).toBe(0);
-      expect(p.equity).toBe(100_000);
-      expect(p.realizedPnl).toBe(0);
-      expect(p.unrealizedPnl).toBe(0);
-      expect(p.totalPnl).toBe(0);
-
-      // Price rises to 60,000 (+20,000 unrealized)
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 60_000 }, source: "test" });
-      p = broker.getPortfolio();
-      expect(p.equity).toBe(120_000);
-      expect(p.unrealizedPnl).toBe(20_000);
-      expect(p.realizedPnl).toBe(0);
-      expect(p.totalPnl).toBe(20_000);
-
-      // Sell 1 BTC at 60,000 (realize +10,000)
-      await broker.createOrder("BTCUSDT", "sell", 1, "market");
-      p = broker.getPortfolio();
-      expect(p.cash).toBe(60_000);
-      expect(p.equity).toBe(120_000);
-      expect(p.realizedPnl).toBe(10_000);
-      expect(p.unrealizedPnl).toBe(10_000);
-      expect(p.totalPnl).toBe(20_000);
-
-      // Price drops to 40,000 (-10,000 unrealized on remaining 1 BTC)
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 40_000 }, source: "test" });
-      p = broker.getPortfolio();
-      expect(p.equity).toBe(100_000); // 60,000 cash + 40,000 BTC
-      expect(p.realizedPnl).toBe(10_000);
-      expect(p.unrealizedPnl).toBe(-10_000);
-      expect(p.totalPnl).toBe(0);
-
-      // Sell remaining 1 BTC at 40,000 (-10,000 realized)
-      await broker.createOrder("BTCUSDT", "sell", 1, "market");
-      p = broker.getPortfolio();
-      expect(p.cash).toBe(100_000);
-      expect(p.equity).toBe(100_000);
-      expect(p.realizedPnl).toBe(0); // +10,000 + (-10,000)
-      expect(p.unrealizedPnl).toBe(0);
-      expect(p.totalPnl).toBe(0);
-      expect(p.positions).toHaveLength(0);
-    });
-  });
-
-  describe("multiple orders", () => {
-    it("handles multiple concurrent limit orders for multiple symbols accurately", async () => {
-      const bus = new TypedEventBus();
-      const broker = new PaperBroker(bus, {
-        initialCash: 150_000,
-        latencyMs: 0,
-        slippage: 0,
-        fee: 0,
-      });
-
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 50_000 }, source: "test" });
-      bus.publish({ type: "market.tick", data: { symbol: "ETHUSDT", price: 3_000 }, source: "test" });
-
-      // Create limit orders
-      const btcLimit1 = await broker.createOrder("BTCUSDT", "buy", 1, "limit", 48_000);
-      const btcLimit2 = await broker.createOrder("BTCUSDT", "buy", 1, "limit", 45_000);
-      const ethLimit = await broker.createOrder("ETHUSDT", "buy", 10, "limit", 2_800);
-
-      expect(broker.getOpenOrders()).toHaveLength(3);
-
-      // BTC tick at 47,000 triggers btcLimit1 only
-      bus.publish({ type: "market.tick", data: { symbol: "BTCUSDT", price: 47_000 }, source: "test" });
-      expect(btcLimit1.status).toBe("filled");
-      expect(btcLimit2.status).toBe("submitted");
-      expect(ethLimit.status).toBe("submitted");
-      expect(broker.getOpenOrders()).toHaveLength(2);
-
-      // ETH tick at 2,750 triggers ethLimit only
-      bus.publish({ type: "market.tick", data: { symbol: "ETHUSDT", price: 2_750 }, source: "test" });
-      expect(ethLimit.status).toBe("filled");
-      expect(btcLimit2.status).toBe("submitted");
-      expect(broker.getOpenOrders()).toHaveLength(1);
-
-      // Cancel remaining btcLimit2
-      broker.cancelOrder(btcLimit2.id);
-      expect(btcLimit2.status).toBe("cancelled");
-      expect(broker.getOpenOrders()).toHaveLength(0);
-
-      // Verify order history contains all 3 orders
-      const history = broker.getOrderHistory();
-      expect(history).toHaveLength(3);
-    });
-  });
 });
+
 

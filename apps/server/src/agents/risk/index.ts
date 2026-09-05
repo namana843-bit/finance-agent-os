@@ -199,22 +199,22 @@ export class RiskAgent extends BaseAgent implements Agent {
     const existingPos = this.portfolio.positions.get(sym);
     const existingValue = existingPos ? this.estimatePositionValue(existingPos) : 0;
     const concentrationCurrent = totalValue > 0 ? (existingValue / totalValue) * 100 : 0;
-
+    const isBuy = normalized.action === "buy" || (normalized as unknown as { side?: string }).side === "buy";
     let projectedValue = existingValue;
-    if (normalized.action === "buy") {
+    if (isBuy) {
       const qty = normalized.qty ?? normalized.quantity ?? 1;
       const notional = Number.isFinite(qty) ? normalized.price * qty : normalized.price;
       projectedValue = existingValue + notional;
     }
 
     const concentrationProjected = totalValue > 0 ? (projectedValue / totalValue) * 100 : 0;
-    const concentrationToCheck = normalized.action === "buy" ? concentrationProjected : concentrationCurrent;
+    const concentrationToCheck = isBuy ? concentrationProjected : concentrationCurrent;
     if (concentrationToCheck > this.config.maxPositionPct) {
       checks.concentration = false;
       reasons.push(`concentration ${concentrationToCheck.toFixed(2)}% > maxPositionPct ${this.config.maxPositionPct}%`);
     }
 
-    if (normalized.action === "buy" && !this.portfolio.positions.has(sym)) {
+    if (isBuy && !this.portfolio.positions.has(sym)) {
       if (this.portfolio.positions.size >= this.config.maxOpenPositions) {
         checks.concentration = false;
         reasons.push(`maxOpenPositions ${this.portfolio.positions.size} >= limit ${this.config.maxOpenPositions}`);
@@ -250,15 +250,19 @@ export class RiskAgent extends BaseAgent implements Agent {
     };
 
     const eventType = approved ? "risk.approved" : "risk.rejected";
+    const sigCorrelation = (normalized as unknown as { correlationId?: string }).correlationId;
+    const sigId = (normalized as unknown as { id?: string }).id;
     this.bus.publish({
       type: eventType,
       data: {
         ...decision,
         id: generateDecisionId(),
+        correlationId: sigCorrelation ?? sigId,
         timestamp: Date.now(),
       },
       source: "risk-agent",
       agentId: "risk",
+      correlationId: sigCorrelation ?? sigId,
     });
 
     if (!approved) {

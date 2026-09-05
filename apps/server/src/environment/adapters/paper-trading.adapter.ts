@@ -16,7 +16,7 @@ export class PaperTradingAdapter implements PaperTradingPort, PortfolioPort {
   private broker: PaperBroker;
 
   constructor(bus: TypedEventBus, broker?: PaperBroker) {
-    this.broker = broker ?? new PaperBroker(bus);
+    this.broker = broker ?? new PaperBroker(bus, { allowShort: false });
   }
 
   // -------------------------------------------------------------------------

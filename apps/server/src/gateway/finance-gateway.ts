@@ -23,6 +23,8 @@ export interface GatewayConfig {
 
 export interface TradeRequest {
   id?: string;
+  clientOrderId?: string;
+  idempotencyKey?: string;
   symbol: string;
   side: "buy" | "sell";
   type: "market" | "limit";
@@ -87,6 +89,8 @@ export class FinanceGateway {
   private pendingRequests = new Map<string, TradeRequest>();
   private requestHistory: GatewayDecision[] = [];
   private agentDailyOrders = new Map<string, number>();
+  private dedupByIdempotency = new Map<string, GatewayDecision>();
+  private pendingByCorrelation = new Map<string, Promise<GatewayDecision>>();
   private lastRequestTime = 0;
   private totalRequests = 0;
   private approvedRequests = 0;
@@ -134,8 +138,14 @@ export class FinanceGateway {
   // -------------------------------------------------------------------------
 
   async submitRequest(request: TradeRequest): Promise<GatewayDecision> {
-    const requestId = request.id ?? uuidv4();
-    const correlationId = request.correlationId ?? uuidv4();
+    const requestId = request.id?.trim() || request.clientOrderId?.trim() || uuidv4();
+    const correlationId = request.correlationId?.trim() || uuidv4();
+    const idempotencyKey = request.idempotencyKey?.trim() || request.clientOrderId?.trim() || `gw:${request.agentId}:${request.symbol.toUpperCase()}:${request.side}:${request.quantity}:${request.price}`;
+    // Idempotent duplicate protection — return prior decision if same key already processed
+    const prior = this.dedupByIdempotency.get(idempotencyKey);
+    if (prior) return { ...prior };
+    const pendingSame = this.pendingByCorrelation.get(correlationId);
+    if (pendingSame) return pendingSame;
     const now = Date.now();
     this.lastRequestTime = now;
     this.totalRequests++;
@@ -166,10 +176,17 @@ export class FinanceGateway {
       return this.makeDecision(requestId, false, "Live trading not enabled — set LIVE_TRADING_ENABLED=true", false, false, correlationId);
     }
 
-    // 5. Subscribe to risk decision and publish trade request
+    // 5. Subscribe to risk decision and publish trade request — with idempotent tracking
     this.pendingRequests.set(requestId, { ...request, id: requestId, correlationId });
-
-    const decision = await this.waitForRiskDecision(requestId, correlationId, request);
+    const pendingPromise = this.waitForRiskDecision(requestId, correlationId, request).then(d => {
+      this.dedupByIdempotency.set(idempotencyKey, d);
+      this.pendingByCorrelation.delete(correlationId);
+      // audit event for every gateway decision
+      this.bus.publish({ type: d.approved ? "audit.gateway_approved" : "audit.gateway_rejected", data: { requestId, correlationId, idempotencyKey, approved: d.approved, reason: d.reason, timestamp: Date.now() }, source: "finance-gateway", agentId: request.agentId, correlationId });
+      return d;
+    });
+    this.pendingByCorrelation.set(correlationId, pendingPromise);
+    const decision = await pendingPromise;
     return decision;
   }
 
@@ -223,7 +240,7 @@ export class FinanceGateway {
           this.requestHistory.splice(0, this.requestHistory.length - 2000);
         }
 
-        // Emit approval and forward as order.created
+        // Emit approval and forward as order.created — with proper ids and correlation for canonical lifecycle
         this.bus.publish({
           type: "gateway.approved",
           data: { ...decision, request },
@@ -235,6 +252,9 @@ export class FinanceGateway {
           type: "order.created",
           data: {
             id: requestId,
+            clientOrderId: request.clientOrderId ?? requestId,
+            correlationId,
+            idempotencyKey: request.idempotencyKey ?? request.clientOrderId ?? requestId,
             symbol: request.symbol,
             side: request.side,
             type: request.type,

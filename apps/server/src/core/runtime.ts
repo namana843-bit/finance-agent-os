@@ -555,15 +555,18 @@ export function createRuntime(): FinanceRuntime {
   });
   runtime.registerService(strategyLabService);
 
-  // Execution Pipeline — Signal -> Risk -> Permission -> Paper -> Result (live disabled by default)
+  // Execution Pipeline — Signal -> Risk -> Permission -> Paper -> Result (live disabled by default) with canonical OrderManager
   const executionPipelineService = new ExecutionPipelineService({
     bus,
     riskAgent,
     gateway: gatewayService.getInstance(),
     paperBroker: paperBrokerService.getInstance(),
+    orderManager: orderManagerService.getInstance(),
     auditLogger: auditLoggerService.getInstance(),
   });
   runtime.registerService(executionPipelineService);
+  // wire OrderManager persistence and pipeline cross-link for event ordering
+  executionPipelineService.getInstance().setOrderManager(orderManagerService.getInstance());
 
   // Dialogue Engine — OpenMausBot Conversational Dialogue Layer
   const dialogueEngineService = new DialogueEngineService(bus);
