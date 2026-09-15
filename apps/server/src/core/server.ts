@@ -2,8 +2,16 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import { TypedEventBus, type EventBusOptions } from "@finance/core";
 import type { FinanceEvent, HistoryFilter } from "@finance/shared";
-import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker, getDialogueEngine } from "./runtime.js";
+import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine } from "./runtime.js";
+import { ApprovalError } from "../approvals/types.js";
+import type { LlmConfig } from "../llm/types.js";
 import { CustomBotAgent } from "../agents/custom-bot-agent.js";
+
+// Union-tolerant view: works with the current single-provider LlmConfig and
+// with the parallel agent's discriminated union
+// (openai-compat | cli). Narrow with cfg.provider === "cli".
+type CliEngineConfig = { provider: "cli"; command: string; model?: string; args?: string[] };
+type AnyLlmConfig = LlmConfig | CliEngineConfig;
 
 // ---------------------------------------------------------------------------
 // Server factory
@@ -30,6 +38,35 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   // -------------------------------------------------------------------------
+  // GET /.well-known/finance-agent/environment (for verifyPhoneEndpoint & isWorkspaceRunning)
+  // -------------------------------------------------------------------------
+  app.get("/.well-known/finance-agent/environment", async () => {
+    const { existsSync, readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { homedir } = await import("node:os");
+    const dataDir = process.env.FINANCE_DATA_DIR || process.env.OMB_DATA_DIR || join(homedir(), ".finance-agent");
+    let environmentId: string | null = null;
+    try {
+      const raw = readFileSync(join(dataDir, "environment-id"), "utf8").trim();
+      if (/^[0-9a-f-]{36}$/i.test(raw)) environmentId = raw;
+    } catch { /* no id yet */ }
+    return { environmentId, app: "finance-agent", version: "0.1.0", platform: process.platform, label: process.env.FINANCE_LABEL ?? null };
+  });
+  // legacy alias for OpenMausBot compat
+  app.get("/.well-known/openmausbot/environment", async () => {
+    const { existsSync, readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { homedir } = await import("node:os");
+    const dataDir = process.env.FINANCE_DATA_DIR || process.env.OMB_DATA_DIR || join(homedir(), ".finance-agent");
+    let environmentId: string | null = null;
+    try {
+      const raw = readFileSync(join(dataDir, "environment-id"), "utf8").trim();
+      if (/^[0-9a-f-]{36}$/i.test(raw)) environmentId = raw;
+    } catch {}
+    return { environmentId, app: "finance-agent", version: "0.1.0", platform: process.platform, label: process.env.FINANCE_LABEL ?? null };
+  });
+
+  // -------------------------------------------------------------------------
   // GET /api/health
   // -------------------------------------------------------------------------
   app.get("/api/health", async () => {
@@ -37,6 +74,8 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     const health = runtime ? await runtime.getHealth() : null;
     return {
       status: "ok",
+      pid: process.pid,
+      app: "finance-agent",
       uptime: process.uptime(),
       timestamp: Date.now(),
       version: "0.1.0",
@@ -428,14 +467,14 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     const sendComment = (comment: string) => {
       try {
         reply.raw.write(`: ${comment}\n\n`);
-      } catch { }
+      } catch {}
     };
 
     sendComment("connected");
     if (typeof (reply.raw as unknown as { flushHeaders?: () => void }).flushHeaders === "function") {
       try {
         (reply.raw as unknown as { flushHeaders: () => void }).flushHeaders();
-      } catch { }
+      } catch {}
     }
 
     if (shouldReplay) {
@@ -524,6 +563,64 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   app.get("/api/gateway/stats", async () => {
     const gw = getGateway();
     return { gateway: gw ? gw.getStats() : null };
+  });
+
+  // -------------------------------------------------------------------------
+  // OpenCode CLI Path Gateways — permissioned path gateways for `opencode`
+  // -------------------------------------------------------------------------
+  app.get("/api/opencode/cli-path", async () => {
+    const gw = getOpencodeGateway();
+    if (!gw) return { cliPath: null, error: "opencode gateway not available" };
+    const info = await gw.getCliInfo();
+    return { ...info, gateway: "opencode-cli" };
+  });
+
+  app.get("/api/opencode/gateway/stats", async () => {
+    const gw = getOpencodeGateway();
+    return { gateway: gw ? gw.getStats() : null };
+  });
+
+  app.get("/api/opencode/paths", async () => {
+    const gw = getOpencodeGateway();
+    if (!gw) return { error: "opencode gateway not available" };
+    return gw.listPathGateways();
+  });
+
+  app.get("/api/gateways", async () => {
+    const gw = getGateway();
+    const ogw = getOpencodeGateway();
+    return {
+      financeGateway: gw ? { stats: gw.getStats(), config: gw.getConfig() } : null,
+      opencodeGateway: ogw ? ogw.listPathGateways() : null,
+      paths: {
+        finance: ["/api/gateway/trade", "/api/gateway/stats"],
+        opencode: ["/api/opencode/cli-path", "/api/opencode/paths", "/api/opencode/run", "/api/opencode/gateway/stats"],
+      },
+    };
+  });
+
+  app.post<{
+    Body: { command?: string; args?: string[]; agentId?: string; correlationId?: string };
+  }>("/api/opencode/run", async (request, reply) => {
+    const ogw = getOpencodeGateway();
+    if (!ogw) return reply.status(503).send({ error: "opencode gateway not available" });
+    const body = request.body ?? {};
+    const args = body.args ?? (body.command ? body.command.trim().split(/\s+/).filter(Boolean) : []);
+    if (args.length === 0) {
+      return reply.status(400).send({ error: "command or args required (e.g. {\"args\":[\"--version\"]})" });
+    }
+    try {
+      const result = await ogw.run({
+        command: body.command ?? args.join(" "),
+        args,
+        agentId: body.agentId ?? "api",
+        correlationId: body.correlationId,
+      });
+      const status = result.gated.allowed ? (result.ok ? 200 : 500) : 403;
+      return reply.status(status).send({ result });
+    } catch (err) {
+      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -834,35 +931,102 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/chat/history — OpenMausBot dialogue history
+  // CHAT (Phase 1: bots-as-contacts)
   // -------------------------------------------------------------------------
-  app.get<{
-    Querystring: { channelId?: string; limit?: string };
-  }>("/api/chat/history", async (request) => {
+  app.get("/api/bots", async () => {
+    return { bots: getChat()?.bots.list() ?? [] };
+  });
+
+  app.get<{ Querystring: { channelId?: string } }>("/api/threads", async (request, reply) => {
+    const chat = getChat();
+    if (!chat) return reply.status(503).send({ error: "chat not available" });
+    return { threads: await chat.getThreads(request.query.channelId) };
+  });
+
+  app.post<{ Body: { title?: string; channelId?: string; botId?: string } }>("/api/threads", async (request, reply) => {
+    const chat = getChat();
+    if (!chat) return reply.status(503).send({ error: "chat not available" });
+    const thread = await chat.createThread(request.body ?? {});
+    return reply.status(201).send({ ok: true, thread });
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/threads/:id/messages", async (request, reply) => {
+    const chat = getChat();
+    if (!chat) return reply.status(503).send({ error: "chat not available" });
+    const raw = request.query.limit;
+    let limit = 100;
+    if (raw !== undefined) {
+      const parsed = parseInt(raw, 10);
+      if (!Number.isNaN(parsed) && parsed > 0) {
+        limit = parsed;
+      }
+    }
+    try {
+      // ChatCore.getMessages does not throw for unknown threads — check explicitly.
+      const threads = await chat.getThreads();
+      if (!threads.some((t) => t.id === request.params.id)) {
+        return reply.status(404).send({ error: "thread not found" });
+      }
+      const messages = await chat.getMessages(request.params.id, limit);
+      return { messages, threadId: request.params.id };
+    } catch (err) {
+      if (err instanceof Error && err.message === "thread not found") return reply.status(404).send({ error: "thread not found" });
+      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+    }
+    if (body.content && typeof body.content === "string" && body.content.trim() !== "") {
+      const engine = getDialogueEngine();
+      if (!engine) return reply.status(503).send({ error: "dialogue engine not available" });
+      const message = await engine.handleUserMessage(body.content, body.channelId ?? "trading-floor");
+      return { ok: true, message };
+    }
+    return reply.status(400).send({ error: "message (ChatCore) or content (dialogue) is required" });
+  });
+
+  // GET /api/chat/history — DialogueEngine history
+  app.get<{ Querystring: { channelId?: string; limit?: string } }>("/api/chat/history", async (request) => {
     const engine = getDialogueEngine();
     if (!engine) return { messages: [] };
     const limit = request.query.limit ? parseInt(request.query.limit, 10) : 100;
     return { messages: engine.getHistory(request.query.channelId, limit) };
   });
 
-  // -------------------------------------------------------------------------
-  // POST /api/chat — OpenMausBot user message / agent prompt
-  // -------------------------------------------------------------------------
-  app.post<{
-    Body: { content?: string; channelId?: string };
-  }>("/api/chat", async (request, reply) => {
-    const engine = getDialogueEngine();
-    if (!engine) return reply.status(503).send({ error: "dialogue engine not available" });
-    const { content, channelId = "trading-floor" } = request.body || {};
-    if (!content || typeof content !== "string") {
-      return reply.status(400).send({ error: "content string is required" });
+  app.post<{ Body: { threadId?: string; title?: string; message?: string; agentId?: string; content?: string; channelId?: string } }>("/api/chat", async (request, reply) => {
+    const body = (request.body ?? {}) as { threadId?: string; title?: string; message?: string; agentId?: string; content?: string; channelId?: string };
+    if (body.message && typeof body.message === "string" && body.message.trim() !== "") {
+      const chat = getChat();
+      if (!chat) {
+        const engine = getDialogueEngine();
+        if (engine) {
+          const message = await engine.handleUserMessage(body.message, body.channelId ?? "trading-floor");
+          return { ok: true, message, fallback: "dialogue-engine" };
+        }
+        return reply.status(503).send({ error: "chat not available" });
+      }
     }
-    const message = await engine.handleUserMessage(content, channelId);
-    return { ok: true, message };
+    try {
+      let threadId = body.threadId;
+      let thread;
+      if (!threadId) {
+        thread = await chat.createThread({ title: body.title ?? body.message.slice(0, 60) });
+        threadId = thread.id;
+      } else {
+        const threads = await chat.getThreads();
+        thread = threads.find((t) => t.id === threadId);
+        if (!thread) return reply.status(404).send({ error: "thread not found" });
+      }
+      const result = await chat.sendUserMessage(threadId, body.message, { agentId: body.agentId });
+      return { ok: true, thread, message: result.message, planId: result.planId ?? null };
+    } catch (err) {
+      if (err instanceof Error && err.message === "thread not found") {
+        return reply.status(404).send({ error: "thread not found" });
+      }
+      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // -------------------------------------------------------------------------
-  // POST /api/agents/custom — Dynamic agent creator
+  // POST /api/agents/custom — Dynamic agent creator (from main)
   // -------------------------------------------------------------------------
   app.post<{
     Body: {
@@ -881,70 +1045,27 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     const runtime = getRuntime();
     const engine = getDialogueEngine();
     if (!runtime || !engine) return reply.status(503).send({ error: "runtime or dialogue engine not available" });
-
     const body = request.body || {};
     const name = body.name?.trim();
-    if (!name) {
-      return reply.status(400).send({ error: "Agent name is required" });
-    }
-
+    if (!name) return reply.status(400).send({ error: "Agent name is required" });
     const id = body.id?.trim() || `bot-${name.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${Date.now().toString(36).substring(4)}`;
     const avatar = body.avatar?.trim() || "🤖";
     const role = body.role?.trim() || "Custom Quant Analyst";
     const color = body.color?.trim() || "#10b981";
     const description = body.description?.trim() || `Custom AI agent for ${role}`;
     const personaPrompt = body.personaPrompt?.trim() || "Analyze market movements and provide alpha signals.";
-
-    const customBot = new CustomBotAgent(runtime.getEventBus(), {
-      id,
-      name,
-      avatar,
-      role,
-      color,
-      description,
-      personaPrompt,
-      strategyId: body.strategyId,
-      symbols: body.symbols || ["BTCUSDT", "ETHUSDT"],
-      parameters: body.parameters || {},
-      enabled: true,
-    });
-
+    const customBot = new CustomBotAgent(runtime.getEventBus(), { id, name, avatar, role, color, description, personaPrompt, strategyId: body.strategyId, symbols: body.symbols || ["BTCUSDT", "ETHUSDT"], parameters: body.parameters || {}, enabled: true });
     try {
       runtime.registerAgent(customBot);
       await customBot.start();
-
-      engine.registerAgentProfile({
-        id,
-        name,
-        avatar,
-        role,
-        color,
-        description,
-      });
-
-      // Announce new agent in #trading-floor
-      engine.postMessage({
-        channelId: "trading-floor",
-        senderId: id,
-        senderName: name,
-        senderAvatar: avatar,
-        senderRole: role,
-        senderColor: color,
-        content: `👋 Hello team! I am **${name}** (${role}). Ready to analyze markets and collaborate.`,
-      });
-
-      return {
-        ok: true,
-        agent: customBot.getProfile(),
-      };
+      engine.registerAgentProfile({ id, name, avatar, role, color, description });
+      engine.postMessage({ channelId: "trading-floor", senderId: id, senderName: name, senderAvatar: avatar, senderRole: role, senderColor: color, content: `👋 Hello team! I am **${name}** (${role}). Ready to analyze markets and collaborate.` });
+      return { ok: true, agent: customBot.getProfile() };
     } catch (err) {
       return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  // -------------------------------------------------------------------------
-  // GET /api/orders/pending & POST /api/orders/propose
-  // -------------------------------------------------------------------------
   app.get("/api/orders/pending", async () => {
     const engine = getDialogueEngine();
     if (!engine) return { orders: [] };
@@ -952,37 +1073,16 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   app.post<{
-    Body: {
-      symbol?: string;
-      side?: "buy" | "sell";
-      quantity?: number;
-      price?: number;
-      type?: "market" | "limit";
-      strategy?: string;
-      reason?: string;
-    };
+    Body: { symbol?: string; side?: "buy" | "sell"; quantity?: number; price?: number; type?: "market" | "limit"; strategy?: string; reason?: string };
   }>("/api/orders/propose", async (request, reply) => {
     const engine = getDialogueEngine();
     if (!engine) return reply.status(503).send({ error: "dialogue engine not available" });
     const b = request.body || {};
-    if (!b.symbol || !b.side || typeof b.quantity !== "number") {
-      return reply.status(400).send({ error: "symbol, side, and quantity are required" });
-    }
-    const proposal = engine.createProposedOrder({
-      symbol: b.symbol.toUpperCase(),
-      side: b.side,
-      quantity: b.quantity,
-      price: b.price ?? 0,
-      type: b.type ?? "market",
-      strategy: b.strategy,
-      reason: b.reason,
-    });
+    if (!b.symbol || !b.side || typeof b.quantity !== "number") return reply.status(400).send({ error: "symbol, side, and quantity are required" });
+    const proposal = engine.createProposedOrder({ symbol: b.symbol.toUpperCase(), side: b.side, quantity: b.quantity, price: b.price ?? 0, type: b.type ?? "market", strategy: b.strategy, reason: b.reason });
     return { ok: true, order: proposal };
   });
 
-  // -------------------------------------------------------------------------
-  // POST /api/orders/:id/approve & POST /api/orders/:id/reject
-  // -------------------------------------------------------------------------
   app.post<{ Params: { id: string } }>("/api/orders/:id/approve", async (request, reply) => {
     const engine = getDialogueEngine();
     if (!engine) return reply.status(503).send({ error: "dialogue engine not available" });
@@ -991,16 +1091,398 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     return { ok: true, order };
   });
 
-  app.post<{
-    Params: { id: string };
-    Body?: { reason?: string };
-  }>("/api/orders/:id/reject", async (request, reply) => {
+  app.post<{ Params: { id: string }; Body?: { reason?: string } }>("/api/orders/:id/reject", async (request, reply) => {
     const engine = getDialogueEngine();
     if (!engine) return reply.status(503).send({ error: "dialogue engine not available" });
     const order = engine.rejectOrder(request.params.id, request.body?.reason);
     if (!order) return reply.status(404).send({ error: "order proposal not found" });
     return { ok: true, order };
   });
+
+  // -------------------------------------------------------------------------
+  // APPROVALS (Phase 2)
+  // -------------------------------------------------------------------------
+  app.get<{ Querystring: { status?: string } }>("/api/proposals", async (request, reply) => {
+    const approvals = getApprovals();
+    if (!approvals) return reply.status(503).send({ error: "approvals not available" });
+    return { proposals: await approvals.list(request.query.status as any) };
+  });
+
+  app.post<{
+    Body: {
+      symbol?: string;
+      side?: string;
+      quantity?: number;
+      price?: number;
+      confidence?: number;
+      reason?: string;
+      strategy?: string;
+      threadId?: string;
+    };
+  }>("/api/proposals", async (request, reply) => {
+    const approvals = getApprovals();
+    if (!approvals) return reply.status(503).send({ error: "approvals not available" });
+    const body = request.body ?? {};
+    if (
+      !body.symbol ||
+      typeof body.symbol !== "string" ||
+      (body.side !== "buy" && body.side !== "sell") ||
+      typeof body.quantity !== "number" ||
+      !(body.quantity > 0) ||
+      typeof body.price !== "number" ||
+      !(body.price > 0)
+    ) {
+      return reply.status(400).send({ error: "symbol, side (buy|sell), quantity (>0), price (>0) are required" });
+    }
+    try {
+      const proposal = await approvals.propose({
+        symbol: body.symbol,
+        side: body.side,
+        quantity: body.quantity,
+        price: body.price,
+        confidence: body.confidence,
+        reason: body.reason,
+        strategy: body.strategy,
+        threadId: body.threadId,
+      } as any);
+      return reply.status(201).send({ ok: true, proposal });
+    } catch (err) {
+      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post<{ Params: { id: string }; Body: { agentId?: string } }>(
+    "/api/proposals/:id/approve",
+    async (request, reply) => {
+      const approvals = getApprovals();
+      if (!approvals) return reply.status(503).send({ error: "approvals not available" });
+      try {
+        const { proposal, result } = await approvals.approve(request.params.id, {
+          agentId: request.body?.agentId,
+        });
+        return { ok: true, proposal, result };
+      } catch (err) {
+        if (err instanceof ApprovalError) {
+          if (err.code === "NOT_FOUND") return reply.status(404).send({ error: err.message });
+          if (err.code === "EXPIRED") return reply.status(410).send({ error: err.message });
+          if (err.code === "NOT_PENDING") return reply.status(409).send({ error: err.message });
+          if (err.code === "NO_PIPELINE") return reply.status(503).send({ error: err.message });
+        }
+        return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    "/api/proposals/:id/reject",
+    async (request, reply) => {
+      const approvals = getApprovals();
+      if (!approvals) return reply.status(503).send({ error: "approvals not available" });
+      try {
+        const rejected = (await approvals.reject(request.params.id, request.body?.reason)) as unknown;
+        let proposal: unknown =
+          (rejected as { proposal?: unknown } | null | undefined)?.proposal ?? rejected;
+        if (proposal == null) {
+          try {
+            proposal = await approvals.get(request.params.id);
+          } catch {
+            proposal = null;
+          }
+        }
+        return { ok: true, proposal };
+      } catch (err) {
+        if (err instanceof ApprovalError) {
+          if (err.code === "NOT_FOUND") return reply.status(404).send({ error: err.message });
+          if (err.code === "EXPIRED") return reply.status(410).send({ error: err.message });
+          if (err.code === "NOT_PENDING") return reply.status(409).send({ error: err.message });
+          if (err.code === "NO_PIPELINE") return reply.status(503).send({ error: err.message });
+        }
+        const status = err instanceof ApprovalError ? 409 : 500;
+        return reply.status(status).send({ error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // LLM (Phase 4)
+  // -------------------------------------------------------------------------
+  app.get("/api/llm/models", async (_request, reply) => {
+    const chat = getChat();
+    if (!chat) return reply.status(503).send({ error: "chat not available" });
+    const llm = getLlm();
+    const models = chat.bots.list().map((bot) => {
+      if (!bot.llm) {
+        return {
+          botId: bot.id,
+          name: bot.name,
+          provider: "none",
+          model: "deterministic",
+          configured: false,
+          reason: "deterministic mode (no llm)",
+        };
+      }
+      const cfg = bot.llm as unknown as AnyLlmConfig;
+      if (cfg.provider === "cli") {
+        const command = typeof cfg.command === "string" ? cfg.command : "";
+        const model = cfg.model ?? "agent default";
+        if (!llm) {
+          return {
+            botId: bot.id,
+            name: bot.name,
+            provider: "cli",
+            model,
+            command,
+            configured: false,
+            reason: "llm service unavailable",
+          };
+        }
+        let configured = false;
+        try {
+          configured = llm.isConfigured(bot.llm);
+        } catch {
+          configured = false;
+        }
+        if (command.trim() === "") {
+          configured = false;
+        }
+        return {
+          botId: bot.id,
+          name: bot.name,
+          provider: "cli",
+          model,
+          command,
+          configured,
+          reason: configured ? "ok" : (command.trim() === "" ? "missing command" : "cli not configured"),
+        };
+      }
+      if (!llm) {
+        return {
+          botId: bot.id,
+          name: bot.name,
+          provider: cfg.provider,
+          model: cfg.model,
+          configured: false,
+          reason: "llm service unavailable",
+        };
+      }
+      let configured = false;
+      try {
+        configured = llm.isConfigured(bot.llm);
+      } catch {
+        configured = false;
+      }
+      return {
+        botId: bot.id,
+        name: bot.name,
+        provider: cfg.provider,
+        model: cfg.model,
+        configured,
+        reason: configured ? "ok" : `missing env ${cfg.apiKeyEnv}`,
+      };
+    });
+    return { models };
+  });
+
+  app.get("/api/llm/usage", async () => {
+    const llm = getLlm();
+    const chat = getChat();
+    if (llm) {
+      try {
+        await llm.usageReady();
+      } catch {
+        // Best-effort; fall through to whatever is in memory.
+      }
+    }
+    const snapshot = llm?.getUsage() ?? {
+      rows: [],
+      totals: { turns: 0, tokens: 0, costUsd: null },
+    };
+    const names = new Map(
+      (chat?.bots.list() ?? []).map((bot) => [bot.id, bot.name] as const),
+    );
+    return {
+      usage: snapshot.rows.map((row) => ({
+        ...row,
+        name: names.get(row.botId) ?? row.botId,
+      })),
+      totals: snapshot.totals,
+    };
+  });
+
+  app.get("/api/llm/engines", async () => {
+    try {
+      const mod = await import("../llm/engines.js") as unknown as {
+        getEngineStatuses: (probe?: boolean) => Promise<Array<Record<string, unknown>>>;
+      };
+      const engines = await mod.getEngineStatuses();
+      return { engines };
+    } catch {
+      return { engines: [] };
+    }
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { command?: string };
+  }>("/api/llm/engines/:id/cli", async (request, reply) => {
+    const body = request.body ?? {};
+    const command = typeof body.command === "string" ? body.command.trim() : "";
+    if (!command) {
+      return reply.status(400).send({ error: "command is required and must be a non-empty string" });
+    }
+    try {
+      const mod = await import("../llm/engines.js") as unknown as {
+        ENGINE_CATALOG: Array<{ id: string }>;
+        saveEngineOverride: (dataDir: string | undefined, id: string, command: string | undefined) => Promise<void>;
+        getEngineStatuses: (probe?: boolean) => Promise<Array<{ id: string } & Record<string, unknown>>>;
+      };
+      const entry = mod.ENGINE_CATALOG.find((e) => e.id === request.params.id);
+      if (!entry) {
+        return reply.status(404).send({ error: `unknown engine '${request.params.id}'` });
+      }
+      await mod.saveEngineOverride(undefined, request.params.id, command);
+      const statuses = await mod.getEngineStatuses();
+      const engine = statuses.find((s) => s.id === request.params.id) ?? null;
+      return { ok: true, engine };
+    } catch (err) {
+      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.delete<{
+    Params: { id: string };
+  }>("/api/llm/engines/:id/cli", async (request, reply) => {
+    try {
+      const mod = await import("../llm/engines.js") as unknown as {
+        ENGINE_CATALOG: Array<{ id: string }>;
+        saveEngineOverride: (dataDir: string | undefined, id: string, command: string | undefined) => Promise<void>;
+        getEngineStatuses: (probe?: boolean) => Promise<Array<{ id: string } & Record<string, unknown>>>;
+      };
+      const entry = mod.ENGINE_CATALOG.find((e) => e.id === request.params.id);
+      if (!entry) {
+        return reply.status(404).send({ error: `unknown engine '${request.params.id}'` });
+      }
+      await mod.saveEngineOverride(undefined, request.params.id, undefined);
+      const statuses = await mod.getEngineStatuses();
+      const engine = statuses.find((s) => s.id === request.params.id) ?? null;
+      return { ok: true, engine };
+    } catch (err) {
+      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { provider?: string; command?: string; model?: string; args?: string[]; baseUrl?: string; apiKeyEnv?: string; engine?: string };
+  }>(
+    "/api/bots/:id/engine",
+    async (request, reply) => {
+      const chat = getChat();
+      if (!chat) return reply.status(503).send({ error: "chat not available" });
+      const body = request.body ?? {};
+      if (body.args !== undefined) {
+        if (!Array.isArray(body.args) || !body.args.every((a) => typeof a === "string")) {
+          return reply.status(400).send({ error: "args must be a string array" });
+        }
+      }
+      // Engine-catalog path: { engine: "<catalog id>", model?, args?, baseUrl?, apiKeyEnv? }
+      const engineId = typeof body.engine === "string" ? body.engine.trim() : "";
+      if (engineId) {
+        let mod: {
+          ENGINE_CATALOG: Array<{ id: string; kind: string; command: string; suggestedArgs?: string[] }>;
+          loadEngineOverrides: (dataDir?: string) => Promise<Record<string, string>>;
+          resolveEngineCommand: (entry: { id: string; command: string }, overrides: Record<string, string>) => string;
+        };
+        try {
+          mod = await import("../llm/engines.js") as unknown as typeof mod;
+        } catch (err) {
+          return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+        }
+        const entry = mod.ENGINE_CATALOG.find((e) => e.id === engineId);
+        if (!entry) {
+          return reply.status(404).send({ error: `unknown engine '${engineId}'` });
+        }
+        let llmCfg: LlmConfig | undefined;
+        if (entry.kind === "openai-compat") {
+          const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim() : "";
+          const apiKeyEnv = typeof body.apiKeyEnv === "string" ? body.apiKeyEnv.trim() : "";
+          const model = typeof body.model === "string" ? body.model.trim() : "";
+          if (!baseUrl || !apiKeyEnv || !model) {
+            return reply.status(400).send({ error: "openai-compat requires baseUrl, apiKeyEnv, model" });
+          }
+          llmCfg = { provider: "openai-compat", baseUrl, apiKeyEnv, model } as unknown as LlmConfig;
+        } else {
+          const overrides = await mod.loadEngineOverrides();
+          const effectiveCommand = mod.resolveEngineCommand(entry, overrides);
+          if (!effectiveCommand || effectiveCommand.trim() === "") {
+            return reply.status(400).send({ error: `engine '${engineId}' has no command configured` });
+          }
+          const cfg: AnyLlmConfig = { provider: "cli", command: effectiveCommand.trim() };
+          if (typeof body.model === "string" && body.model.trim() !== "") {
+            cfg.model = body.model.trim();
+          }
+          if (body.args !== undefined) {
+            cfg.args = body.args;
+          } else if (entry.suggestedArgs) {
+            cfg.args = [...entry.suggestedArgs];
+          }
+          llmCfg = cfg as unknown as LlmConfig;
+        }
+        const bot = chat.bots.updateEngine(request.params.id, llmCfg);
+        if (!bot) return reply.status(404).send({ error: "bot not found" });
+        return { ok: true, bot };
+      }
+      if (!body.provider) {
+        return reply.status(400).send({ error: "provider is required (cli|openai-compat|none)" });
+      }
+      let llmCfg: LlmConfig | undefined;
+      if (body.provider === "none") {
+        llmCfg = undefined;
+      } else if (body.provider === "cli") {
+        const command = typeof body.command === "string" ? body.command.trim() : "";
+        if (!command) {
+          return reply.status(400).send({ error: "command is required and must be a non-empty string" });
+        }
+        const cfg: AnyLlmConfig = { provider: "cli", command };
+        if (typeof body.model === "string" && body.model.trim() !== "") {
+          cfg.model = body.model.trim();
+        }
+        if (body.args !== undefined) {
+          cfg.args = body.args;
+        }
+        llmCfg = cfg as unknown as LlmConfig;
+      } else if (body.provider === "openai-compat") {
+        const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim() : "";
+        const apiKeyEnv = typeof body.apiKeyEnv === "string" ? body.apiKeyEnv.trim() : "";
+        const model = typeof body.model === "string" ? body.model.trim() : "";
+        if (!baseUrl || !apiKeyEnv || !model) {
+          return reply.status(400).send({ error: "baseUrl, apiKeyEnv and model are required and must be non-empty strings" });
+        }
+        llmCfg = { provider: "openai-compat", baseUrl, apiKeyEnv, model } as unknown as LlmConfig;
+      } else {
+        return reply.status(400).send({ error: "provider must be one of cli|openai-compat|none" });
+      }
+      const bot = chat.bots.updateEngine(request.params.id, llmCfg);
+      if (!bot) return reply.status(404).send({ error: "bot not found" });
+      return { ok: true, bot };
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: { model?: string } }>(
+    "/api/bots/:id/model",
+    async (request, reply) => {
+      const chat = getChat();
+      if (!chat) return reply.status(503).send({ error: "chat not available" });
+      const body = request.body ?? {};
+      const model = typeof body.model === "string" ? body.model.trim() : "";
+      if (!model) {
+        return reply.status(400).send({ error: "model is required and must be a non-empty string" });
+      }
+      const bot = chat.bots.updateBot(request.params.id, { model });
+      if (!bot) return reply.status(404).send({ error: "bot not found" });
+      return { ok: true, bot };
+    },
+  );
 
   // -------------------------------------------------------------------------
   // 404 & error handling

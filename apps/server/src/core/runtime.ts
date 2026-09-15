@@ -11,6 +11,7 @@ import { QuantAgent } from "../agents/quant/index.js";
 import { RiskAgent } from "../agents/risk/index.js";
 import { PortfolioAgent } from "../agents/portfolio/index.js";
 import { ExecutionAgent } from "../agents/execution/index.js";
+import { DemoAgent } from "../agents/demo-agent/index.js";
 import { registerAllTools } from "../tools/finance-tools.js";
 import { BinanceMarketPlugin } from "../plugins/binance-plugin.js";
 import { FinanceGateway } from "../gateway/finance-gateway.js";
@@ -30,7 +31,14 @@ import { FinanceEnvironmentService } from "../environment/service.js";
 import { SupervisorAgent } from "../agents/supervisor/index.js";
 import { StrategyLabService } from "../strategy-lab/service.js";
 import { ExecutionPipelineService } from "../execution-pipeline/service.js";
+import { ChatService } from "../chat/service.js";
 import { DialogueEngine } from "../chat/dialogue-engine.js";
+import { ApprovalServiceWrapper } from "../approvals/service.js";
+import { LlmServiceWrapper } from "../llm/service.js";
+import { UsageTracker } from "../llm/usage.js";
+import type { LlmService } from "../llm/llm-service.js";
+
+import { OpencodeCliGateway } from "../gateway/opencode-cli-gateway.js";
 
 // Service IDs — canonical identifiers for service lookup
 export const SERVICE_IDS = {
@@ -46,6 +54,10 @@ export const SERVICE_IDS = {
   FINANCE_ENVIRONMENT: "finance-environment",
   STRATEGY_LAB: "strategy-lab",
   EXECUTION_PIPELINE: "execution-pipeline",
+  OPENCODE_GATEWAY: "opencode-gateway",
+  CHAT: "chat",
+  APPROVALS: "approvals",
+  LLM: "llm",
   DIALOGUE_ENGINE: "dialogue-engine",
 } as const;
 
@@ -179,7 +191,7 @@ class PaperBrokerService implements ServiceLifecycle {
   };
 
   constructor(bus: import("@finance/core").TypedEventBus) {
-    this.broker = new PaperBroker(bus, { requireRiskApproval: true });
+    this.broker = new PaperBroker(bus);
   }
 
   async initialize(): Promise<void> {
@@ -355,6 +367,46 @@ class AgentMemoryService implements ServiceLifecycle {
   }
 }
 
+class OpencodeGatewayService implements ServiceLifecycle {
+  private gateway: OpencodeCliGateway;
+  private info: ServiceInfo = {
+    id: SERVICE_IDS.OPENCODE_GATEWAY,
+    name: "OpenCode CLI Gateway",
+    version: "0.1.0",
+    description: "Permissioned gateway for opencode CLI path + execution (path gateways)",
+    status: "registered",
+  };
+
+  constructor(bus: import("@finance/core").TypedEventBus) {
+    this.gateway = new OpencodeCliGateway(bus);
+  }
+
+  async initialize(): Promise<void> {
+    this.info.status = "initialized";
+  }
+
+  async start(): Promise<void> {
+    // warm cache
+    await this.gateway.getCliInfo().catch(() => {});
+    this.info.status = "active";
+    const cli = await this.gateway.getCliInfo().catch(() => null);
+    console.log(`[service:${this.info.id}] started cli=${cli?.cliPath ?? "not found"} exists=${cli?.exists ?? false}`);
+  }
+
+  async stop(): Promise<void> {
+    this.info.status = "stopped";
+    console.log(`[service:${this.info.id}] stopped`);
+  }
+
+  getHealth(): ServiceInfo {
+    return { ...this.info };
+  }
+
+  getInstance(): OpencodeCliGateway {
+    return this.gateway;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Strategy Registry Service Wrapper
 // ---------------------------------------------------------------------------
@@ -396,6 +448,7 @@ class StrategyRegistryService implements ServiceLifecycle {
     return this.registry;
   }
 }
+
 
 class DialogueEngineService implements ServiceLifecycle {
   private engine: DialogueEngine;
@@ -459,14 +512,15 @@ export function createRuntime(): FinanceRuntime {
   // To add a new finance agent: create apps/server/src/agents/<my-agent>/index.ts
   // and add `runtime.registerAgent(new MyAgent(bus))` here — or use the CLI scaffold:
   //   pnpm openbot add agent my-agent --template quant
-  const riskAgent = new RiskAgent(bus);
-  runtime.registerAgent(new MarketAgent(bus));
-  runtime.registerAgent(new QuantAgent(bus));
-  runtime.registerAgent(riskAgent);
-  runtime.registerAgent(new PortfolioAgent(bus));
-  runtime.registerAgent(new ExecutionAgent(bus));
+const riskAgent = new RiskAgent(bus);
+   runtime.registerAgent(new MarketAgent(bus));
+   runtime.registerAgent(new QuantAgent(bus));
+   runtime.registerAgent(riskAgent);
+   runtime.registerAgent(new PortfolioAgent(bus));
+   runtime.registerAgent(new ExecutionAgent(bus));
+   runtime.registerAgent(new DemoAgent(bus));
 
-  // Supervisor — deterministic planner: task -> Market -> Research -> Strategy -> Risk -> Final
+   // Supervisor — deterministic planner: task -> Market -> Research -> Strategy -> Risk -> Final
   // Uses AgentRegistry/ToolRegistry/EventBus to validate and execute plans.
   const supervisor = new SupervisorAgent({ bus, agentRegistry: runtime.getAgentRegistry(), toolRegistry: runtime.getToolRegistry() });
   runtime.registerAgent(supervisor);
@@ -536,6 +590,14 @@ export function createRuntime(): FinanceRuntime {
   const agentMemoryService = new AgentMemoryService();
   runtime.registerService(agentMemoryService);
 
+  // OpenCode CLI Path Gateway — permissioned path gateways for opencode binary
+  const opencodeGatewayService = new OpencodeGatewayService(bus);
+  runtime.registerService(opencodeGatewayService);
+
+  // Dialogue Engine — OpenMausBot Conversational Dialogue Layer (from main)
+  const dialogueEngineService = new DialogueEngineService(bus);
+  runtime.registerService(dialogueEngineService);
+
   // Finance Environment — OpenMausBot-inspired abstraction for agents
   // Composes Binance market-data adapter (BinanceMarketDataAdapter) + Paper Trading adapter (PaperTradingAdapter)
   // No live orders — paper only. Agents interact exclusively via environment.
@@ -555,27 +617,38 @@ export function createRuntime(): FinanceRuntime {
   });
   runtime.registerService(strategyLabService);
 
-  // Execution Pipeline — Signal -> Risk -> Permission -> Paper -> Result (live disabled by default) with canonical OrderManager
+  // Execution Pipeline — Signal -> Risk -> Permission -> Paper -> Result (live disabled by default)
   const executionPipelineService = new ExecutionPipelineService({
     bus,
     riskAgent,
     gateway: gatewayService.getInstance(),
     paperBroker: paperBrokerService.getInstance(),
-    orderManager: orderManagerService.getInstance(),
     auditLogger: auditLoggerService.getInstance(),
   });
   runtime.registerService(executionPipelineService);
-  // wire OrderManager persistence and pipeline cross-link for event ordering
-  executionPipelineService.getInstance().setOrderManager(orderManagerService.getInstance());
 
-  // Dialogue Engine — OpenMausBot Conversational Dialogue Layer
-  const dialogueEngineService = new DialogueEngineService(bus);
-  runtime.registerService(dialogueEngineService);
+  const approvalService = new ApprovalServiceWrapper({
+    bus,
+    getPipeline: () => getExecutionPipeline() as unknown as { execute: (s: Record<string, unknown>) => Promise<unknown> } | undefined,
+    mode: (process.env.APPROVAL_MODE as "auto-paper" | "always") ?? "auto-paper",
+    executionMode: (process.env.EXECUTION_MODE as string) ?? "paper",
+    ttlMs: process.env.PROPOSAL_TTL_MS ? parseInt(process.env.PROPOSAL_TTL_MS, 10) : undefined,
+  });
+  runtime.registerService(approvalService);
+
+  const llmService = new LlmServiceWrapper({ tracker: new UsageTracker() });
+  runtime.registerService(llmService);
+
+  const riskAgentFromRegistry = runtime.getAgentRegistry().get("risk") as unknown as { setHoldCheck?: (fn: (s: Record<string, unknown>) => boolean) => void } | undefined;
+  const approvals = approvalService.getInstance();
+  riskAgentFromRegistry?.setHoldCheck?.(() => approvals.isGating());
 
   // Connect full OS: User -> Desktop (supervisor.task) -> Supervisor -> Tools/Environment -> Risk -> Paper
   // Supervisor trade steps now route through ExecutionPipeline so permissions/audit/Risk gates are enforced.
   // No live trading — paper-only, LIVE_TRADING_ENABLED guard inside pipeline.
   supervisor.setExecutionPipeline(executionPipelineService.getInstance() as unknown as import("../agents/supervisor/index.js").ExecutionPipelineLike);
+
+  runtime.registerService(new ChatService({ bus, getLlm: () => getLlm(), submitTask: (task, correlationId) => { const sup = getSupervisor(); if (!sup) return Promise.reject(new Error("supervisor not available")); return (sup as unknown as { submitTask: (t: string, c?: string) => Promise<unknown> }).submitTask(task, correlationId); } }));
 
   return runtime;
 }
@@ -636,10 +709,6 @@ export function getSupervisor(): SupervisorAgent | undefined {
   return runtime?.getAgentRegistry().get("supervisor") as SupervisorAgent | undefined;
 }
 
-export function getDialogueEngine(): DialogueEngine | undefined {
-  return getService<DialogueEngineService>(SERVICE_IDS.DIALOGUE_ENGINE)?.getInstance();
-}
-
 export function getStrategyLab(): import("../strategy-lab/strategy-lab.js").StrategyLab | undefined {
   return getService<import("../strategy-lab/service.js").StrategyLabService>(SERVICE_IDS.STRATEGY_LAB)?.getInstance();
 }
@@ -647,6 +716,24 @@ export function getStrategyLab(): import("../strategy-lab/strategy-lab.js").Stra
 export function getExecutionPipeline(): import("../execution-pipeline/pipeline.js").ExecutionPipeline | undefined {
   return getService<import("../execution-pipeline/service.js").ExecutionPipelineService>(SERVICE_IDS.EXECUTION_PIPELINE)?.getInstance();
 }
+
+export function getApprovals(): import("../approvals/approval-service.js").ApprovalService | undefined {
+  return getService<ApprovalServiceWrapper>(SERVICE_IDS.APPROVALS)?.getInstance();
+}
+
+export function getLlm(): LlmService | undefined {
+  return getService<LlmServiceWrapper>(SERVICE_IDS.LLM)?.getInstance();
+}
+
+export function getOpencodeGateway(): OpencodeCliGateway | undefined {
+  return getService<OpencodeGatewayService>(SERVICE_IDS.OPENCODE_GATEWAY)?.getInstance();
+}
+
+export function getDialogueEngine(): DialogueEngine | undefined {
+  return getService<DialogueEngineService>(SERVICE_IDS.DIALOGUE_ENGINE)?.getInstance();
+}
+
+export function getChat(): import("../chat/chat-service.js").ChatCore | undefined { return getService<ChatService>(SERVICE_IDS.CHAT)?.getInstance(); }
 
 // ---------------------------------------------------------------------------
 // Lifecycle helpers

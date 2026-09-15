@@ -3,10 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "finance-agent": "./dist/cli-entry.js"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "cli": "tsx src/cli-entry.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
