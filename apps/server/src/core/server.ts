@@ -973,14 +973,6 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       if (err instanceof Error && err.message === "thread not found") return reply.status(404).send({ error: "thread not found" });
       return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
     }
-    }
-    if (body.content && typeof body.content === "string" && body.content.trim() !== "") {
-      const engine = getDialogueEngine();
-      if (!engine) return reply.status(503).send({ error: "dialogue engine not available" });
-      const message = await engine.handleUserMessage(body.content, body.channelId ?? "trading-floor");
-      return { ok: true, message };
-    }
-    return reply.status(400).send({ error: "message (ChatCore) or content (dialogue) is required" });
   });
 
   // GET /api/chat/history — DialogueEngine history
@@ -1003,26 +995,33 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
         }
         return reply.status(503).send({ error: "chat not available" });
       }
-    }
-    try {
-      let threadId = body.threadId;
-      let thread;
-      if (!threadId) {
-        thread = await chat.createThread({ title: body.title ?? body.message.slice(0, 60) });
-        threadId = thread.id;
-      } else {
-        const threads = await chat.getThreads();
-        thread = threads.find((t) => t.id === threadId);
-        if (!thread) return reply.status(404).send({ error: "thread not found" });
+      try {
+        let threadId = body.threadId;
+        let thread;
+        if (!threadId) {
+          thread = await chat.createThread({ title: body.title ?? body.message.slice(0, 60) });
+          threadId = thread.id;
+        } else {
+          const threads = await chat.getThreads();
+          thread = threads.find((t) => t.id === threadId);
+          if (!thread) return reply.status(404).send({ error: "thread not found" });
+        }
+        const result = await chat.sendUserMessage(threadId, body.message, { agentId: body.agentId });
+        return { ok: true, thread, message: result.message, planId: result.planId ?? null };
+      } catch (err) {
+        if (err instanceof Error && err.message === "thread not found") {
+          return reply.status(404).send({ error: "thread not found" });
+        }
+        return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
       }
-      const result = await chat.sendUserMessage(threadId, body.message, { agentId: body.agentId });
-      return { ok: true, thread, message: result.message, planId: result.planId ?? null };
-    } catch (err) {
-      if (err instanceof Error && err.message === "thread not found") {
-        return reply.status(404).send({ error: "thread not found" });
-      }
-      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
     }
+    if (body.content && typeof body.content === "string" && body.content.trim() !== "") {
+      const engine = getDialogueEngine();
+      if (!engine) return reply.status(503).send({ error: "dialogue engine not available" });
+      const message = await engine.handleUserMessage(body.content, body.channelId ?? "trading-floor");
+      return { ok: true, message };
+    }
+    return reply.status(400).send({ error: "message (ChatCore) or content (dialogue) is required" });
   });
 
   // -------------------------------------------------------------------------
