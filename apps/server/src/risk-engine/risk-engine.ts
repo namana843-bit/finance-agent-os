@@ -5,9 +5,13 @@
 
 import type { RiskConfig, RiskDecision } from "@finance/shared";
 import type { TypedEventBus } from "@finance/core";
+import { issueRiskTicket, type RiskApprovalTicket } from "./ticket.js";
+
+export type { RiskApprovalTicket };
 
 export interface RiskEngineConfig {
   maxPositionPct: number;
+  maxPositionSize: number;
   maxOrderSize: number;
   maxPortfolioExposure: number;
   maxSymbolExposure: number;
@@ -17,6 +21,10 @@ export interface RiskEngineConfig {
   maxLeverage: number;
   cooldownMs: number;
   confidenceThreshold: number;
+  staleThresholdMs: number;
+  allowedSymbols: string[];
+  blockedSymbols: string[];
+  requireStopLoss: boolean;
 }
 
 export interface RiskMetricsResult {
@@ -29,6 +37,7 @@ export interface RiskMetricsResult {
 
 const DEFAULT_CONFIG: RiskEngineConfig = {
   maxPositionPct: 20,
+  maxPositionSize: 100,
   maxOrderSize: 10000,
   maxPortfolioExposure: 80,
   maxSymbolExposure: 25,
@@ -36,10 +45,12 @@ const DEFAULT_CONFIG: RiskEngineConfig = {
   maxDrawdown: 15,
   maxOpenPositions: 10,
   maxLeverage: 3,
-  // Per-symbol cooldown: 60s was rejecting most actionable signals (quant emits every ~2s)
-  // 15s allows ~4 signals/min/symbol while still throttling burst
   cooldownMs: 15_000,
   confidenceThreshold: 0.6,
+  staleThresholdMs: 30_000,
+  allowedSymbols: [],
+  blockedSymbols: [],
+  requireStopLoss: false,
 };
 
 export interface TradeRequest {
@@ -53,6 +64,9 @@ export interface TradeRequest {
   agentId: string;
   timestamp: number;
   correlationId: string;
+  stopLoss?: number;
+  takeProfit?: number;
+  quoteTimestamp?: number;
 }
 
 export interface PortfolioSnapshot {
@@ -68,7 +82,7 @@ export class RiskEngine {
   private lastTradeTime = new Map<string, number>();
   private dailyTrades = 0;
   private dailyPnl = 0;
-  private peakEquity = 100000;
+  private peakEquity = 0;
 
   constructor(private bus: TypedEventBus, config?: Partial<RiskEngineConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -79,13 +93,46 @@ export class RiskEngine {
     const reasons: string[] = [];
     let approvedQuantity = request.quantity;
 
-    // 1. Confidence threshold check
+    // 0. Quantity and price validity check
+    rulesChecked.push("quantity_validity");
+    if (!Number.isFinite(request.quantity) || request.quantity <= 0 || Number.isNaN(request.quantity)) {
+      return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Invalid order quantity: ${request.quantity}`);
+    }
+    if (!Number.isFinite(request.price) || request.price <= 0 || Number.isNaN(request.price)) {
+      return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Invalid order price: ${request.price}`);
+    }
+
+    // 1. Stale data check
+    rulesChecked.push("stale_data");
+    const quoteTime = request.quoteTimestamp ?? request.timestamp;
+    if (quoteTime && Date.now() - quoteTime > this.config.staleThresholdMs) {
+      const ageMs = Date.now() - quoteTime;
+      return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Stale market data: age ${ageMs}ms exceeds limit ${this.config.staleThresholdMs}ms`);
+    }
+
+    // 2. Symbol restrictions check
+    rulesChecked.push("symbol_restrictions");
+    const sym = request.symbol.toUpperCase();
+    if (this.config.blockedSymbols.some(s => s.toUpperCase() === sym)) {
+      return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Symbol ${sym} is restricted/blacklisted`);
+    }
+    if (this.config.allowedSymbols.length > 0 && !this.config.allowedSymbols.some(s => s.toUpperCase() === sym)) {
+      return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Symbol ${sym} is not in allowed list`);
+    }
+
+    // 3. Stop-loss requirement check
+    rulesChecked.push("stop_loss_requirement");
+    if (this.config.requireStopLoss && (!request.stopLoss || request.stopLoss <= 0)) {
+      return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Mandatory stop-loss missing for trade`);
+    }
+
+    // 4. Confidence threshold check
     rulesChecked.push("confidence_threshold");
     if (request.confidence < this.config.confidenceThreshold) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Low confidence ${request.confidence} < ${this.config.confidenceThreshold}`);
     }
 
-    // 2. Position size check
+    // 5. Position size check
     const positionValue = request.quantity * request.price;
     if (positionValue > this.config.maxOrderSize) {
       approvedQuantity = Math.floor(this.config.maxOrderSize / request.price);
@@ -93,55 +140,70 @@ export class RiskEngine {
     }
     rulesChecked.push("order_size");
 
-    // 3. Cooldown check
+    // 6. Max position size (quantity) check
+    const existingPosition = portfolio.positions.find((p) => p.symbol.toUpperCase() === sym);
+    const currentQty = existingPosition ? existingPosition.quantity : 0;
+    if (request.side === "buy" && (currentQty + approvedQuantity > this.config.maxPositionSize)) {
+      return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Projected position ${currentQty + approvedQuantity} > maxPositionSize ${this.config.maxPositionSize}`);
+    }
+    rulesChecked.push("position_size");
+
+    // 7. Margin / Cash check
+    rulesChecked.push("margin_check");
+    const requiredMargin = this.config.maxLeverage > 1 ? positionValue / this.config.maxLeverage : positionValue;
+    if (request.side === "buy" && requiredMargin > portfolio.cash) {
+      return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Insufficient cash/margin: required ${requiredMargin.toFixed(2)} > available ${portfolio.cash.toFixed(2)}`);
+    }
+
+    // 8. Cooldown check
     const lastTrade = this.lastTradeTime.get(request.symbol) ?? 0;
     if (Date.now() - lastTrade < this.config.cooldownMs) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Cooldown active`);
     }
     rulesChecked.push("cooldown");
 
-    // 4. Open positions check
+    // 9. Open positions check
     const openPositions = portfolio.positions.length;
-    if (request.side === "buy" && openPositions >= this.config.maxOpenPositions) {
+    if (request.side === "buy" && !existingPosition && openPositions >= this.config.maxOpenPositions) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Max open positions ${openPositions} >= ${this.config.maxOpenPositions}`);
     }
     rulesChecked.push("open_positions");
 
-    // 5. Symbol exposure check
-    const existingPosition = portfolio.positions.find((p) => p.symbol === request.symbol);
+    // 10. Symbol exposure check
     const existingValue = existingPosition ? existingPosition.quantity * existingPosition.currentPrice : 0;
-    const totalValue = portfolio.equity;
-    const symbolExposure = ((existingValue + positionValue) / totalValue) * 100;
+    const totalValue = portfolio.equity > 0 ? portfolio.equity : portfolio.cash;
+    const symbolExposure = totalValue > 0 ? ((existingValue + positionValue) / totalValue) * 100 : 100;
     if (symbolExposure > this.config.maxSymbolExposure) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Symbol exposure ${symbolExposure.toFixed(1)}% > ${this.config.maxSymbolExposure}%`);
     }
     rulesChecked.push("symbol_exposure");
 
-    // 6. Portfolio exposure check
+    // 11. Portfolio exposure check
     const totalPositionValue = portfolio.positions.reduce((sum, p) => sum + p.quantity * p.currentPrice, 0) + positionValue;
-    const portfolioExposure = (totalPositionValue / totalValue) * 100;
+    const portfolioExposure = totalValue > 0 ? (totalPositionValue / totalValue) * 100 : 0;
     if (portfolioExposure > this.config.maxPortfolioExposure) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Portfolio exposure ${portfolioExposure.toFixed(1)}% > ${this.config.maxPortfolioExposure}%`);
     }
     rulesChecked.push("portfolio_exposure");
 
-    // 7. Daily loss check
-    const dailyLossPct = (-this.dailyPnl / totalValue) * 100;
+    // 12. Daily loss check
+    const dailyLossPct = totalValue > 0 ? (-this.dailyPnl / totalValue) * 100 : 0;
     if (dailyLossPct > this.config.maxDailyLoss) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Daily loss ${dailyLossPct.toFixed(1)}% > ${this.config.maxDailyLoss}%`);
     }
     rulesChecked.push("daily_loss");
 
-    // 8. Drawdown check
-    if (totalValue > this.peakEquity) this.peakEquity = totalValue;
-    const drawdownPct = ((this.peakEquity - totalValue) / this.peakEquity) * 100;
+    // 13. Drawdown check
+    const peak = portfolio.peakEquity > 0 ? portfolio.peakEquity : (this.peakEquity > 0 ? this.peakEquity : totalValue);
+    this.peakEquity = Math.max(peak, totalValue);
+    const drawdownPct = this.peakEquity > 0 ? ((this.peakEquity - totalValue) / this.peakEquity) * 100 : 0;
     if (drawdownPct > this.config.maxDrawdown) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Drawdown ${drawdownPct.toFixed(1)}% > ${this.config.maxDrawdown}%`);
     }
     rulesChecked.push("drawdown");
 
-    // 9. Leverage check
-    const leverage = totalPositionValue / portfolio.cash;
+    // 14. Leverage check
+    const leverage = portfolio.cash > 0 ? totalPositionValue / portfolio.cash : 999;
     if (leverage > this.config.maxLeverage) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Leverage ${leverage.toFixed(2)}x > ${this.config.maxLeverage}x`);
     }
@@ -174,16 +236,32 @@ export class RiskEngine {
     reasonText: string,
   ): RiskDecision {
     const totalPositionValue = portfolio.positions.reduce((sum, p) => sum + p.quantity * p.currentPrice, 0);
+    const decisionId = `risk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    let ticket: RiskApprovalTicket | undefined = undefined;
+    if (decision === "APPROVED" && approvedQuantity > 0) {
+      ticket = issueRiskTicket({
+        correlationId: request.correlationId,
+        riskDecisionId: decisionId,
+        symbol: request.symbol,
+        side: request.side,
+        maxQuantity: approvedQuantity,
+        maxPrice: request.price,
+        agentId: request.agentId,
+        strategy: request.strategy,
+      });
+    }
 
     return {
-      id: `risk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: decisionId,
       decision,
       reason: decision === "REJECTED" ? `Rejected: ${reasonText}` : reasonText,
       rulesChecked,
       requestedQuantity: request.quantity,
       approvedQuantity,
+      ticket,
       riskMetrics: {
-        exposure: (totalPositionValue / portfolio.equity) * 100,
+        exposure: portfolio.equity > 0 ? (totalPositionValue / portfolio.equity) * 100 : 0,
         drawdown: this.peakEquity > 0 ? ((this.peakEquity - portfolio.equity) / this.peakEquity) * 100 : 0,
         concentration: 0,
         var: 0,
@@ -193,7 +271,7 @@ export class RiskEngine {
         positionCount: portfolio.positions.length,
         peakValue: this.peakEquity,
         dailyPnL: this.dailyPnl,
-        leverage: totalPositionValue / portfolio.cash,
+        leverage: portfolio.cash > 0 ? totalPositionValue / portfolio.cash : 0,
       },
       timestamp: Date.now(),
       correlationId: request.correlationId,

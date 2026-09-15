@@ -218,7 +218,7 @@ class BinanceRestClient {
     return createHmac("sha256", this.secret).update(queryString).digest("hex");
   }
 
-  private async fetchWithTimeout(url: string, init?: RequestInit, timeoutMs = 10_000): Promise<Response> {
+  private async fetchWithTimeout(url: string, init?: any, timeoutMs = 10_000): Promise<any> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {

@@ -9,6 +9,7 @@ import type { RiskAgent } from "../agents/risk/index.js";
 import type { FinanceGateway } from "../gateway/finance-gateway.js";
 import type { PaperBroker } from "../broker/paper-broker.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
+import type { OrderManager } from "../order-manager/order-manager.js";
 import { ExecutionPipeline } from "./pipeline.js";
 import { PipelineAuditLog } from "./audit.js";
 import type { PipelineConfig } from "./types.js";
@@ -28,6 +29,7 @@ export class ExecutionPipelineService implements ServiceLifecycle {
     riskAgent: RiskAgent;
     gateway: FinanceGateway;
     paperBroker: PaperBroker;
+    orderManager?: OrderManager;
     auditLogger?: AuditLogger;
     config?: Partial<PipelineConfig>;
   }) {
@@ -36,6 +38,7 @@ export class ExecutionPipelineService implements ServiceLifecycle {
       riskAgent: opts.riskAgent,
       gateway: opts.gateway,
       paperBroker: opts.paperBroker,
+      orderManager: opts.orderManager,
       auditLogger: opts.auditLogger,
       pipelineAudit: new PipelineAuditLog(opts.bus),
       config: opts.config,

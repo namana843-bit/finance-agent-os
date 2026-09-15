@@ -7,6 +7,7 @@
 import { v4 as uuidv4 } from "uuid";
 import type { TypedEventBus } from "@finance/core";
 import type { FinanceEvent } from "@finance/shared";
+import { issueRiskTicket, type RiskApprovalTicket } from "../risk-engine/ticket.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -19,10 +20,13 @@ export interface GatewayConfig {
   liveTradingEnabled: boolean;
   maxPendingRequests: number;
   requestTimeoutMs: number;
+  requireRiskTicket?: boolean;
 }
 
 export interface TradeRequest {
   id?: string;
+  clientOrderId?: string;
+  idempotencyKey?: string;
   symbol: string;
   side: "buy" | "sell";
   type: "market" | "limit";
@@ -31,6 +35,7 @@ export interface TradeRequest {
   strategy?: string;
   agentId: string;
   correlationId?: string;
+  ticket?: RiskApprovalTicket;
 }
 
 export interface GatewayDecision {
@@ -42,6 +47,7 @@ export interface GatewayDecision {
   executionMode: ExecutionMode;
   timestamp: number;
   correlationId: string;
+  ticket?: RiskApprovalTicket;
 }
 
 export interface GatewayStats {
@@ -87,6 +93,8 @@ export class FinanceGateway {
   private pendingRequests = new Map<string, TradeRequest>();
   private requestHistory: GatewayDecision[] = [];
   private agentDailyOrders = new Map<string, number>();
+  private dedupByIdempotency = new Map<string, GatewayDecision>();
+  private pendingByCorrelation = new Map<string, Promise<GatewayDecision>>();
   private lastRequestTime = 0;
   private totalRequests = 0;
   private approvedRequests = 0;
@@ -134,8 +142,14 @@ export class FinanceGateway {
   // -------------------------------------------------------------------------
 
   async submitRequest(request: TradeRequest): Promise<GatewayDecision> {
-    const requestId = request.id ?? uuidv4();
-    const correlationId = request.correlationId ?? uuidv4();
+    const requestId = request.id?.trim() || request.clientOrderId?.trim() || uuidv4();
+    const correlationId = request.correlationId?.trim() || uuidv4();
+    const idempotencyKey = request.idempotencyKey?.trim() || request.clientOrderId?.trim() || `gw:${request.agentId}:${request.symbol.toUpperCase()}:${request.side}:${request.quantity}:${request.price}`;
+    // Idempotent duplicate protection — return prior decision if same key already processed
+    const prior = this.dedupByIdempotency.get(idempotencyKey);
+    if (prior) return { ...prior };
+    const pendingSame = this.pendingByCorrelation.get(correlationId);
+    if (pendingSame) return pendingSame;
     const now = Date.now();
     this.lastRequestTime = now;
     this.totalRequests++;
@@ -166,10 +180,17 @@ export class FinanceGateway {
       return this.makeDecision(requestId, false, "Live trading not enabled — set LIVE_TRADING_ENABLED=true", false, false, correlationId);
     }
 
-    // 5. Subscribe to risk decision and publish trade request
+    // 5. Subscribe to risk decision and publish trade request — with idempotent tracking
     this.pendingRequests.set(requestId, { ...request, id: requestId, correlationId });
-
-    const decision = await this.waitForRiskDecision(requestId, correlationId, request);
+    const pendingPromise = this.waitForRiskDecision(requestId, correlationId, request).then(d => {
+      this.dedupByIdempotency.set(idempotencyKey, d);
+      this.pendingByCorrelation.delete(correlationId);
+      // audit event for every gateway decision
+      this.bus.publish({ type: d.approved ? "audit.gateway_approved" : "audit.gateway_rejected", data: { requestId, correlationId, idempotencyKey, approved: d.approved, reason: d.reason, timestamp: Date.now() }, source: "finance-gateway", agentId: request.agentId, correlationId });
+      return d;
+    });
+    this.pendingByCorrelation.set(correlationId, pendingPromise);
+    const decision = await pendingPromise;
     return decision;
   }
 
@@ -194,12 +215,29 @@ export class FinanceGateway {
         this.pendingRequests.delete(requestId);
       };
 
-      const onDecision = (approved: boolean) => {
+      const onDecision = (approved: boolean, ticket?: RiskApprovalTicket) => {
         cleanup();
 
         if (!approved) {
           this.rejectedRequests++;
-          resolve(this.makeDecision(requestId, false, approved ? "All checks passed" : "Risk engine rejected", approved, false, correlationId));
+          resolve(this.makeDecision(requestId, false, "Risk engine rejected", false, false, correlationId));
+          return;
+        }
+
+        const riskTicket = ticket ?? (this.config.requireRiskTicket ? undefined : issueRiskTicket({
+          correlationId,
+          riskDecisionId: `gw-${requestId}`,
+          symbol: request.symbol,
+          side: request.side,
+          maxQuantity: request.quantity,
+          maxPrice: request.price,
+          agentId: request.agentId,
+          strategy: request.strategy,
+        }));
+
+        if (!riskTicket && this.config.requireRiskTicket) {
+          this.rejectedRequests++;
+          resolve(this.makeDecision(requestId, false, "Risk approval rejected: missing verified risk approval ticket", false, false, correlationId));
           return;
         }
 
@@ -207,7 +245,7 @@ export class FinanceGateway {
         const portfolioOk = this.checkPortfolioConstraints(request);
         if (!portfolioOk) {
           this.rejectedRequests++;
-          resolve(this.makeDecision(requestId, false, "Portfolio constraints violated", true, false, correlationId));
+          resolve(this.makeDecision(requestId, false, "Portfolio constraints violated", true, false, correlationId, riskTicket));
           return;
         }
 
@@ -217,16 +255,16 @@ export class FinanceGateway {
           (this.agentDailyOrders.get(request.agentId) ?? 0) + 1,
         );
 
-        const decision = this.makeDecision(requestId, true, "All gateway checks passed", true, true, correlationId);
+        const decision = this.makeDecision(requestId, true, "All gateway checks passed", true, true, correlationId, riskTicket);
         this.requestHistory.push(decision);
         if (this.requestHistory.length > 2000) {
           this.requestHistory.splice(0, this.requestHistory.length - 2000);
         }
 
-        // Emit approval and forward as order.created
+        // Emit approval and forward as order.created — with proper ids, correlation, and ticket for canonical lifecycle
         this.bus.publish({
           type: "gateway.approved",
-          data: { ...decision, request },
+          data: { ...decision, request, ticket },
           source: "finance-gateway",
           correlationId,
         });
@@ -235,6 +273,9 @@ export class FinanceGateway {
           type: "order.created",
           data: {
             id: requestId,
+            clientOrderId: request.clientOrderId ?? requestId,
+            correlationId,
+            idempotencyKey: request.idempotencyKey ?? request.clientOrderId ?? requestId,
             symbol: request.symbol,
             side: request.side,
             type: request.type,
@@ -243,6 +284,7 @@ export class FinanceGateway {
             strategy: request.strategy,
             agent: request.agentId,
             executionMode: this.config.executionMode,
+            ticket,
             timestamp: Date.now(),
           },
           source: "finance-gateway",
@@ -254,9 +296,9 @@ export class FinanceGateway {
       };
 
       const unsubApprove = this.bus.subscribeTo("risk.approved", (event: FinanceEvent) => {
-        const data = event.data as { correlationId?: string; id?: string };
+        const data = event.data as { correlationId?: string; id?: string; ticket?: RiskApprovalTicket };
         if (data?.correlationId === correlationId || data?.id === requestId) {
-          onDecision(true);
+          onDecision(true, data?.ticket);
         }
       });
 
@@ -394,6 +436,7 @@ export class FinanceGateway {
     riskApproved: boolean,
     portfolioApproved: boolean,
     correlationId: string,
+    ticket?: RiskApprovalTicket,
   ): GatewayDecision {
     const decision: GatewayDecision = {
       requestId,
@@ -404,11 +447,8 @@ export class FinanceGateway {
       executionMode: this.config.executionMode,
       timestamp: Date.now(),
       correlationId,
+      ticket,
     };
-    this.requestHistory.push(decision);
-    if (this.requestHistory.length > 2000) {
-      this.requestHistory.splice(0, this.requestHistory.length - 2000);
-    }
     return decision;
   }
 

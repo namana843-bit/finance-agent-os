@@ -1,10 +1,16 @@
 // ============================================================================
 // Finance Agent OS — Market State Service
-// Phase 7: Maintains real-time market state from live data
+// Phase 6 & 7: Maintains real-time market state from live ticks, orderbooks,
+// klines, and trade streams.
 // ============================================================================
 
 import type { TypedEventBus } from "@finance/core";
 import type { FinanceEvent } from "@finance/shared";
+import type {
+  NormalizedOrderBook,
+  NormalizedKline,
+  NormalizedTrade,
+} from "./normalizer.js";
 
 export interface MarketStateEntry {
   symbol: string;
@@ -26,11 +32,16 @@ export interface MarketStateSnapshot {
 
 export class MarketStateService {
   private entries = new Map<string, MarketStateEntry>();
+  private orderBooks = new Map<string, NormalizedOrderBook>();
+  private klines = new Map<string, NormalizedKline[]>(); // symbol -> klines
+  private trades = new Map<string, NormalizedTrade[]>(); // symbol -> trades
   private lastUpdate = 0;
   private eventCount = 0;
   private connectionState: MarketStateSnapshot["connectionState"] = "disconnected";
   private unsubscribe: (() => void) | null = null;
   private staleThresholdMs = 30_000; // 30 seconds
+  private readonly maxKlinesPerSymbol = 500;
+  private readonly maxTradesPerSymbol = 100;
 
   constructor(private bus: TypedEventBus) {}
 
@@ -39,6 +50,12 @@ export class MarketStateService {
     this.unsubscribe = this.bus.subscribe((event: FinanceEvent) => {
       if (event.type === "market.tick") {
         this.handleTick(event);
+      } else if (event.type === "market.orderbook") {
+        this.handleOrderBook(event);
+      } else if (event.type === "market.kline") {
+        this.handleKline(event);
+      } else if (event.type === "market.trade") {
+        this.handleTrade(event);
       }
     });
     console.log("[market-state] started");
@@ -75,10 +92,45 @@ export class MarketStateService {
     this.lastUpdate = Date.now();
     this.eventCount++;
 
-    // Recover connection state when fresh data arrives
     if (this.connectionState === "reconnecting") {
       this.connectionState = "connected";
     }
+  }
+
+  private handleOrderBook(event: FinanceEvent): void {
+    const book = event.data as NormalizedOrderBook;
+    if (!book || !book.symbol) return;
+    this.orderBooks.set(book.symbol.toUpperCase(), book);
+    this.lastUpdate = Date.now();
+    this.eventCount++;
+  }
+
+  private handleKline(event: FinanceEvent): void {
+    const kline = event.data as NormalizedKline;
+    if (!kline || !kline.symbol) return;
+    const sym = kline.symbol.toUpperCase();
+    const list = this.klines.get(sym) ?? [];
+    list.push(kline);
+    if (list.length > this.maxKlinesPerSymbol) {
+      list.splice(0, list.length - this.maxKlinesPerSymbol);
+    }
+    this.klines.set(sym, list);
+    this.lastUpdate = Date.now();
+    this.eventCount++;
+  }
+
+  private handleTrade(event: FinanceEvent): void {
+    const trade = event.data as NormalizedTrade;
+    if (!trade || !trade.symbol) return;
+    const sym = trade.symbol.toUpperCase();
+    const list = this.trades.get(sym) ?? [];
+    list.push(trade);
+    if (list.length > this.maxTradesPerSymbol) {
+      list.splice(0, list.length - this.maxTradesPerSymbol);
+    }
+    this.trades.set(sym, list);
+    this.lastUpdate = Date.now();
+    this.eventCount++;
   }
 
   getPrice(symbol: string): number | undefined {
@@ -88,6 +140,20 @@ export class MarketStateService {
 
   getEntry(symbol: string): MarketStateEntry | undefined {
     return this.entries.get(symbol.toUpperCase());
+  }
+
+  getOrderBook(symbol: string): NormalizedOrderBook | undefined {
+    return this.orderBooks.get(symbol.toUpperCase());
+  }
+
+  getKlines(symbol: string, limit = 100): NormalizedKline[] {
+    const list = this.klines.get(symbol.toUpperCase()) ?? [];
+    return list.slice(-limit);
+  }
+
+  getTrades(symbol: string, limit = 50): NormalizedTrade[] {
+    const list = this.trades.get(symbol.toUpperCase()) ?? [];
+    return list.slice(-limit);
   }
 
   getAll(): Record<string, MarketStateEntry> {
@@ -125,5 +191,13 @@ export class MarketStateService {
       }
     }
     return stale;
+  }
+
+  clear(): void {
+    this.entries.clear();
+    this.orderBooks.clear();
+    this.klines.clear();
+    this.trades.clear();
+    this.eventCount = 0;
   }
 }

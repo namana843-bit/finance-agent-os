@@ -32,6 +32,7 @@ import { SupervisorAgent } from "../agents/supervisor/index.js";
 import { StrategyLabService } from "../strategy-lab/service.js";
 import { ExecutionPipelineService } from "../execution-pipeline/service.js";
 import { ChatService } from "../chat/service.js";
+import { DialogueEngine } from "../chat/dialogue-engine.js";
 import { ApprovalServiceWrapper } from "../approvals/service.js";
 import { LlmServiceWrapper } from "../llm/service.js";
 import { UsageTracker } from "../llm/usage.js";
@@ -57,6 +58,7 @@ export const SERVICE_IDS = {
   CHAT: "chat",
   APPROVALS: "approvals",
   LLM: "llm",
+  DIALOGUE_ENGINE: "dialogue-engine",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -447,6 +449,45 @@ class StrategyRegistryService implements ServiceLifecycle {
   }
 }
 
+
+class DialogueEngineService implements ServiceLifecycle {
+  private engine: DialogueEngine;
+  private info: ServiceInfo = {
+    id: SERVICE_IDS.DIALOGUE_ENGINE,
+    name: "Dialogue Engine",
+    version: "0.1.0",
+    description: "Multi-agent conversational dialogue layer for OpenMausBot",
+    status: "registered",
+  };
+
+  constructor(bus: import("@finance/core").TypedEventBus) {
+    this.engine = new DialogueEngine(bus);
+  }
+
+  async initialize(): Promise<void> {
+    this.info.status = "initialized";
+  }
+
+  async start(): Promise<void> {
+    this.info.status = "active";
+    console.log(`[service:${this.info.id}] started`);
+  }
+
+  async stop(): Promise<void> {
+    this.engine.destroy();
+    this.info.status = "stopped";
+    console.log(`[service:${this.info.id}] stopped`);
+  }
+
+  getHealth(): ServiceInfo {
+    return { ...this.info };
+  }
+
+  getInstance(): DialogueEngine {
+    return this.engine;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Runtime Factory
 // ---------------------------------------------------------------------------
@@ -552,6 +593,10 @@ const riskAgent = new RiskAgent(bus);
   // OpenCode CLI Path Gateway — permissioned path gateways for opencode binary
   const opencodeGatewayService = new OpencodeGatewayService(bus);
   runtime.registerService(opencodeGatewayService);
+
+  // Dialogue Engine — OpenMausBot Conversational Dialogue Layer (from main)
+  const dialogueEngineService = new DialogueEngineService(bus);
+  runtime.registerService(dialogueEngineService);
 
   // Finance Environment — OpenMausBot-inspired abstraction for agents
   // Composes Binance market-data adapter (BinanceMarketDataAdapter) + Paper Trading adapter (PaperTradingAdapter)
@@ -682,6 +727,10 @@ export function getLlm(): LlmService | undefined {
 
 export function getOpencodeGateway(): OpencodeCliGateway | undefined {
   return getService<OpencodeGatewayService>(SERVICE_IDS.OPENCODE_GATEWAY)?.getInstance();
+}
+
+export function getDialogueEngine(): DialogueEngine | undefined {
+  return getService<DialogueEngineService>(SERVICE_IDS.DIALOGUE_ENGINE)?.getInstance();
 }
 
 export function getChat(): import("../chat/chat-service.js").ChatCore | undefined { return getService<ChatService>(SERVICE_IDS.CHAT)?.getInstance(); }

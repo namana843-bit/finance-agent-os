@@ -2,9 +2,10 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import { TypedEventBus, type EventBusOptions } from "@finance/core";
 import type { FinanceEvent, HistoryFilter } from "@finance/shared";
-import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker, getOpencodeGateway, getChat, getApprovals, getLlm } from "./runtime.js";
+import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine } from "./runtime.js";
 import { ApprovalError } from "../approvals/types.js";
 import type { LlmConfig } from "../llm/types.js";
+import { CustomBotAgent } from "../agents/custom-bot-agent.js";
 
 // Union-tolerant view: works with the current single-provider LlmConfig and
 // with the parallel agent's discriminated union
@@ -969,19 +970,39 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       const messages = await chat.getMessages(request.params.id, limit);
       return { messages, threadId: request.params.id };
     } catch (err) {
-      if (err instanceof Error && err.message === "thread not found") {
-        return reply.status(404).send({ error: "thread not found" });
-      }
+      if (err instanceof Error && err.message === "thread not found") return reply.status(404).send({ error: "thread not found" });
       return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
     }
+    }
+    if (body.content && typeof body.content === "string" && body.content.trim() !== "") {
+      const engine = getDialogueEngine();
+      if (!engine) return reply.status(503).send({ error: "dialogue engine not available" });
+      const message = await engine.handleUserMessage(body.content, body.channelId ?? "trading-floor");
+      return { ok: true, message };
+    }
+    return reply.status(400).send({ error: "message (ChatCore) or content (dialogue) is required" });
   });
 
-  app.post<{ Body: { threadId?: string; title?: string; message?: string; agentId?: string } }>("/api/chat", async (request, reply) => {
-    const chat = getChat();
-    if (!chat) return reply.status(503).send({ error: "chat not available" });
-    const body = request.body ?? {};
-    if (!body.message || body.message.trim() === "") {
-      return reply.status(400).send({ error: "message is required" });
+  // GET /api/chat/history — DialogueEngine history
+  app.get<{ Querystring: { channelId?: string; limit?: string } }>("/api/chat/history", async (request) => {
+    const engine = getDialogueEngine();
+    if (!engine) return { messages: [] };
+    const limit = request.query.limit ? parseInt(request.query.limit, 10) : 100;
+    return { messages: engine.getHistory(request.query.channelId, limit) };
+  });
+
+  app.post<{ Body: { threadId?: string; title?: string; message?: string; agentId?: string; content?: string; channelId?: string } }>("/api/chat", async (request, reply) => {
+    const body = (request.body ?? {}) as { threadId?: string; title?: string; message?: string; agentId?: string; content?: string; channelId?: string };
+    if (body.message && typeof body.message === "string" && body.message.trim() !== "") {
+      const chat = getChat();
+      if (!chat) {
+        const engine = getDialogueEngine();
+        if (engine) {
+          const message = await engine.handleUserMessage(body.message, body.channelId ?? "trading-floor");
+          return { ok: true, message, fallback: "dialogue-engine" };
+        }
+        return reply.status(503).send({ error: "chat not available" });
+      }
     }
     try {
       let threadId = body.threadId;
@@ -1002,6 +1023,80 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       }
       return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/agents/custom — Dynamic agent creator (from main)
+  // -------------------------------------------------------------------------
+  app.post<{
+    Body: {
+      id?: string;
+      name?: string;
+      avatar?: string;
+      role?: string;
+      color?: string;
+      description?: string;
+      personaPrompt?: string;
+      strategyId?: string;
+      symbols?: string[];
+      parameters?: Record<string, unknown>;
+    };
+  }>("/api/agents/custom", async (request, reply) => {
+    const runtime = getRuntime();
+    const engine = getDialogueEngine();
+    if (!runtime || !engine) return reply.status(503).send({ error: "runtime or dialogue engine not available" });
+    const body = request.body || {};
+    const name = body.name?.trim();
+    if (!name) return reply.status(400).send({ error: "Agent name is required" });
+    const id = body.id?.trim() || `bot-${name.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${Date.now().toString(36).substring(4)}`;
+    const avatar = body.avatar?.trim() || "🤖";
+    const role = body.role?.trim() || "Custom Quant Analyst";
+    const color = body.color?.trim() || "#10b981";
+    const description = body.description?.trim() || `Custom AI agent for ${role}`;
+    const personaPrompt = body.personaPrompt?.trim() || "Analyze market movements and provide alpha signals.";
+    const customBot = new CustomBotAgent(runtime.getEventBus(), { id, name, avatar, role, color, description, personaPrompt, strategyId: body.strategyId, symbols: body.symbols || ["BTCUSDT", "ETHUSDT"], parameters: body.parameters || {}, enabled: true });
+    try {
+      runtime.registerAgent(customBot);
+      await customBot.start();
+      engine.registerAgentProfile({ id, name, avatar, role, color, description });
+      engine.postMessage({ channelId: "trading-floor", senderId: id, senderName: name, senderAvatar: avatar, senderRole: role, senderColor: color, content: `👋 Hello team! I am **${name}** (${role}). Ready to analyze markets and collaborate.` });
+      return { ok: true, agent: customBot.getProfile() };
+    } catch (err) {
+      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get("/api/orders/pending", async () => {
+    const engine = getDialogueEngine();
+    if (!engine) return { orders: [] };
+    return { orders: engine.getPendingOrders() };
+  });
+
+  app.post<{
+    Body: { symbol?: string; side?: "buy" | "sell"; quantity?: number; price?: number; type?: "market" | "limit"; strategy?: string; reason?: string };
+  }>("/api/orders/propose", async (request, reply) => {
+    const engine = getDialogueEngine();
+    if (!engine) return reply.status(503).send({ error: "dialogue engine not available" });
+    const b = request.body || {};
+    if (!b.symbol || !b.side || typeof b.quantity !== "number") return reply.status(400).send({ error: "symbol, side, and quantity are required" });
+    const proposal = engine.createProposedOrder({ symbol: b.symbol.toUpperCase(), side: b.side, quantity: b.quantity, price: b.price ?? 0, type: b.type ?? "market", strategy: b.strategy, reason: b.reason });
+    return { ok: true, order: proposal };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/orders/:id/approve", async (request, reply) => {
+    const engine = getDialogueEngine();
+    if (!engine) return reply.status(503).send({ error: "dialogue engine not available" });
+    const order = engine.approveOrder(request.params.id);
+    if (!order) return reply.status(404).send({ error: "order proposal not found" });
+    return { ok: true, order };
+  });
+
+  app.post<{ Params: { id: string }; Body?: { reason?: string } }>("/api/orders/:id/reject", async (request, reply) => {
+    const engine = getDialogueEngine();
+    if (!engine) return reply.status(503).send({ error: "dialogue engine not available" });
+    const order = engine.rejectOrder(request.params.id, request.body?.reason);
+    if (!order) return reply.status(404).send({ error: "order proposal not found" });
+    return { ok: true, order };
   });
 
   // -------------------------------------------------------------------------

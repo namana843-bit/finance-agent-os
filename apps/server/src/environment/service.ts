@@ -19,7 +19,7 @@ export class FinanceEnvironmentService implements ServiceLifecycle {
   constructor(
     private env: FinanceEnvironment,
     private bus: TypedEventBus,
-  ) {}
+  ) { }
 
   async initialize(): Promise<void> {
     this.info.status = "initialized";

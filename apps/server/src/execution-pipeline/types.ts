@@ -43,9 +43,18 @@ export type PipelineStage =
   | "risk"
   | "permission"
   | "paper"
+  | "kill_switch"
+  | "hard_limits"
   | "completed";
 
-export type PipelineRejectionStage = "validation" | "risk" | "permission" | "paper" | "live_disabled";
+export type PipelineRejectionStage =
+  | "validation"
+  | "risk"
+  | "permission"
+  | "paper"
+  | "live_disabled"
+  | "kill_switch"
+  | "hard_limits";
 
 export interface PipelineResult {
   success: boolean;

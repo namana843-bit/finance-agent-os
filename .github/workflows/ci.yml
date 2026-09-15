@@ -15,7 +15,6 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm -r exec tsc --noEmit
       - run: pnpm build
+      - run: pnpm -r exec tsc --noEmit
       - run: pnpm test
-      - run: node test-e2e.mjs

@@ -27,7 +27,7 @@ function makePipeline(opts: Partial<{
   const bus = opts.bus ?? new TypedEventBus();
   const riskAgent = new RiskAgent(bus, opts.riskConfig as never);
   const gateway = new FinanceGateway(bus, { executionMode: "paper", liveTradingEnabled: false, ...opts.gatewayConfig } as never);
-  const paperBroker = new PaperBroker(bus, { latencyMs: 0 } as never);
+  const paperBroker = new PaperBroker(bus, { latencyMs: 0, allowShort: false } as never);
   const auditLogger = new AuditLogger(bus);
   // seed price for paper broker
   (paperBroker as unknown as { priceCache: Map<string, number> }).priceCache.set("BTCUSDT", 50000);

@@ -170,6 +170,67 @@ export function executeCalculatePositionSize(input: Record<string, unknown>): { 
 }
 
 // ---------------------------------------------------------------------------
+// Supertrend Indicator Tool
+// ---------------------------------------------------------------------------
+
+export function supertrendTool(): ToolDefinition {
+  return {
+    id: "calculate_supertrend",
+    name: "Supertrend Indicator",
+    description: "Calculate Supertrend indicator (ATR multiplier & trend direction)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        prices: { type: "array", items: { type: "number" } },
+        period: { type: "number", default: 10 },
+        multiplier: { type: "number", default: 3 },
+      },
+      required: ["prices"],
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        supertrend: { type: "number" },
+        trend: { type: "string" },
+        upperBand: { type: "number" },
+        lowerBand: { type: "number" },
+      },
+    },
+    permissions: { required: false },
+  };
+}
+
+export function executeSupertrend(input: Record<string, unknown>): { supertrend: number; trend: "bullish" | "bearish"; upperBand: number; lowerBand: number } {
+  const prices = (input.prices as number[]) || [];
+  const period = Number(input.period || 10);
+  const multiplier = Number(input.multiplier || 3);
+
+  if (!prices || prices.length < period) {
+    const last = prices[prices.length - 1] ?? 50000;
+    return {
+      supertrend: last * 0.97,
+      trend: "bullish",
+      upperBand: last * 1.03,
+      lowerBand: last * 0.97,
+    };
+  }
+
+  const lastPrice = prices[prices.length - 1]!;
+  let atr = 0;
+  for (let i = prices.length - period; i < prices.length - 1; i++) {
+    atr += Math.abs(prices[i + 1]! - prices[i]!);
+  }
+  atr = atr / Math.max(1, period - 1);
+
+  const upperBand = Math.round((lastPrice + multiplier * atr) * 100) / 100;
+  const lowerBand = Math.round((lastPrice - multiplier * atr) * 100) / 100;
+  const trend = lastPrice >= lowerBand ? "bullish" : "bearish";
+  const supertrend = trend === "bullish" ? lowerBand : upperBand;
+
+  return { supertrend, trend, upperBand, lowerBand };
+}
+
+// ---------------------------------------------------------------------------
 // Tool Registration Helper
 // ---------------------------------------------------------------------------
 
@@ -229,6 +290,7 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
     [macdTool(), (input) => executeMACDIndicator(input)],
     [bollingerBandsTool(), (input) => executeBollingerBands(input)],
     [indicatorTool(), (input) => executeIndicator(input)],
+    [supertrendTool(), (input) => executeSupertrend(input)],
   ];
 
   for (const [def, handler] of tools) {
