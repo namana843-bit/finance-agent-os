@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import type {
   Bot,
   ChatMessage,
@@ -228,13 +227,13 @@ export function ChatCenter({
           <span className="ml-1 rounded-md border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] font-medium text-gray-300">
             Lead · {bot.name}
           </span>
-          <Link
+          <a
             href="/engines"
             title="Engine settings"
             className="rounded-md px-1.5 py-1 text-sm hover:bg-white/10 hover:text-gray-200"
           >
             ⚙
-          </Link>
+          </a>
           {showToggleRail ? (
             <button
               type="button"

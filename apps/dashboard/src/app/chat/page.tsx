@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BotSidebar } from "@/components/chat/BotSidebar";
 import { ChatCenter } from "@/components/chat/ChatCenter";
@@ -257,20 +256,20 @@ export default function ChatPage() {
     <div className="flex h-screen w-full overflow-hidden bg-[#0b0e14] text-gray-100">
       {/* Far-left icon rail */}
       <nav className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-white/10 py-3">
-        <Link
+        <a
           href="/chat"
           title="Chats"
           className="rounded-lg bg-white/10 px-2.5 py-2 text-lg leading-none"
         >
           💬
-        </Link>
-        <Link
+        </a>
+        <a
           href="/engines"
           title="Engines"
           className="rounded-lg px-2.5 py-2 text-lg leading-none text-gray-400 hover:bg-white/5 hover:text-gray-200"
         >
           ⚙
-        </Link>
+        </a>
         {["📊", "🗓", "🧩", "📁", "❓"].map((icon) => (
           <button
             key={icon}

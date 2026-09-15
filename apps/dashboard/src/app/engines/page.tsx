@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { SettingsEngines } from "@/components/chat/EnginesPanel";
 import { fetchBots, type Bot } from "@/lib/chat-api";
 import {
@@ -137,12 +136,12 @@ export default function EnginesPage() {
             Detect local CLI engines and assign one per bot.
           </p>
         </div>
-        <Link
+        <a
           href="/chat"
           className="ml-auto text-xs px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10"
         >
           Back to chat
-        </Link>
+        </a>
       </div>
 
       <SettingsEngines
