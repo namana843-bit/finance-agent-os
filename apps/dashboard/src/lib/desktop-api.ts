@@ -43,3 +43,33 @@ export async function fetchExecutionStatus(): Promise<unknown> {
   const r = await fetch(`${API_BASE}/api/execution/status`, { cache: "no-store" });
   return r.json();
 }
+
+// ---------------------------------------------------------------------------
+// OpenCode CLI Path Gateways
+// ---------------------------------------------------------------------------
+export async function fetchOpencodeCliPath(): Promise<unknown> {
+  const r = await fetch(`${API_BASE}/api/opencode/cli-path`, { cache: "no-store" });
+  return r.json();
+}
+export async function fetchOpencodePaths(): Promise<unknown> {
+  const r = await fetch(`${API_BASE}/api/opencode/paths`, { cache: "no-store" });
+  return r.json();
+}
+export async function fetchOpencodeGatewayStats(): Promise<unknown> {
+  const r = await fetch(`${API_BASE}/api/opencode/gateway/stats`, { cache: "no-store" });
+  return r.json();
+}
+export async function fetchGateways(): Promise<unknown> {
+  const r = await fetch(`${API_BASE}/api/gateways`, { cache: "no-store" });
+  return r.json();
+}
+export async function runOpencodeCommand(args: string[], opts?: { agentId?: string }): Promise<unknown> {
+  const r = await fetch(`${API_BASE}/api/opencode/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ args, agentId: opts?.agentId ?? "desktop" }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error ?? j.result?.stderr ?? `${r.status}`);
+  return j.result ?? j;
+}

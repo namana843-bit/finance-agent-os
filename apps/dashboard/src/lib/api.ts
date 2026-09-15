@@ -197,13 +197,18 @@ export function connectEvents(
   return { source: es, close };
 }
 
-// Utility: format helpers
-export const fmtCurrency = (n: number, ccy = "USD") =>
-  new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: ccy,
-    maximumFractionDigits: 2,
-  }).format(n);
+// Utility: format helpers (ccy may be a crypto code like USDT — Intl only accepts ISO 4217, so fall back gracefully)
+export const fmtCurrency = (n: number, ccy = "USD") => {
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: ccy,
+      maximumFractionDigits: 2,
+    }).format(n);
+  } catch {
+    return `${fmtNumber(n)} ${ccy}`;
+  }
+};
 
 export const fmtNumber = (n: number, digits = 2) =>
   new Intl.NumberFormat("en-US", {

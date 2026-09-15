@@ -1,6 +1,15 @@
 import { createRuntime, stopRuntime } from "./core/runtime.js";
 import { buildServer } from "./core/server.js";
 
+// If invoked with CLI args (finance-agent serve/pair/etc), delegate to cli.ts
+const cliCommands = new Set(["setup","start","serve","pair","sessions","status","login","logout","help","--help","-h"]);
+const firstArg = process.argv[2];
+if (firstArg && cliCommands.has(firstArg)) {
+  const { main: cliMain } = await import("./cli.js");
+  const code = await cliMain(process.argv.slice(2));
+  process.exit(code);
+}
+
 const runtime = createRuntime();
 const bus = runtime.getEventBus();
 const port = runtime.getConfig().port ?? 4132;

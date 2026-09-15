@@ -60,6 +60,7 @@ export interface RiskDecision {
   approved: boolean;
   signal: RiskSignal;
   reason: string;
+  held?: boolean;
   checks: RiskChecks;
   metrics?: {
     exposure: number;
@@ -96,6 +97,7 @@ export class RiskAgent extends BaseAgent implements Agent {
   private rejectedLog: Array<{ signal: RiskSignal; reason: string; checks: RiskChecks; timestamp: number }> = [];
   private returnsHistory: number[] = [];
   private maxReturnsHistory = 200;
+  private holdCheck?: (signal: Record<string, unknown>) => boolean;
 
   constructor(bus?: TypedEventBus, config?: Partial<RiskConfig>, initialPortfolio?: Partial<PortfolioState>) {
     super({
@@ -150,6 +152,10 @@ export class RiskAgent extends BaseAgent implements Agent {
     await super.stop();
   }
 
+  setHoldCheck(fn?: (signal: Record<string, unknown>) => boolean): void {
+    this.holdCheck = fn;
+  }
+
   async handleEvent(event: FinanceEvent): Promise<void> {
     if (event.type === "quant.signal" || event.type === "gateway.trade_request") {
       const signal = event.data as RiskSignal;
@@ -161,6 +167,35 @@ export class RiskAgent extends BaseAgent implements Agent {
 
   evaluate(signal: RiskSignal): RiskDecision {
     this.recordActivity();
+    const signalRecord = signal as unknown as Record<string, unknown>;
+    if (this.holdCheck?.(signalRecord)) {
+      const correlationId =
+        typeof signalRecord.correlationId === "string"
+          ? (signalRecord.correlationId as string)
+          : undefined;
+      this.bus.publish({
+        type: "risk.held",
+        data: { signal: signalRecord, reason: "held for approval" },
+        source: "risk-agent",
+        agentId: "risk",
+        correlationId,
+      });
+      const symHeld = typeof signal.symbol === "string" ? signal.symbol.toUpperCase() : "";
+      const normalizedHeld: RiskSignal = { ...signal, symbol: symHeld };
+      return {
+        approved: false,
+        signal: normalizedHeld,
+        reason: "held for approval",
+        held: true,
+        checks: {
+          exposure: true,
+          drawdown: true,
+          concentration: true,
+          confidence: true,
+          var: true,
+        },
+      };
+    }
     const sym = signal.symbol.toUpperCase();
     const normalized: RiskSignal = { ...signal, symbol: sym };
 
