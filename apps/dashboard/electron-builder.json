@@ -11,7 +11,8 @@
   ],
   "win": {
     "target": ["nsis", "portable"],
-    "artifactName": "Finance-Agent-OS-Setup-${version}.${ext}"
+    "artifactName": "Finance-Agent-OS-Setup-${version}.${ext}",
+    "sign": false
   },
   "mac": {
     "target": ["dmg"],

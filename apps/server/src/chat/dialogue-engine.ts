@@ -204,8 +204,13 @@ export class DialogueEngine {
     const trimmed = content.trim();
     const lower = trimmed.toLowerCase();
 
+    // Exclusive DM routing: a dm-<agent> channel targets ONLY that agent.
+    // Never fan out to the supervisor pipeline or other agents from a DM.
+    const dmTarget = channelId.startsWith("dm-") ? channelId.slice(3) : null;
+    const isDmToNonSupervisor = dmTarget !== null && dmTarget !== "supervisor";
+
     // Route message based on intent or channel
-    if (channelId === "trading-floor" || channelId === "dm-supervisor" || lower.startsWith("analyze") || lower.startsWith("trade") || lower.startsWith("plan")) {
+    if (!isDmToNonSupervisor && (channelId === "trading-floor" || channelId === "dm-supervisor" || lower.startsWith("analyze") || lower.startsWith("trade") || lower.startsWith("plan"))) {
       // Post Supervisor acknowledgement
       setTimeout(() => {
         const sup = this.getAgentProfile("supervisor");
@@ -286,6 +291,8 @@ export class DialogueEngine {
       }, 300);
     } else if (channelId.startsWith("dm-")) {
       const customAgentId = channelId.replace("dm-", "");
+      // DM exclusivity: only the addressed agent replies. No cross-agent
+      // chatter is triggered from here (see handleEvent guards).
       const profile = this.getAgentProfile(customAgentId);
       setTimeout(() => {
         this.postMessage({
@@ -474,7 +481,10 @@ export class DialogueEngine {
             content: `${profile.avatar} **${profile.name}:** Finished my step! ${summary}`,
           });
 
-          // Inter-Agent Conversational Reaction Handoff Loop
+          // Inter-Agent Conversational Reaction Handoff Loop.
+          // Suppressed in DM channels: only the addressed agent acts there.
+          const reactionChannel = data.channelId || "trading-floor";
+          if (!DialogueEngine.isOpenChannel(reactionChannel)) break;
           setTimeout(() => {
             if (agentId === "market") {
               const quant = this.getAgentProfile("quant");
@@ -551,7 +561,8 @@ export class DialogueEngine {
             content: `📈 Alpha Signal generated for **${symbol}**: **${action}** with **${confidence}% confidence**. ${reason}`,
           });
 
-          // Inter-agent direct response from Risk Officer
+          // Inter-agent direct response from Risk Officer (open channels only).
+          if (!DialogueEngine.isOpenChannel(data.channelId)) break;
           setTimeout(() => {
             const risk = this.getAgentProfile("risk");
             this.postMessage({
@@ -585,7 +596,7 @@ export class DialogueEngine {
             content: `🛡️ **Risk Assessment [${statusText}]:** ${reason} (Portfolio Exposure: ${exposure})`,
           });
 
-          if (approved) {
+          if (approved && DialogueEngine.isOpenChannel(data.channelId)) {
             setTimeout(() => {
               const exec = this.getAgentProfile("execution");
               this.postMessage({
@@ -619,7 +630,8 @@ export class DialogueEngine {
             content: `⚡ **Order Filled:** ${side} ${qty} ${symbol} @ ${price}. Paper trade executed.`,
           });
 
-          // Portfolio agent confirms asset update to supervisor
+          // Portfolio agent confirms asset update (open channels only).
+          if (!DialogueEngine.isOpenChannel(data.channelId)) break;
           setTimeout(() => {
             const pf = this.getAgentProfile("portfolio");
             this.postMessage({
@@ -718,5 +730,11 @@ export class DialogueEngine {
       this.unsubscribe();
       this.unsubscribe = null;
     }
+  }
+
+  /** DM exclusivity: reaction chatter from other agents is only allowed on
+   * open channels. Inside a dm-<agent> channel no other agent may act. */
+  private static isOpenChannel(channelId: unknown): boolean {
+    return typeof channelId !== "string" || !channelId.startsWith("dm-");
   }
 }

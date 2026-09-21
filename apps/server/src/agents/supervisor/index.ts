@@ -99,8 +99,11 @@ export class SupervisorAgent extends BaseAgent implements Agent {
   private failFast: boolean;
   private autoOrchestrateSignals: boolean;
   private unsubscribe: (() => void) | null = null;
+  private unsubscribes: Array<() => void> = [];
   private executions = new Map<string, PlanExecution>();
   private lastPlan: Plan | null = null;
+  private seenEventIds = new Set<string>();
+  private seenCapAt = 0;
 
   constructor(opts: SupervisorOptions = {}) {
     super({
@@ -137,23 +140,45 @@ export class SupervisorAgent extends BaseAgent implements Agent {
     return this.loopGuard;
   }
 
+  private isDuplicateEventId(id: string): boolean {
+    if (!id) return false;
+    if (this.seenEventIds.has(id)) return true;
+    this.seenEventIds.add(id);
+    if (this.seenEventIds.size > 1000) {
+      // prune oldest half
+      const ids = [...this.seenEventIds];
+      this.seenEventIds = new Set(ids.slice(500));
+    }
+    return false;
+  }
+
   async start(): Promise<void> {
     await super.start();
-    // Subscribe to supervisor tasks & quant signals via EventBus
-    this.unsubscribe = this.bus.subscribe((event: FinanceEvent) => {
+    // Selective subscriptions — avoid global fan-out to all agents on every event.
+    // supervisor.task/execute are the only entry points; quant.signal only if autoOrchestrateSignals.
+    const handle = (event: FinanceEvent, via: string) => {
+      if (event.id && this.isDuplicateEventId(`${via}:${event.id}`)) return;
       if (event.type === "supervisor.task" || event.type === "supervisor.execute") {
         const data = event.data as { task?: string; correlationId?: string } | null;
         const task = typeof data?.task === "string" ? data.task : typeof event.data === "string" ? event.data : "";
-        if (task) {
-          void this.submitTask(task, data?.correlationId).catch((err) => this.recordError(err));
-        }
+        if (task) void this.submitTask(task, data?.correlationId).catch((err) => this.recordError(err));
       } else if (event.type === "quant.signal" && this.autoOrchestrateSignals) {
         const signal = event.data as Record<string, unknown> | null;
         if (signal && (signal.action === "buy" || signal.action === "sell")) {
           void this.orchestrateTradeProposal(signal, { correlationId: event.correlationId }).catch((err) => this.recordError(err));
         }
       }
-    });
+    };
+    this.unsubscribes.push(this.bus.subscribeTo("supervisor.task", (e) => handle(e, "bus")));
+    this.unsubscribes.push(this.bus.subscribeTo("supervisor.execute", (e) => handle(e, "bus")));
+    if (this.autoOrchestrateSignals) {
+      this.unsubscribes.push(this.bus.subscribeTo("quant.signal", (e) => handle(e, "bus")));
+    }
+    // Keep a no-op global unsubscribe for backward compat
+    this.unsubscribe = () => {
+      for (const u of this.unsubscribes) u();
+      this.unsubscribes = [];
+    };
   }
 
   async stop(): Promise<void> {
@@ -161,10 +186,15 @@ export class SupervisorAgent extends BaseAgent implements Agent {
       this.unsubscribe();
       this.unsubscribe = null;
     }
+    for (const u of this.unsubscribes) u();
+    this.unsubscribes = [];
     await super.stop();
   }
 
   async handleEvent(event: FinanceEvent): Promise<void> {
+    if (event.id && this.isDuplicateEventId(`handle:${event.id}`)) return;
+    // Deduplicate against bus subscription for same event id
+    if (event.id && this.seenEventIds.has(`bus:${event.id}`)) return;
     if (event.type === "supervisor.task" || event.type === "supervisor.execute") {
       const data = event.data as { task?: string; correlationId?: string } | null;
       const task = typeof data?.task === "string" ? data.task : typeof event.data === "string" ? event.data : "";
@@ -551,9 +581,6 @@ export class SupervisorAgent extends BaseAgent implements Agent {
 
     for (const step of plan.steps) {
       const stepStartedAt = Date.now();
-
-      // Smooth step pacing delay for realistic inter-agent handoff feel
-      await new Promise((resolve) => setTimeout(resolve, 600));
 
       this.bus.publish({
         type: "supervisor.step_started",

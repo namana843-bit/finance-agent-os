@@ -47,24 +47,8 @@ const MIRRORED_TYPES = new Set<string>([
   "risk.held",
 ]);
 
-function asRecord(data: unknown): Record<string, unknown> {
-  if (typeof data === "object" && data !== null) {
-    return data as Record<string, unknown>;
-  }
-  return {};
-}
-
-function asString(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.length > 0 ? value : fallback;
-}
-
-function asNumber(value: unknown, fallback: string): string {
-  return typeof value === "number" && Number.isFinite(value) ? String(value) : fallback;
-}
-
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
+import { asRecord, asString, asArray } from "../utils/validation-helpers.js";
+import { asNumberString as asNumber } from "../utils/validation-helpers.js";
 
 function deriveAgentId(event: FinanceEvent): string {
   if (typeof event.agentId === "string" && event.agentId.length > 0) {
@@ -244,8 +228,19 @@ export class ChatCore {
     };
     await this.storage.saveMessage(message);
 
+    // Exclusive targeting: if this thread is bound to one specific bot
+    // (DM), only that agent acts. Never fan out to the supervisor pipeline
+    // or other agents from a DM thread (supervisor DMs still coordinate).
+    const threadBotIdRaw = thread.metadata?.["botId"];
+    const threadBot =
+      typeof threadBotIdRaw === "string" && threadBotIdRaw.length > 0
+        ? (this.bots.get(threadBotIdRaw) as BotWithOptionalLlm | undefined)
+        : undefined;
+    const isExclusiveDm =
+      threadBot !== undefined && threadBot.agentId !== "supervisor";
+
     let planId: string | null = null;
-    if (this.submitTask) {
+    if (!isExclusiveDm && this.submitTask) {
       try {
         const res = await this.submitTask(content, threadId);
         const rec = asRecord(res);
@@ -256,14 +251,17 @@ export class ChatCore {
       }
     }
 
-    // Always publish so the supervisor can pick the task up itself.
-    this.bus.publish({
-      type: "supervisor.task",
-      data: { task: content, correlationId: threadId },
-      source: "chat",
-      threadId,
-      agentId: "user",
-    });
+    // Always publish so the supervisor can pick the task up itself —
+    // except from exclusive DM threads, where only the addressed agent acts.
+    if (!isExclusiveDm) {
+      this.bus.publish({
+        type: "supervisor.task",
+        data: { task: content, correlationId: threadId },
+        source: "chat",
+        threadId,
+        agentId: "user",
+      });
+    }
 
     if (planId !== null) {
       this.planThreads.set(planId, threadId);

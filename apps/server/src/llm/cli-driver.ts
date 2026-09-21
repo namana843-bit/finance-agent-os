@@ -4,7 +4,7 @@ import type { LlmCompletion, LlmDriver } from "./types.js";
 export type SpawnFn = (
   cmd: string,
   args: string[],
-  opts: { timeoutMs: number },
+  opts: { cwd?: string; env?: Record<string, string>; timeoutMs: number },
 ) => Promise<{ stdout: string; stderr: string; code: number }>;
 
 export interface CliDriverOptions {
@@ -21,29 +21,25 @@ export interface CliDriverOptions {
 // (e.g. a command like `foo; rm -rf ~` would execute the trailing payload).
 // execFile invokes the binary directly with an argv array, so no shell
 // parsing or expansion ever happens.
-function defaultSpawnImpl(
+export function defaultSpawnImpl(
   cmd: string,
   args: string[],
-  opts: { timeoutMs: number },
+  opts: { timeoutMs: number; cwd?: string; env?: Record<string, string> },
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: opts.timeoutMs }, (error, stdout, stderr) => {
+    const env = opts.env ? { ...process.env, ...opts.env } : undefined;
+    execFile(cmd, args, { timeout: opts.timeoutMs, cwd: opts.cwd, env }, (error, stdout, stderr) => {
       const out = String(stdout ?? "");
       const err = String(stderr ?? "");
       if (error) {
         if (error.killed) {
-          // Covers the `timeout` option: execFile kills the child and
-          // reports it here, so a hung CLI surfaces as a thrown error.
           reject(error);
           return;
         }
         if (typeof error.code === "number") {
-          // Non-zero exit: surface as data so complete() can throw the
-          // uniform `cli exited <code>: <stderr>` error below.
           resolve({ stdout: out, stderr: err, code: error.code });
           return;
         }
-        // Spawn failures (ENOENT, EACCES, ...).
         reject(error);
         return;
       }

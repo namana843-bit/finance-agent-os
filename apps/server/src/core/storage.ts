@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile, access, rename, unlink } from "node:fs/promises";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { DATA_DIR } from "../config.js";
 
 // ---------------------------------------------------------------------------
 // Persistence layer — file-based under `.data`
@@ -43,19 +43,7 @@ export interface StorageState {
 type CollectionName = "channels" | "threads" | "messages";
 
 function getDataDir(): string {
-  // Resolve relative to the compiled file or source — fallback to cwd
-  // In dev (tsx) __dirname is src/core, in prod dist/core
-  // We want <project_root>/.data  =>  apps/server/.data
-  // Walk up from this file's directory to find server root.
-  try {
-    const currentDir = dirname(fileURLToPath(import.meta.url));
-    // src/core -> src -> server  (2 levels up from core)
-    // dist/core -> dist -> server (2 levels up)
-    const serverRoot = join(currentDir, "..", "..");
-    return join(serverRoot, ".data");
-  } catch {
-    return join(process.cwd(), ".data");
-  }
+  return process.env.FINANCE_DATA_DIR || DATA_DIR;
 }
 
 export class Storage {

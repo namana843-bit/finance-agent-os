@@ -12,7 +12,19 @@ import * as path from "node:path";
 import * as os from "node:os";
 import type { TypedEventBus } from "@finance/core";
 
-const execFileAsync = promisify(execFile);
+function execFileAsync(
+  file: string,
+  args: string[],
+  options: { timeout?: number; windowsHide?: boolean; maxBuffer?: number; shell?: boolean },
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(file, args, options, (err, stdout, stderr) => {
+      if (err) return reject(err);
+      resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+    });
+    child.stdin?.end();
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,12 +83,17 @@ export interface OpencodeGatewayStats {
 function candidatePaths(): string[] {
   const home = os.homedir();
   const candidates: string[] = [];
+  const pnpmHome = process.env.PNPM_HOME || path.join(home, "AppData", "Local", "pnpm");
   // Prefer native .exe over .cmd wrapper on Windows for execFile without shell
   candidates.push(
     path.join(home, "AppData", "Roaming", "npm", "node_modules", "opencode-ai", "bin", "opencode.exe"),
     path.join(home, "AppData", "Roaming", "npm", "opencode.cmd"),
     path.join(home, "AppData", "Roaming", "npm", "opencode"),
     path.join(home, "AppData", "Roaming", "npm", "opencode.ps1"),
+    path.join(pnpmHome, "opencode.exe"),
+    path.join(pnpmHome, "opencode.cmd"),
+    path.join(home, ".opencode", "bin", "opencode.exe"),
+    path.join(home, ".opencode", "bin", "opencode.cmd"),
     path.join(process.cwd(), "node_modules", "opencode-ai", "bin", "opencode.exe"),
     path.join(process.cwd(), "node_modules", ".bin", "opencode"),
     path.join(process.cwd(), "node_modules", ".bin", "opencode.cmd"),
@@ -136,7 +153,12 @@ async function probeVersion(cliPath: string, timeoutMs: number): Promise<string 
       const { stdout } = await execFileAsync("opencode", ["--version"], { timeout: timeoutMs, windowsHide: true, shell: shell as never });
       return stdout.trim().split("\n")[0] ?? null;
     } catch {
-      return null;
+      try {
+        const { stdout } = await execFileAsync("npx", ["opencode", "--version"], { timeout: timeoutMs, windowsHide: true, shell: true as never });
+        return stdout.trim().split("\n")[0] ?? null;
+      } catch {
+        return null;
+      }
     }
   }
 }
@@ -258,13 +280,21 @@ export class OpencodeCliGateway {
     if (!first) {
       return { allowed: false, reason: "command is required" };
     }
-    // Block shell metachars
+    // Block shell metachars — extended set
     const joined = [command, ...(args ?? [])].join(" ");
-    if (/[;&|`$><\\]/.test(joined)) {
+    if (/[;&|`$><\\(){}\[\]!%*?~\n\r]/.test(joined)) {
       return { allowed: false, reason: "shell metacharacters not allowed" };
     }
     if ((args?.length ?? 0) > this.config.maxArgs) {
       return { allowed: false, reason: `too many args (max ${this.config.maxArgs})` };
+    }
+    const safeArgRe = /^[a-zA-Z0-9._\-/:@=+,]+$/;
+    for (const a of args ?? []) {
+      if (a.startsWith("--")) continue;
+      if (a.startsWith("-") && a.length <= 8 && safeArgRe.test(a)) continue;
+      if (!safeArgRe.test(a) && !this.config.allowedCommands.includes(a)) {
+        return { allowed: false, reason: "arg '" + a + "' contains illegal characters or not in allowlist" };
+      }
     }
     // Allow if first token is in allowlist or starts with --
     const base = first.replace(/^--/, "");
@@ -309,24 +339,52 @@ export class OpencodeCliGateway {
     }
 
     const cliInfo = await this.getCliInfo();
-    const cliPath = cliInfo.resolvedPath ?? cliInfo.cliPath ?? "opencode";
+    let cliPath = cliInfo.resolvedPath ?? cliInfo.cliPath ?? "opencode";
+    let cliArgs = args;
+    let useShellForCli = needsShell(cliPath);
+    let npxFallback = false;
+    if (!cliInfo.exists) {
+      cliPath = "npx";
+      cliArgs = ["opencode", ...args];
+      useShellForCli = false;
+      npxFallback = true;
+    }
 
     this.bus.publish({
       type: "opencode.cli_request",
-      data: { command, args, agentId: req.agentId, cliPath },
+      data: { command, args, agentId: req.agentId, cliPath: npxFallback ? `npx opencode ${command}` : cliPath },
       source: "opencode-gateway",
       agentId: req.agentId,
       correlationId: req.correlationId,
     });
 
-    try {
-      const useShell = needsShell(cliPath);
-      const { stdout, stderr } = await execFileAsync(cliPath, args, {
+    const tryExec = async (cPath: string, cArgs: string[], shell: boolean) =>
+      execFileAsync(cPath, cArgs, {
         timeout: this.config.timeoutMs,
         windowsHide: true,
         maxBuffer: 2 * 1024 * 1024,
-        shell: useShell as never,
+        shell: shell as never,
       });
+
+    try {
+      let stdout: string;
+      let stderr: string;
+      try {
+        const res = await tryExec(cliPath, cliArgs, useShellForCli);
+        stdout = String(res.stdout);
+        stderr = String(res.stderr);
+      } catch (firstErr: unknown) {
+        const msg = String((firstErr as { message?: string })?.message ?? "");
+        const isNotFound = /ENOENT|not found|not recognized/i.test(msg);
+        if (!npxFallback && isNotFound) {
+          const res2 = await tryExec("npx", ["opencode", ...args], true);
+          stdout = String(res2.stdout);
+          stderr = String(res2.stderr);
+          cliPath = "npx opencode";
+        } else {
+          throw firstErr;
+        }
+      }
       this.successRuns++;
       this.lastRunAt = Date.now();
       const result: OpencodeRunResult = {

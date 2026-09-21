@@ -1,4 +1,4 @@
-import { API_BASE } from "./api";
+import { fetchJson } from "./fetch";
 
 export interface Bot {
   id: string;
@@ -49,19 +49,7 @@ export interface TradeProposal {
   result?: unknown;
 }
 
-async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
-  const res = await fetch(url, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText} ${text}`.trim());
-  }
-  return res.json() as Promise<T>;
-}
+
 
 export async function fetchBots(): Promise<Bot[]> {
   const data = await fetchJson<{ bots: Bot[] }>("/api/bots");

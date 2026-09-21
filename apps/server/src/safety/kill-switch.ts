@@ -72,10 +72,15 @@ export class KillSwitch {
     this.bus = deps?.bus;
     this.orderManager = deps?.orderManager;
     this.broker = deps?.broker;
-    this.overrideKey =
-      deps?.config?.overrideKey ??
-      process.env.KILL_SWITCH_OVERRIDE_KEY ??
-      "EMERGENCY_OVERRIDE_SECRET_DEFAULT";
+    const liveMode = (process.env.EXECUTION_MODE ?? "paper") === "live";
+    const providedKey = deps?.config?.overrideKey ?? process.env.KILL_SWITCH_OVERRIDE_KEY;
+    if (!providedKey) {
+      if (liveMode) throw new Error("[kill-switch] KILL_SWITCH_OVERRIDE_KEY is required in live mode — refusing hardcoded default");
+      this.overrideKey = "dev-ephemeral-" + Math.random().toString(36).slice(2);
+      console.warn("[kill-switch] KILL_SWITCH_OVERRIDE_KEY not set — using ephemeral key (paper mode only). Set env var for persistence");
+    } else {
+      this.overrideKey = providedKey;
+    }
   }
 
   setBus(bus: TypedEventBus): void {

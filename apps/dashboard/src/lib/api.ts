@@ -1,7 +1,6 @@
-// Finance Agent OS API client — merged HEAD (finance) + main (chat)
-export const API_BASE =
-  (typeof process !== "undefined" && (process as unknown as { env?: Record<string, string> }).env?.NEXT_PUBLIC_API_BASE) ||
-  "http://localhost:4132";
+// Finance Agent OS API client — merged HEAD (finance) + main (chat) + agent-runtime
+import { fetchJson } from "./fetch";
+export { API_BASE } from "./fetch";
 
 export type Tick = {
   symbol: string;
@@ -41,18 +40,41 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: string;
-  tools?: Array<{ id: string; name: string; status: "done" | "running" | "failed" }>;
+  tools?: Array<{ id: string; name: string; status: "done" | "running" | "failed"; result?: unknown }>;
   code?: { lang: string; code: string };
   approval?: { id: string; type: "file" | "shell" | "trade"; title: string; content: string };
   reactions?: string[];
+  reasoning?: string;
 }
 
-async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
-  const res = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers || {}) }, cache: "no-store" });
-  if (!res.ok) { const text = await res.text().catch(() => ""); throw new Error(`${res.status} ${res.statusText} ${text}`.trim()); }
-  return res.json() as Promise<T>;
+export interface AgentApiConfig {
+  id: string;
+  name: string;
+  description?: string;
+  role?: string;
+  engine: string;
+  model?: string;
+  systemPrompt?: string;
+  tools?: string[];
+  permissions?: { execution?: boolean };
+  riskPermissions?: { allowTradeProposals?: boolean; maxOrderSize?: number };
 }
+
+export interface EngineApiStatus {
+  id: string;
+  name: string;
+  group: "cloud" | "local";
+  kind: "cli" | "openai-compat";
+  command: string;
+  found: boolean;
+  path?: string;
+  overridden: boolean;
+  effectiveCommand: string;
+  version?: string;
+  suggestedArgs?: string[];
+}
+
+
 
 export function fetchHealth(): Promise<Health> { return fetchJson<Health>("/api/health"); }
 export function fetchPortfolio(): Promise<Portfolio> { return fetchJson<Portfolio>("/api/portfolio"); }
@@ -65,6 +87,100 @@ export function fetchTicks(params?: { limit?: number; symbol?: string }): Promis
 }
 export function fetchState(): Promise<unknown> { return fetchJson<unknown>("/api/state"); }
 
+// Agent Runtime API
+export function fetchAgents(): Promise<{ agents: AgentApiConfig[] }> {
+  return fetchJson<{ agents: AgentApiConfig[] }>("/api/agent-runtime/agents");
+}
+
+export function createAgent(config: AgentApiConfig): Promise<{ ok: boolean; agent: AgentApiConfig }> {
+  return fetchJson<{ ok: boolean; agent: AgentApiConfig }>("/api/agent-runtime/agents", {
+    method: "POST",
+    body: JSON.stringify(config),
+  });
+}
+
+export function deleteAgentApi(id: string): Promise<{ ok: boolean; id: string }> {
+  return fetchJson<{ ok: boolean; id: string }>(`/api/agent-runtime/agents/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export function exportAgentApi(id: string): Promise<{ ok: boolean; agent: unknown }> {
+  return fetchJson<{ ok: boolean; agent: unknown }>(`/api/agent-runtime/agents/${encodeURIComponent(id)}/export`);
+}
+
+export function importAgentApi(agentJson: unknown): Promise<{ ok: boolean; agent: AgentApiConfig }> {
+  return fetchJson<{ ok: boolean; agent: AgentApiConfig }>("/api/agent-runtime/agents/import", {
+    method: "POST",
+    body: JSON.stringify({ agentJson }),
+  });
+}
+
+// Engine & Ollama API
+export function fetchEnginesApi(): Promise<{ engines: EngineApiStatus[] }> {
+  return fetchJson<{ engines: EngineApiStatus[] }>("/api/llm/engines");
+}
+
+export function fetchOllamaModelsApi(): Promise<{ available: boolean; models: Array<{ id: string; name: string }>; message?: string }> {
+  return fetchJson<{ available: boolean; models: Array<{ id: string; name: string }>; message?: string }>("/api/ollama/models");
+}
+
+export function saveEngineCliOverride(id: string, command: string): Promise<{ ok: boolean; engine: EngineApiStatus }> {
+  return fetchJson<{ ok: boolean; engine: EngineApiStatus }>(`/api/llm/engines/${encodeURIComponent(id)}/cli`, {
+    method: "POST",
+    body: JSON.stringify({ command }),
+  });
+}
+
+// Streaming Agent Chat
+export async function streamAgentChat(
+  agentId: string,
+  prompt: string,
+  onEvent: (event: any) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/agent-runtime/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agentId, prompt }),
+    signal,
+  });
+
+  if (!res.ok || !res.body) {
+    throw new Error(`Streaming failed with status ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    let currentEvent = "";
+    for (const line of lines) {
+      if (line.startsWith("event: ")) {
+        currentEvent = line.slice(7).trim();
+      } else if (line.startsWith("data: ")) {
+        const rawData = line.slice(6).trim();
+        if (rawData) {
+          try {
+            const data = JSON.parse(rawData);
+            onEvent({ type: currentEvent || data.type, ...data });
+          } catch {
+            // ignore non-json line
+          }
+        }
+      }
+    }
+  }
+}
+
 export async function fetchChatHistory(channelId: string): Promise<ChatMessage[]> {
   try {
     const res = await fetch(`${API_BASE}/api/chat/history?channelId=${channelId}&limit=100`, { cache: "no-store" });
@@ -73,6 +189,7 @@ export async function fetchChatHistory(channelId: string): Promise<ChatMessage[]
     return data.messages || [];
   } catch { return []; }
 }
+
 export async function sendChatMessage(channelId: string, content: string, agentId?: string): Promise<unknown> {
   const res = await fetch(`${API_BASE}/api/chat/send`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ channelId, content, agentId }) });
   return res.json();

@@ -6,8 +6,10 @@
 // ============================================================================
 
 import { v4 as uuidv4 } from "uuid";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { writeFileAtomic } from "../atomic.js";
+import { DATA_DIR } from "../config.js";
 import type { TypedEventBus } from "@finance/core";
 import {
   VALID_TRANSITIONS,
@@ -25,17 +27,7 @@ import {
 export type { OrderSide, OrderType, OrderStatus, ManagedOrder, OrderFill };
 
 function getDefaultPersistPath(): string {
-  // Prefer apps/server/.data/orders.json; fallback to .data/orders.json at repo root
-  try {
-    const candidates = [
-      join(process.cwd(), "apps", "server", ".data", "orders.json"),
-      join(process.cwd(), ".data", "orders.json"),
-      ".data/orders.json",
-    ];
-    return candidates[0]!;
-  } catch {
-    return ".data/orders.json";
-  }
+  return join(DATA_DIR, "orders.json");
 }
 
 export class OrderManager {
@@ -87,11 +79,7 @@ export class OrderManager {
       const dir = dirname(this.persistPath);
       mkdirSync(dir, { recursive: true });
       const payload = JSON.stringify([...this.orders.values()], null, 2);
-      // atomic via tmp
-      const tmp = this.persistPath + ".tmp";
-      writeFileSync(tmp, payload, "utf-8");
-      writeFileSync(this.persistPath, payload, "utf-8");
-      try { writeFileSync(tmp, "", "utf-8"); } catch {}
+      writeFileAtomic(this.persistPath, payload);
     } catch (e) {
       console.warn("[order-manager] persist failed:", (e as Error).message);
     }

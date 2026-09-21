@@ -8,24 +8,7 @@ import {
   type TradeProposal,
 } from "./types.js";
 
-function asRecord(value: unknown): Record<string, unknown> {
-  if (typeof value === "object" && value !== null) {
-    return value as Record<string, unknown>;
-  }
-  return {};
-}
-
-function asString(value: unknown, fallback = ""): string {
-  return typeof value === "string" && value.length > 0 ? value : fallback;
-}
-
-function asNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function asSide(value: unknown): "buy" | "sell" | null {
-  return value === "buy" || value === "sell" ? value : null;
-}
+import { asRecord, asString, asNumber, asSide } from "../utils/validation-helpers.js";
 
 type ExecuteFn = (signal: Record<string, unknown>) => Promise<unknown>;
 

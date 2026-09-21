@@ -3,6 +3,7 @@
 // Phase 5 & Phase 18: Structured persistent memory for agents with
 // secret sanitization and end-to-end loop trace recording.
 // ============================================================================
+import * as path from "node:path";
 
 export interface MemoryEntry {
   id: string;
@@ -68,8 +69,101 @@ export class AgentMemory {
   private categoryIndex = new Map<string, Set<string>>(); // category -> entryIds
   private traces: AgentLoopTrace[] = [];
   private readonly maxTraces = 1000;
+  private persistPath: string | null = null;
+  private tracesPath: string | null = null;
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  private persistEnabled = false;
+  private dirty = false;
 
-  constructor() {}
+  constructor(opts?: { persistDir?: string; maxTraces?: number }) {
+    if (opts?.maxTraces) (this as unknown as { maxTraces: number }).maxTraces = opts.maxTraces;
+    if (opts?.persistDir) this.configurePersistence(opts.persistDir);
+  }
+
+  /** Enable file persistence — lightweight JSONL, no SQLite hang */
+  configurePersistence(dir: string): void {
+    try {
+      this.persistPath = path.join(dir, "agent-memory.json");
+      this.tracesPath = path.join(dir, "traces.jsonl");
+      this.persistEnabled = true;
+    } catch { this.persistEnabled = false; }
+  }
+
+  async load(): Promise<void> {
+    if (!this.persistEnabled || !this.persistPath) return;
+    try {
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      await fs.mkdir(path.dirname(this.persistPath), { recursive: true });
+      try {
+        const raw = await fs.readFile(this.persistPath, "utf8");
+        const data = JSON.parse(raw) as { entries: MemoryEntry[]; traces: AgentLoopTrace[] };
+        for (const e of data.entries ?? []) {
+          if (e.ttl && Date.now() - e.timestamp > e.ttl) continue;
+          this.entries.set(e.id, e);
+          if (!this.agentIndex.has(e.agentId)) this.agentIndex.set(e.agentId, new Set());
+          this.agentIndex.get(e.agentId)!.add(e.id);
+          const catKey = `${e.agentId}:${e.category}`;
+          if (!this.categoryIndex.has(catKey)) this.categoryIndex.set(catKey, new Set());
+          this.categoryIndex.get(catKey)!.add(e.id);
+        }
+        this.traces = (data.traces ?? []).slice(-this.maxTraces);
+      } catch { /* first run */ }
+      // also replay traces.jsonl tail
+      if (this.tracesPath) {
+        try {
+          const tail = await fs.readFile(this.tracesPath, "utf8");
+          const lines = tail.trim().split("\n").filter(Boolean).slice(-this.maxTraces);
+          for (const line of lines) {
+            try { const t = JSON.parse(line) as AgentLoopTrace; if (!this.traces.find(x=>x.traceId===t.traceId)) this.traces.push(t); } catch {}
+          }
+          if (this.traces.length > this.maxTraces) this.traces.splice(0, this.traces.length - this.maxTraces);
+        } catch {}
+      }
+    } catch {}
+  }
+
+  private schedulePersist(): void {
+    if (!this.persistEnabled) return;
+    this.dirty = true;
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => { this.saveTimer = null; void this.flush(); }, 3000);
+  }
+
+  async flush(): Promise<void> {
+    if (!this.persistEnabled || !this.persistPath || !this.dirty) return;
+    this.dirty = false;
+    try {
+      const fs = await import("node:fs/promises");
+      const pathMod = await import("node:path");
+      await fs.mkdir(pathMod.dirname(this.persistPath), { recursive: true });
+      const payload = JSON.stringify({ entries: [...this.entries.values()], traces: this.traces.slice(-500) }, null, 2);
+      // atomic via tmp + renameWithRetry to handle Windows EPERM/EBUSY
+      const { writeFileAtomic } = await import("../atomic.js");
+      writeFileAtomic(this.persistPath, payload);
+    } catch {}
+  }
+
+  startAutoCleanup(intervalMs = 60_000): void {
+    if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+    this.cleanupTimer = setInterval(() => {
+      const n = this.cleanup();
+      if (n > 0) this.schedulePersist();
+    }, intervalMs);
+    if (this.cleanupTimer && typeof (this.cleanupTimer as unknown as { unref: () => void }).unref === "function") {
+      (this.cleanupTimer as unknown as { unref: () => void }).unref();
+    }
+  }
+
+  stopAutoCleanup(): void {
+    if (this.cleanupTimer) { clearInterval(this.cleanupTimer); this.cleanupTimer = null; }
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; }
+  }
+
+  getStats(): { entries: number; traces: number; persistEnabled: boolean; persistPath: string | null } {
+    return { entries: this.entries.size, traces: this.traces.length, persistEnabled: this.persistEnabled, persistPath: this.persistPath };
+  }
 
   set(agentId: string, category: MemoryEntry["category"], key: string, value: unknown, ttl?: number): void {
     const id = `${agentId}:${category}:${key}`;
@@ -92,6 +186,7 @@ export class AgentMemory {
     const catKey = `${agentId}:${category}`;
     if (!this.categoryIndex.has(catKey)) this.categoryIndex.set(catKey, new Set());
     this.categoryIndex.get(catKey)!.add(id);
+    this.schedulePersist();
   }
 
   get(agentId: string, category: MemoryEntry["category"], key: string): unknown | undefined {
@@ -141,8 +236,28 @@ export class AgentMemory {
     if (this.traces.length > this.maxTraces) {
       this.traces.splice(0, this.traces.length - this.maxTraces);
     }
-    // Also save in category index
-    this.set("supervisor", "trade", trace.traceId, sanitizedTrace);
+    // Also save in category index (skip extra persist — will be batched)
+    const id = `supervisor:trade:${trace.traceId}`;
+    const entry: MemoryEntry = { id, agentId: "supervisor", category: "trade", key: trace.traceId, value: sanitizedTrace, timestamp: Date.now() };
+    this.entries.set(id, entry);
+    if (!this.agentIndex.has("supervisor")) this.agentIndex.set("supervisor", new Set());
+    this.agentIndex.get("supervisor")!.add(id);
+    const catKey = "supervisor:trade";
+    if (!this.categoryIndex.has(catKey)) this.categoryIndex.set(catKey, new Set());
+    this.categoryIndex.get(catKey)!.add(id);
+    // Append to JSONL for durability without rewriting full file each time
+    if (this.persistEnabled && this.tracesPath) {
+      void import("node:fs/promises").then(async (fs) => {
+        try {
+          const path = await import("node:path");
+          await fs.mkdir(path.dirname(this.tracesPath!), { recursive: true });
+          await fs.appendFile(this.tracesPath!, JSON.stringify(sanitizedTrace) + "\n", "utf8");
+          // rotate if > 5MB
+          try { const st = await fs.stat(this.tracesPath!); if (st.size > 5 * 1024 * 1024) await fs.rename(this.tracesPath!, `${this.tracesPath!}.${Date.now()}.bak`); } catch {}
+        } catch {}
+      });
+    }
+    this.schedulePersist();
   }
 
   /**
@@ -162,6 +277,7 @@ export class AgentMemory {
     this.agentIndex.clear();
     this.categoryIndex.clear();
     this.traces = [];
+    this.schedulePersist();
   }
 
   size(): number {
@@ -180,6 +296,12 @@ export class AgentMemory {
         removed++;
       }
     }
+    // also prune traces older than 7 days to avoid hang
+    const cutoff = now - 7 * 24 * 60 * 60 * 1000;
+    const before = this.traces.length;
+    this.traces = this.traces.filter(t => t.timestamp > cutoff);
+    if (this.traces.length !== before) removed += before - this.traces.length;
+    if (removed > 0) this.schedulePersist();
     return removed;
   }
 }

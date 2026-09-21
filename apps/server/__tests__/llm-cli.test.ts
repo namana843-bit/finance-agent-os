@@ -120,6 +120,11 @@ describe("detectCliEngines", () => {
       "gemini",
       "grok",
       "ollama",
+      "hermes",
+      "agy",
+      "opencode",
+      "qwen",
+      "pi",
     ]);
     const claude = engines.find((e) => e.command === "claude")!;
     expect(claude.found).toBe(true);
@@ -140,7 +145,7 @@ describe("detectCliEngines", () => {
       throw new Error("probe exploded");
     };
     const engines = await detectCliEngines(execImpl);
-    expect(engines).toHaveLength(5);
+    expect(engines).toHaveLength(10);
     for (const e of engines) {
       expect(e.found).toBe(false);
     }
