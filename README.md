@@ -83,12 +83,12 @@ flowchart TD
     RG -- "Missing / Expired / Forged Ticket" --> Rej
 ```
 
-1. **Signal Validation**: Validates symbol format, side (`buy`/`sell`), positive numeric price/quantity, and requiring `agentId`. Rejects free-form unstructured conversational text lacking quantitative parameters.
+1. **Signal Validation**: Validates symbol format, side (`buy`/`sell`), positive numeric price/quantity, and requiring `agentId`. Rejects free-form unstructured conversational text lacking quantitative parameters. Planner `extractQuantity` now strictly requires `qty:` or `<n> BTC|ETH|SOL` (prevents `buy BTC at 68234` price→qty confusion).
 2. **Anti-Loop Reliability Guard** (`LoopGuard`): Enforces max recursion depth (`<= 5`), per-symbol cooldowns, duplicate event suppression via payload hashing, and retry tracking.
-3. **Emergency Kill Switch** (`KillSwitch`): Instant trading halt that immediately cancels all open orders across `OrderManager` and `PaperBroker`, emits `audit.kill_switch_activated`, and requires administrative credentials to re-arm.
+3. **Emergency Kill Switch** (`KillSwitch`): Instant trading halt that immediately cancels all open orders across `OrderManager` and `PaperBroker`, emits `audit.kill_switch_activated`, and requires administrative credentials to re-arm. No hardcoded default — `KILL_SWITCH_OVERRIDE_KEY` is **required in `live` mode** (paper mode uses ephemeral key + warn).
 4. **Hard Non-Bypassable Limits** (`HardLimitsValidator`): Strict ceilings on single-order notional, symbol position notional, gross portfolio exposure, daily loss drawdown, concurrent open orders, and shorting.
 5. **Cryptographic Risk Gate** (`ticket.ts`): HMAC-SHA256 signed `RiskApprovalTicket` with symbol/side/quantity/price payload binding, strict TTL expiration (default: 30s), and replay-prevention tracking.
-6. **Canonical Order Lifecycle** (`OrderManager`): Monotonic state machine (`CREATED` → `PENDING` → `SUBMITTED` → `PARTIALLY_FILLED` → `FILLED`), terminal state protection (`FILLED`, `CANCELLED`, `REJECTED`, `FAILED`), and SQLite/in-memory persistence.
+6. **Canonical Order Lifecycle** (`OrderManager`): Monotonic state machine (`CREATED` → `PENDING` → `SUBMITTED` → `PARTIALLY_FILLED` → `FILLED`), terminal state protection (`FILLED`, `CANCELLED`, `REJECTED`, `FAILED`), and **atomic** file persistence via `writeFileAtomic` + unified `DATA_DIR`.
 7. **Exchange State Reconciliation** (`ExchangeReconciliation`): Periodic and on-demand detection of position mismatches, phantom exchange orders, and stale internal orders with automated mitigation and kill-switch escalation.
 
 ---
@@ -120,6 +120,21 @@ flowchart TD
 
 ---
 
+## 🔐 Security Hardening (Audit — 2026-09)
+
+- **CORS** (`core/server.ts:34`): `origin:true + credentials:true` replaced with `ALLOWED_ORIGINS` allowlist callback — fixes wildcard CSRF.
+- **Event injection** (`core/server.ts:389` `POST /api/publish`): denylist `supervisor.|risk.|gateway.|order.|trade.proposal_|audit.kill_switch|opencode.` → `403` (prevents bypassing Risk/Gateway gates).
+- **Opencode gateway** (`gateway/opencode-cli-gateway.ts:285`): extended shell metachars `; & | $ > < \ ( ) { } [ ] ! % * ? ~`, per-arg `safeArgRe` validation, `useShellForCli=false` even for `npx` fallback.
+- **Kill-switch** (`safety/kill-switch.ts:75`): no hardcoded `EMERGENCY_OVERRIDE_SECRET_DEFAULT`; live mode throws if `KILL_SWITCH_OVERRIDE_KEY` missing.
+- **Persistence**: unified `DATA_DIR` (`config.ts:6` → `~/.finance-agent` or `FINANCE_DATA_DIR`) used by `storage.ts:45`, `llm/persistence.ts:7`, `llm/engines.ts:220`, `core/runtime.ts:8` (`agent-memory`), `order-manager.ts:30`; `DATABASE_URL=file:./prisma/dev.db` without quotes/`?connection_limit=1`; atomic writes via `atomic.ts:28` `writeFileAtomic`.
+- **Planner**: strict `extractQuantity` (`agents/supervisor/planner.ts:172`) — requires `qty:`/`quantity=` or `<n> BTC|ETH|SOL`; price no longer misparsed as quantity.
+
+## 💾 Unified Data Dir & Persistent Agent Memory
+
+- **Single source of truth**: `DATA_DIR = FINANCE_DATA_DIR || ~/.finance-agent` (`config.ts:6`). All services (orders, memory, agents, engines) resolve under it — no more divergences between `process.cwd()/.data`, `apps/server/.data`, and `~/.finance-agent` that lost files on restart/Windows.
+- **AgentMemory** (`memory/agent-memory.ts:78`): file-persisted, **no SQLite hang** — debounced 3s snapshot `memory/agent-memory.json` + append-only `traces.jsonl` (5 MB rotate), 60 s TTL cleanup (7-day trace prune), secret redaction + `startAutoCleanup()`. Wired via `core/runtime.ts:143` `AgentMemoryService` and `core/server.ts:5` `/api/memory/{stats,traces,entries}` + `DELETE /api/memory`.
+- **Prisma slim**: 9 models only (hot path `Event/AuditLog/MarketCandle/PortfolioSnapshot` moved to in-memory/JSONL to avoid WAL lock).
+
 ## 📁 Repository Structure
 
 ```
@@ -127,53 +142,41 @@ finance-agent-os/
 ├── apps/
 │   ├── dashboard/                  # Desktop Application (React 18 + Vite + Electron)
 │   │   ├── electron/               # Electron main & preload processes
-│   │   ├── src/                    # Trading Desk UI, Agent Rooms, Live Telemetry
+│   │   ├── src/
+│   │   │   ├── lib/fetch.ts            # Shared fetchJson (deduped from api/llm-api/chat-api)
+│   │   │   ├── lib/clipboard.ts        # useClipboard hook (centralized)
+│   │   │   ├── lib/utils.ts            # cn() helper
+│   │   │   └── components/ui/*         # shadcn/ui primitives
 │   │   └── package.json
 │   │
 │   └── server/                     # Fastify API Server & Multi-Agent Runtime (:4132)
-│       ├── __tests__/              # 18 Test Suites (266 passing unit & integration tests)
-│       │   ├── live-safety.test.ts          # Phase 8: Hard limits, Kill Switch, Reconciliation
-│       │   ├── backtesting-trustworthy.test.ts # Phase 7: Zero look-ahead bias, execution simulation
-│       │   ├── binance-market.test.ts       # Phase 6: WebSocket streams, rate-limiting
-│       │   ├── agent-loop.test.ts           # Phase 5: Anti-loop guard, proposals, sanitized memory
-│       │   ├── risk-gate.test.ts            # Phase 4: HMAC risk tickets, broker boundary
-│       │   ├── order-lifecycle.integration.test.ts # Phase 3: Canonical order state machine
-│       │   └── ...                          # Paper broker, tools, runtime, supervisor tests
+│       ├── __tests__/              # Engine/agent/CLI/resolver tests
 │       └── src/
-│           ├── agents/             # Autonomous agent implementations (Supervisor, Quant, Risk, etc.)
+│           ├── agents/             # Supervisor (planner), Quant, Risk (VaR), Portfolio, Execution, Market
 │           ├── audit/              # Immutable audit logging with correlation IDs
-│           ├── backtesting/        # Trustworthy backtesting engine, execution simulator, & metrics
-│           │   ├── backtest-engine.ts       # Sequential zero look-ahead bar iterator
-│           │   ├── execution-simulator.ts   # Slippage, spread, fees, volume limit, limit fills
-│           │   └── metrics.ts               # Sharpe, Sortino, CAGR, Drawdown, Profit Factor
-│           ├── broker/             # Paper broker simulation with position & PnL accounting
-│           ├── core/               # LoopGuard, server factory, runtime composition
-│           ├── environment/        # Market, portfolio, and paper trading adapters
-│           ├── execution-pipeline/ # 7-stage gated execution pipeline (Signal → Risk → Safety → Broker)
-│           ├── gateway/            # FinanceGateway permissions, rate limits, & symbol allowlists
-│           ├── market/             # Binance live market runtime (read-only streams, REST rate limits)
-│           │   ├── binance-rest.ts          # Read-only REST client with used-weight-1m tracking
-│           │   ├── binance-ws.ts            # Multiplexed WebSocket client with reconnect/keepalive
-│           │   ├── normalizer.ts            # Canonical market stream data normalizer
-│           │   └── market-state.ts          # Real-time ticks, orderbook, and kline cache
-│           ├── memory/             # AgentMemory with secret redaction and trace logging
-│           ├── order-manager/      # Canonical OrderManager (monotonic state transitions, persistence)
-│           ├── risk-engine/        # Cryptographic HMAC-SHA256 RiskApprovalTicket generator
-│           ├── safety/             # Production live trading safety module
-│           │   ├── hard-limits.ts           # Hard non-bypassable order, symbol, & portfolio limits
-│           │   ├── kill-switch.ts           # Emergency circuit breaker & open order cancellation
-│           │   ├── exchange-reconciliation.ts # Position/order drift detection & auto-mitigation
-│           │   └── lifecycle-manager.ts     # Safe startup, order draining, & graceful shutdown
-│           └── strategies/         # Pluggable quantitative strategy registry (EMA, RSI, MACD, etc.)
+│           ├── backtesting/        # backtest-engine, execution-simulator, metrics
+│           ├── broker/             # Paper broker simulation
+│           ├── core/               # LoopGuard, server factory, runtime, storage (DATA_DIR), service-wrapper
+│           ├── environment/        # Market/portfolio/paper adapters
+│           ├── execution-pipeline/ # 7-stage gated pipeline (Signal → Risk → Safety → Broker)
+│           ├── gateway/            # FinanceGateway + OpencodeCliGateway (hardened) + OpencodeDaemon
+│           ├── llm/                # ProviderRegistry, EngineManager, AgentRuntime, CliSession, persistence (DATA_DIR), engines (DATA_DIR)
+│           ├── market/             # binance-rest/ws, normalizer, market-state
+│           ├── memory/             # AgentMemory (file-persisted, sanitized traces)
+│           ├── order-manager/      # Canonical OrderManager (writeFileAtomic + DATA_DIR)
+│           ├── risk-engine/        # HMAC-SHA256 RiskApprovalTicket
+│           ├── safety/             # hard-limits, kill-switch (no default secret), reconciliation
+│           ├── strategies/         # Pluggable registry (EMA, RSI, MACD, etc.)
+│           ├── tools/              # finance-tools, opencode, websearch + indicators
+│           └── utils/              # validation-helpers (shared asRecord/asString)
 │
 ├── packages/
-│   ├── core/                       # Autonomous Multi-Agent Engine & TypedEventBus
-│   └── shared/                     # Domain types, event schemas, & cryptographic interfaces
+│   ├── core/                       # TypedEventBus, FinanceRuntime, BaseServiceWrapper
+│   └── shared/                     # Domain types, event schemas, crypto interfaces
 │
-├── prisma/                         # Database schema & migrations
+├── prisma/                         # Slim schema (9 models) + migrations
 └── scripts/
-    ├── openbot.js                  # Interactive CLI terminal agent
-    └── verify-honesty.mjs
+    └── (openbot scaffold via pnpm --filter @finance/server cli)
 ```
 
 ---
@@ -208,7 +211,30 @@ pnpm desktop:electron
 ### 5. Typecheck & Tests
 ```bash
 pnpm typecheck        # Run TypeScript typechecks across all 5 workspace projects
-pnpm test             # Run all 266 unit & integration tests across 18 test suites
+pnpm test             # Run all unit & integration tests (engine/agent/CLI/resolver)
+pnpm --filter @finance/server build  # Verify server tsc (must be BUILD_OK)
+```
+
+### 6. Environment
+
+Copy `.env.example` → `.env` (never commit `.env` — it is gitignored):
+
+```bash
+cp .env.example .env
+# Required for live trading:
+# KILL_SWITCH_OVERRIDE_KEY=<random 32+ chars>  # required when EXECUTION_MODE=live
+# FINANCE_DATA_DIR=~/.finance-agent            # unified data dir (default)
+# ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173  # CORS allowlist (no wildcard)
+# DATABASE_URL=file:./prisma/dev.db           # no quotes, no ?connection_limit (SQLite)
+```
+
+### 7. Agent Memory API (file-persisted, no DB hang)
+
+```bash
+curl http://localhost:4132/api/memory/stats
+curl "http://localhost:4132/api/memory/traces?symbol=BTCUSDT&limit=50"
+curl "http://localhost:4132/api/memory/entries?agentId=supervisor&category=trade"
+curl -X DELETE http://localhost:4132/api/memory
 ```
 
 ---
