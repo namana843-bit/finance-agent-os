@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import { TypedEventBus, type EventBusOptions } from "@finance/core";
 import type { FinanceEvent, HistoryFilter } from "@finance/shared";
-import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine } from "./runtime.js";
+import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory } from "./runtime.js";
 import { ApprovalError } from "../approvals/types.js";
 import type { LlmConfig } from "../llm/types.js";
 import { CustomBotAgent } from "../agents/custom-bot-agent.js";
@@ -31,8 +31,13 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     logger: opts.logger ?? true,
   });
 
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? process.env.CORS_ORIGINS ?? "http://localhost:3000,http://localhost:5173").split(",").map((s) => s.trim()).filter(Boolean);
   await app.register(cors, {
-    origin: true,
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (allowedOrigins.includes(origin) || allowedOrigins.includes("*")) return cb(null, true);
+      return cb(null, false);
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   });
@@ -383,6 +388,11 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
 
     if (!body.type || typeof body.type !== "string" || body.type.trim() === "") {
       return reply.status(400).send({ error: "field 'type' is required and must be a non-empty string" });
+    }
+    const deniedPrefixes = ["supervisor.", "risk.", "gateway.", "order.", "trade.proposal_", "audit.kill_switch", "opencode."];
+    const ttype = body.type.trim();
+    if (deniedPrefixes.some((p) => ttype.startsWith(p))) {
+      return reply.status(403).send({ error: "event type '" + ttype + "' is not allowed via /api/publish" });
     }
 
     try {
@@ -1370,6 +1380,169 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     }
   });
 
+  // -------------------------------------------------------------------------
+  // Phase 4 — Provider & Engine Layer Routes
+  // -------------------------------------------------------------------------
+  app.get("/api/llm/providers", async () => {
+    const registry = getProviderRegistry();
+    const providers = registry.list().map((p) => ({
+      id: p.id,
+      name: p.name,
+      supportsTools: p.supportsTools(),
+    }));
+    return { providers };
+  });
+
+  app.get("/api/llm/providers/health", async () => {
+    const registry = getProviderRegistry();
+    const health = await registry.getHealth();
+    return { health };
+  });
+
+  app.get("/api/llm/tools", async () => {
+    const toolRegistry = getFinanceToolRegistry();
+    return { tools: toolRegistry.getDefinitions() };
+  });
+
+  app.get("/api/agent-runtime/agents", async () => {
+    const runtime = getAgentRuntime();
+    return { agents: runtime.listAgents() };
+  });
+
+  app.post<{
+    Body: { id?: string; name?: string; engine?: string; model?: string; systemPrompt?: string; tools?: string[]; permissions?: any; riskPermissions?: any };
+  }>("/api/agent-runtime/agents", async (request, reply) => {
+    const body = request.body || {};
+    if (!body.id || !body.name || !body.engine) {
+      return reply.status(400).send({ error: "id, name, and engine are required" });
+    }
+    const runtime = getAgentRuntime();
+    runtime.registerAgent({
+      id: body.id,
+      name: body.name,
+      engine: body.engine,
+      model: body.model,
+      systemPrompt: body.systemPrompt,
+      tools: body.tools,
+      permissions: body.permissions,
+      riskPermissions: body.riskPermissions,
+    });
+    return { ok: true, agent: runtime.getAgent(body.id) };
+  });
+
+  app.get<{ Params: { id: string } }>("/api/agent-runtime/agents/:id", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const agent = runtime.getAgent(request.params.id);
+    if (!agent) return reply.status(404).send({ error: `Agent '${request.params.id}' not found` });
+    return { agent };
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/agent-runtime/agents/:id", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const deleted = runtime.deleteAgent(request.params.id);
+    if (!deleted) return reply.status(404).send({ error: `Agent '${request.params.id}' not found` });
+    return { ok: true, id: request.params.id };
+  });
+
+  app.get<{ Params: { id: string } }>("/api/agent-runtime/agents/:id/export", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const agent = runtime.getAgent(request.params.id);
+    if (!agent) return reply.status(404).send({ error: `Agent '${request.params.id}' not found` });
+    // Export clean json without sensitive tokens/keys
+    const exportData = {
+      name: agent.name,
+      description: agent.description,
+      role: agent.role,
+      engine: agent.engine,
+      model: agent.model,
+      systemPrompt: agent.systemPrompt,
+      tools: agent.tools,
+      permissions: agent.permissions,
+      riskPermissions: agent.riskPermissions,
+      exportedAt: new Date().toISOString(),
+    };
+    return { ok: true, agent: exportData };
+  });
+
+  app.post<{ Body: { agentJson: any } }>("/api/agent-runtime/agents/import", async (request, reply) => {
+    const body = request.body || {};
+    const agentData = body.agentJson;
+    if (!agentData || !agentData.name || !agentData.engine) {
+      return reply.status(400).send({ error: "Invalid agent JSON. 'name' and 'engine' are required." });
+    }
+    const id = agentData.id || `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const runtime = getAgentRuntime();
+    const newAgent = {
+      id,
+      name: String(agentData.name),
+      description: agentData.description ? String(agentData.description) : undefined,
+      role: agentData.role ? String(agentData.role) : undefined,
+      engine: String(agentData.engine),
+      model: agentData.model ? String(agentData.model) : undefined,
+      systemPrompt: agentData.systemPrompt ? String(agentData.systemPrompt) : undefined,
+      tools: Array.isArray(agentData.tools) ? agentData.tools : undefined,
+      permissions: agentData.permissions,
+      riskPermissions: agentData.riskPermissions,
+    };
+    runtime.registerAgent(newAgent);
+    return { ok: true, agent: newAgent };
+  });
+
+  app.get("/api/ollama/models", async (_request, reply) => {
+    try {
+      const providerRegistry = getProviderRegistry();
+      const ollamaProvider = providerRegistry.get("ollama");
+      if (!ollamaProvider) return { available: false, models: [], message: "Ollama provider not registered" };
+      const health = await ollamaProvider.healthCheck();
+      if (health.status !== "ok") {
+        return { available: false, models: [], message: health.message || "Ollama is unavailable. Start Ollama and try again." };
+      }
+      const models = await ollamaProvider.listModels();
+      return { available: true, models };
+    } catch {
+      return { available: false, models: [], message: "Ollama is unavailable. Start Ollama and try again." };
+    }
+  });
+
+  app.post<{
+    Body: { agentId?: string; prompt?: string; history?: any[] };
+  }>("/api/agent-runtime/chat/stream", async (request, reply) => {
+    const body = request.body || {};
+    const agentId = body.agentId || "btc-quant-agent";
+    const prompt = body.prompt;
+
+    if (!prompt || typeof prompt !== "string") {
+      return reply.status(400).send({ error: "prompt is required" });
+    }
+
+    const runtime = getAgentRuntime();
+
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "Access-Control-Allow-Origin": "*",
+    });
+
+    try {
+      const stream = runtime.runAgentStream(agentId, prompt, body.history || []);
+      for await (const event of stream) {
+        reply.raw.write(`event: ${event.type}\n`);
+        reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      }
+    } catch (err) {
+      const errEvent = {
+        type: "error",
+        error: err instanceof Error ? err.message : String(err),
+        timestamp: Date.now(),
+      };
+      reply.raw.write(`event: error\n`);
+      reply.raw.write(`data: ${JSON.stringify(errEvent)}\n\n`);
+    } finally {
+      reply.raw.end();
+    }
+  });
+
   app.post<{
     Params: { id: string };
     Body: { provider?: string; command?: string; model?: string; args?: string[]; baseUrl?: string; apiKeyEnv?: string; engine?: string };
@@ -1482,6 +1655,36 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       return { ok: true, bot };
     },
   );
+
+  // -------------------------------------------------------------------------
+  // AGENT MEMORY (file-persisted, no SQLite — lightweight JSONL)
+  // -------------------------------------------------------------------------
+  app.get("/api/memory/stats", async () => {
+    const mem = getAgentMemory();
+    if (!mem) return { persistEnabled: false, entries: 0, traces: 0 };
+    return mem.getStats();
+  });
+  app.get<{ Querystring: { symbol?: string; limit?: string } }>("/api/memory/traces", async (request) => {
+    const mem = getAgentMemory();
+    if (!mem) return { traces: [] };
+    const lim = Math.min(Math.max(parseInt(request.query.limit ?? "50", 10) || 50, 1), 200);
+    return { traces: mem.getTraces(request.query.symbol, lim) };
+  });
+  app.get<{ Querystring: { agentId?: string; category?: string; limit?: string } }>("/api/memory/entries", async (request) => {
+    const mem = getAgentMemory();
+    if (!mem) return { entries: [] };
+    const agentId = (request.query.agentId ?? "supervisor").trim() || "supervisor";
+    const cat = (request.query.category as import("../memory/agent-memory.js").MemoryEntry["category"] | undefined) ?? undefined;
+    const lim = Math.min(Math.max(parseInt(request.query.limit ?? "50", 10) || 50, 1), 200);
+    const entries = cat ? mem.getByCategory(agentId, cat as never) : mem.getByAgent(agentId);
+    return { entries: entries.slice(-lim) };
+  });
+  app.delete("/api/memory", async () => {
+    const mem = getAgentMemory();
+    if (!mem) return { ok: false };
+    mem.clear();
+    return { ok: true };
+  });
 
   // -------------------------------------------------------------------------
   // 404 & error handling

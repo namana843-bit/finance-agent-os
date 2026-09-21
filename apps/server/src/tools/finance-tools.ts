@@ -34,6 +34,8 @@ import {
   executeIndicator,
 } from "./indicators.js";
 import { createExchangeProvider } from "../providers/index.js";
+import { websearchTool, executeWebsearch } from "./websearch.js";
+import { opencodeTool, executeOpencodeRun } from "./opencode.js";
 
 export interface ToolContext {
   bus: TypedEventBus;
@@ -264,6 +266,17 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
   // Select via EXCHANGE_PROVIDER env: "memory" (default, deterministic) | "binance" (live).
   const exchangeProvider = createExchangeProvider();
 
+  const getOpencodeGateway = (): { run: (req: { command: string; args?: string[]; agentId?: string }) => Promise<unknown> } | undefined => {
+    try {
+      const svc = (runtime as unknown as { getService?: (id: string) => unknown }).getService?.("opencode-gateway") as
+        | { getInstance?: () => { run: (req: { command: string; args?: string[]; agentId?: string }) => Promise<unknown> } }
+        | undefined;
+      return svc?.getInstance?.() as never;
+    } catch {
+      return undefined;
+    }
+  };
+
   const tools: Array<[ToolDefinition, (input: Record<string, unknown>) => Promise<unknown> | unknown]> = [
     // Legacy / existing
     [getMarketPriceTool(), (input) => executeGetMarketPrice(ctx, input)],
@@ -291,6 +304,7 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
     [bollingerBandsTool(), (input) => executeBollingerBands(input)],
     [indicatorTool(), (input) => executeIndicator(input)],
     [supertrendTool(), (input) => executeSupertrend(input)],
+    [opencodeTool(), (input) => executeOpencodeRun(getOpencodeGateway, input)],
   ];
 
   for (const [def, handler] of tools) {

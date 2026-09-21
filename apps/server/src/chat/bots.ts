@@ -16,10 +16,9 @@ export const DEFAULT_BOTS: BotConfig[] = [
     agentId: "supervisor",
     account: "paper",
     llm: {
-      provider: "openai-compat",
-      baseUrl: "http://localhost:11434/v1",
-      apiKeyEnv: "OLLAMA_API_KEY",
-      model: "llama3.1",
+      provider: "cli",
+      command: "opencode",
+      args: ["run", "--auto", "{prompt}"],
     },
   },
   {

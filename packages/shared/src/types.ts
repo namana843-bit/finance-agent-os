@@ -438,3 +438,138 @@ export interface ApiResponse<T> {
   error?: string;
   timestamp: number;
 }
+
+// ---------------------------------------------------------------------------
+// LLM & Engine Types (Phase 4)
+// ---------------------------------------------------------------------------
+
+export type LLMEventType =
+  | "message_start"
+  | "text_delta"
+  | "reasoning_delta"
+  | "tool_call"
+  | "tool_result"
+  | "message_complete"
+  | "error";
+
+export type LLMEvent =
+  | { type: "message_start"; messageId: string; model: string; timestamp: number }
+  | { type: "text_delta"; messageId: string; delta: string; timestamp: number }
+  | { type: "reasoning_delta"; messageId: string; delta: string; timestamp: number }
+  | { type: "tool_call"; messageId: string; toolCallId: string; name: string; arguments: Record<string, unknown>; timestamp: number }
+  | { type: "tool_result"; messageId: string; toolCallId: string; name: string; result: unknown; isError?: boolean; timestamp: number }
+  | { type: "message_complete"; messageId: string; text: string; finishReason?: string; usage?: { promptTokens?: number; completionTokens?: number }; timestamp: number }
+  | { type: "error"; messageId?: string; error: string; code?: string; timestamp: number };
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  provider: string;
+  contextWindow?: number;
+  supportsTools?: boolean;
+  supportsReasoning?: boolean;
+  description?: string;
+}
+
+export interface ProviderHealth {
+  providerId: string;
+  status: "ok" | "degraded" | "error" | "unreachable";
+  message?: string;
+  latencyMs?: number;
+  modelsCount?: number;
+}
+
+export interface LLMMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  name?: string;
+  toolCallId?: string;
+  toolCalls?: Array<{
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+  }>;
+}
+
+export interface LLMToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface ChatRequest {
+  model?: string;
+  messages: LLMMessage[];
+  tools?: LLMToolDefinition[];
+  temperature?: number;
+  maxTokens?: number;
+  systemPrompt?: string;
+}
+
+export type LLMProviderType =
+  | "openai"
+  | "openrouter"
+  | "ollama"
+  | "openai-compatible"
+  | "cli"
+  | "acp";
+
+export interface OpenAIEngineConfig {
+  type: "api";
+  provider: "openai";
+  model: string;
+  apiKeyEnv?: string;
+}
+
+export interface OpenRouterEngineConfig {
+  type: "api";
+  provider: "openrouter";
+  model: string;
+  baseUrl?: string;
+  apiKeyEnv?: string;
+}
+
+export interface OllamaEngineConfig {
+  type: "api";
+  provider: "ollama";
+  model: string;
+  baseUrl?: string;
+}
+
+export interface OpenAICompatibleEngineConfig {
+  type: "api";
+  provider: "openai-compatible";
+  model: string;
+  baseUrl: string;
+  apiKeyEnv?: string;
+}
+
+export interface CliEngineConfig {
+  type: "cli";
+  provider: "cli";
+  name?: string;
+  command: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  model?: string;
+}
+
+export interface AcpEngineConfig {
+  type: "acp";
+  provider: "acp";
+  name?: string;
+  command: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+export type EngineConfig =
+  | OpenAIEngineConfig
+  | OpenRouterEngineConfig
+  | OllamaEngineConfig
+  | OpenAICompatibleEngineConfig
+  | CliEngineConfig
+  | AcpEngineConfig;
+

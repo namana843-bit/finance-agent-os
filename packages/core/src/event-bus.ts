@@ -13,11 +13,22 @@ export interface EventBusOptions {
 export class TypedEventBus {
   private history: FinanceEvent[] = [];
   private subscribers = new Map<string, Set<EventHandler>>();
+  private wildcardSubscribers = new Map<string, Set<EventHandler>>();
   private globalSubscribers = new Set<EventHandler>();
+  private regexCache = new Map<string, RegExp>();
   private readonly maxHistory: number;
 
   constructor(opts: EventBusOptions = {}) {
     this.maxHistory = opts.maxHistory ?? 10_000;
+  }
+
+  private getPatternRegex(pattern: string): RegExp {
+    let re = this.regexCache.get(pattern);
+    if (!re) {
+      re = new RegExp("^" + pattern.replace(/\*/g, ".*") + "$");
+      this.regexCache.set(pattern, re);
+    }
+    return re;
   }
 
   /**
@@ -44,7 +55,7 @@ export class TypedEventBus {
 
     this.history.push(event);
     if (this.history.length > this.maxHistory) {
-      this.history.splice(0, this.history.length - this.maxHistory);
+      this.history.shift();
     }
 
     // Notify global subscribers
@@ -60,14 +71,12 @@ export class TypedEventBus {
       }
     }
 
-    // Notify wildcard subscribers (type contains "*")
-    for (const [pattern, handlers] of this.subscribers) {
-      if (pattern.includes("*")) {
-        const regex = new RegExp("^" + pattern.replace(/\*/g, ".*") + "$");
-        if (regex.test(event.type)) {
-          for (const handler of handlers) {
-            this.safeNotify(handler, event);
-          }
+    // Notify wildcard subscribers (fast indexed lookup with cached RegExp)
+    for (const [pattern, handlers] of this.wildcardSubscribers) {
+      const regex = this.getPatternRegex(pattern);
+      if (regex.test(event.type)) {
+        for (const handler of handlers) {
+          this.safeNotify(handler, event);
         }
       }
     }
@@ -89,12 +98,16 @@ export class TypedEventBus {
    * Subscribe to a specific event type.
    */
   subscribeTo(type: string, handler: EventHandler): () => void {
-    if (!this.subscribers.has(type)) {
-      this.subscribers.set(type, new Set());
+    const targetMap = type.includes("*") ? this.wildcardSubscribers : this.subscribers;
+    if (!targetMap.has(type)) {
+      targetMap.set(type, new Set());
     }
-    this.subscribers.get(type)!.add(handler);
+    targetMap.get(type)!.add(handler);
     return () => {
-      this.subscribers.get(type)?.delete(handler);
+      targetMap.get(type)?.delete(handler);
+      if (targetMap.get(type)?.size === 0) {
+        targetMap.delete(type);
+      }
     };
   }
 

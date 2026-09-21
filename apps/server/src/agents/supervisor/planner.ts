@@ -170,13 +170,22 @@ function buildAnalyzeSteps(symbol: string): PlanStep[] {
 }
 
 function extractQuantity(task: string): number | null {
-  const m = task.match(/\b(\d+(?:\.\d+)?)\s*(?:BTC|ETH|SOL|USDT)?\b/i);
-  if (!m?.[1]) return null;
-  const n = Number(m[1]);
-  if (!Number.isFinite(n) || n <= 0 || n > 10_000) return null;
-  // Distinguish qty vs price: if value > 1000 likely price, not qty — treat as no qty
-  if (n > 100) return null;
-  return n;
+  const explicit = task.match(/(?:quantity|qty)\s*[:=]\s*(\d+(?:\.\d+)?)/i);
+  if (explicit?.[1]) {
+    const n = Number(explicit[1]);
+    if (Number.isFinite(n) && n > 0 && n <= 100) return n;
+  }
+  const withUnit = task.match(/\b(\d+(?:\.\d+)?)\s*(?:BTC|ETH|SOL)\b/i);
+  if (withUnit?.[1]) {
+    const n = Number(withUnit[1]);
+    if (Number.isFinite(n) && n > 0 && n <= 100) return n;
+  }
+  const buyQty = task.match(/\b(?:buy|sell)\s+(\d+(?:\.\d+)?)\b/i);
+  if (buyQty?.[1]) {
+    const n = Number(buyQty[1]);
+    if (Number.isFinite(n) && n > 0 && n <= 10 && !/at\s+\d+/i.test(task)) return n;
+  }
+  return null;
 }
 
 function buildTradeSteps(symbol: string, task: string): PlanStep[] {
@@ -214,13 +223,22 @@ function buildBacktestSteps(symbol: string): PlanStep[] {
   ];
 }
 
-function buildGenericSteps(symbol: string | null): PlanStep[] {
+function isPriceOnlyQuery(task: string): boolean {
+  const t = task.toLowerCase();
+  const isPrice = /price|ticker|quote|current value/.test(t);
+  const isComplex = /analy[sz]e|trade|buy|sell|portfolio|risk|backtest|strategy|indicator|sma|rsi|macd|signal/.test(t);
+  return isPrice && !isComplex;
+}
+
+function buildGenericSteps(symbol: string | null, task?: string): PlanStep[] {
   const sym = symbol ?? "BTCUSDT";
+  if (task && isPriceOnlyQuery(task)) {
+    return [step("market.fetch_price", "market", `Fetch market price for ${sym}`, { symbol: sym }, "get_price")];
+  }
   const prices = syntheticPrices(sym, 20);
   return [
     step("market.fetch_price", "market", `Fetch market price for ${sym}`, { symbol: sym }, "get_price"),
     step("quant.research", "quant", `Research indicators for ${sym}`, { indicator: "sma", prices, period: 20 }, "calculate_indicator", ["market.fetch_price"]),
-    step("portfolio.summarize", "portfolio", "Final summary", {}, "get_portfolio_snapshot", ["quant.research"]),
   ];
 }
 
@@ -245,7 +263,7 @@ export function createPlan(task: string): Plan {
       break;
     case "generic":
     default:
-      steps = buildGenericSteps(symbol);
+      steps = buildGenericSteps(symbol, task);
       break;
   }
 

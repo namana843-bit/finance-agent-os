@@ -1,40 +1,15 @@
-import type { ServiceInfo, ServiceLifecycle, TypedEventBus } from "@finance/core";
+import type { TypedEventBus } from "@finance/core";
+import { BaseServiceWrapper } from "../core/service-wrapper.js";
 import { ApprovalService } from "./approval-service.js";
 import type { ApprovalServiceOptions } from "./types.js";
 
-export class ApprovalServiceWrapper implements ServiceLifecycle {
-  private readonly inner: ApprovalService;
-  private info: ServiceInfo = {
-    id: "approvals",
-    name: "Trade Approvals",
-    version: "0.1.0",
-    description: "Human-in-the-loop trade proposals: quant signals held for Approve/Reject",
-    status: "registered",
-  };
-
+export class ApprovalServiceWrapper extends BaseServiceWrapper<ApprovalService> {
   constructor(opts: ApprovalServiceOptions & { bus: TypedEventBus }) {
-    this.inner = new ApprovalService(opts);
-  }
-
-  async initialize(): Promise<void> {
-    this.info.status = "initialized";
-  }
-
-  async start(): Promise<void> {
-    this.inner.start();
-    this.info.status = "active";
-  }
-
-  async stop(): Promise<void> {
-    this.inner.stop();
-    this.info.status = "stopped";
-  }
-
-  getHealth(): ServiceInfo {
-    return { ...this.info };
-  }
-
-  getInstance(): ApprovalService {
-    return this.inner;
+    const inner = new ApprovalService(opts);
+    super(
+      { id: "approvals", name: "Trade Approvals", description: "Human-in-the-loop trade proposals: quant signals held for Approve/Reject" },
+      inner,
+      { onStart: (s) => s.start(), onStop: (s) => s.stop() }
+    );
   }
 }

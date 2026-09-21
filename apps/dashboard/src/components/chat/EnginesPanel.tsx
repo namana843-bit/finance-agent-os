@@ -9,6 +9,7 @@ import type {
   UsageTotals,
 } from "@/lib/llm-api";
 import { fetchUsage } from "@/lib/llm-api";
+import { useClipboard } from "@/lib/clipboard";
 
 interface SettingsEnginesProps {
   bots: Bot[];
@@ -167,23 +168,13 @@ function EngineRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
-  const [copied, setCopied] = useState(false);
+  const { copied, copy: handleCopy } = useClipboard(1500);
   const [checking, setChecking] = useState(false);
   const [checkLine, setCheckLine] = useState<string | null>(null);
 
   function openEditor() {
     setDraft(engine.effectiveCommand);
     setEditing(true);
-  }
-
-  async function handleCopy(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // clipboard unavailable — leave feedback off
-    }
   }
 
   async function handleCheck() {

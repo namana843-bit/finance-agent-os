@@ -4,8 +4,11 @@
 // and services with the FinanceRuntime.
 // ============================================================================
 
+import * as path from "node:path";
+import { DATA_DIR } from "../config.js";
 import { FinanceRuntime } from "@finance/core";
 import type { ServiceLifecycle, ServiceInfo } from "@finance/core";
+import { BaseServiceWrapper } from "./service-wrapper.js";
 import { MarketAgent } from "../agents/market/index.js";
 import { QuantAgent } from "../agents/quant/index.js";
 import { RiskAgent } from "../agents/risk/index.js";
@@ -39,6 +42,10 @@ import { UsageTracker } from "../llm/usage.js";
 import type { LlmService } from "../llm/llm-service.js";
 
 import { OpencodeCliGateway } from "../gateway/opencode-cli-gateway.js";
+import { OpencodeDaemonManager } from "../gateway/opencode-daemon.js";
+
+import { ProviderRegistry, EngineManager, FinanceToolRegistry, AgentRuntime } from "../llm/index.js";
+import { CliSessionManager, createCliSessionManager } from "../llm/cli-session.js";
 
 // Service IDs — canonical identifiers for service lookup
 export const SERVICE_IDS = {
@@ -59,432 +66,163 @@ export const SERVICE_IDS = {
   APPROVALS: "approvals",
   LLM: "llm",
   DIALOGUE_ENGINE: "dialogue-engine",
+  ENGINE_LAYER: "engine-layer",
 } as const;
 
 // ---------------------------------------------------------------------------
 // Service Wrappers — adapt existing services to ServiceLifecycle
 // ---------------------------------------------------------------------------
 
-class GatewayService implements ServiceLifecycle {
-  private gateway: FinanceGateway;
-  private info: ServiceInfo = {
-    id: SERVICE_IDS.GATEWAY,
-    name: "Finance Gateway",
-    version: "0.1.0",
-    description: "Central authority between agents and execution layer",
-    status: "registered",
-  };
-
+class GatewayService extends BaseServiceWrapper<FinanceGateway> {
   constructor(bus: import("@finance/core").TypedEventBus, executionMode: string) {
-    this.gateway = new FinanceGateway(bus, { executionMode: executionMode as "paper" | "live" });
-  }
-
-  async initialize(): Promise<void> {
-    this.info.status = "initialized";
-  }
-
-  async start(): Promise<void> {
-    this.info.status = "active";
-    console.log(`[service:${this.info.id}] started`);
-  }
-
-  async stop(): Promise<void> {
-    this.info.status = "stopped";
-    console.log(`[service:${this.info.id}] stopped`);
-  }
-
-  getHealth(): ServiceInfo {
-    return { ...this.info };
-  }
-
-  getInstance(): FinanceGateway {
-    return this.gateway;
+    super(
+      { id: SERVICE_IDS.GATEWAY, name: "Finance Gateway", description: "Central authority between agents and execution layer" },
+      new FinanceGateway(bus, { executionMode: executionMode as "paper" | "live" })
+    );
   }
 }
 
-class AuditLoggerService implements ServiceLifecycle {
-  private logger: AuditLogger;
-  private info: ServiceInfo = {
-    id: SERVICE_IDS.AUDIT_LOGGER,
-    name: "Audit Logger",
-    version: "0.1.0",
-    description: "Complete financial audit logging for all events",
-    status: "registered",
-  };
-
+class AuditLoggerService extends BaseServiceWrapper<AuditLogger> {
   constructor(bus: import("@finance/core").TypedEventBus) {
-    this.logger = new AuditLogger(bus);
-  }
-
-  async initialize(): Promise<void> {
-    this.info.status = "initialized";
-  }
-
-  async start(): Promise<void> {
-    this.logger.start();
-    this.info.status = "active";
-    console.log(`[service:${this.info.id}] started`);
-  }
-
-  async stop(): Promise<void> {
-    this.logger.stop();
-    this.info.status = "stopped";
-    console.log(`[service:${this.info.id}] stopped`);
-  }
-
-  getHealth(): ServiceInfo {
-    return { ...this.info };
-  }
-
-  getInstance(): AuditLogger {
-    return this.logger;
+    const logger = new AuditLogger(bus);
+    super(
+      { id: SERVICE_IDS.AUDIT_LOGGER, name: "Audit Logger", description: "Complete financial audit logging for all events" },
+      logger,
+      { onStart: (l) => l.start(), onStop: (l) => l.stop() }
+    );
   }
 }
 
-class MarketStateServiceWrapper implements ServiceLifecycle {
-  private service: MarketStateService;
-  private info: ServiceInfo = {
-    id: SERVICE_IDS.MARKET_STATE,
-    name: "Market State Service",
-    version: "0.1.0",
-    description: "Maintains real-time market state from live data",
-    status: "registered",
-  };
-
+class MarketStateServiceWrapper extends BaseServiceWrapper<MarketStateService> {
   constructor(bus: import("@finance/core").TypedEventBus) {
-    this.service = new MarketStateService(bus);
-  }
-
-  async initialize(): Promise<void> {
-    this.info.status = "initialized";
-  }
-
-  async start(): Promise<void> {
-    this.service.start();
-    this.info.status = "active";
-    console.log(`[service:${this.info.id}] started`);
-  }
-
-  async stop(): Promise<void> {
-    this.service.stop();
-    this.info.status = "stopped";
-    console.log(`[service:${this.info.id}] stopped`);
-  }
-
-  getHealth(): ServiceInfo {
-    return { ...this.info };
-  }
-
-  getInstance(): MarketStateService {
-    return this.service;
+    const svc = new MarketStateService(bus);
+    super(
+      { id: SERVICE_IDS.MARKET_STATE, name: "Market State Service", description: "Maintains real-time market state from live data" },
+      svc,
+      { onStart: (s) => s.start(), onStop: (s) => s.stop() }
+    );
   }
 }
 
-class PaperBrokerService implements ServiceLifecycle {
-  private broker: PaperBroker;
-  private info: ServiceInfo = {
-    id: SERVICE_IDS.PAPER_BROKER,
-    name: "Paper Broker",
-    version: "0.1.0",
-    description: "Realistic paper trading simulation",
-    status: "registered",
-  };
-
+class PaperBrokerService extends BaseServiceWrapper<PaperBroker> {
   constructor(bus: import("@finance/core").TypedEventBus) {
-    this.broker = new PaperBroker(bus);
-  }
-
-  async initialize(): Promise<void> {
-    this.info.status = "initialized";
-  }
-
-  async start(): Promise<void> {
-    this.info.status = "active";
-    console.log(`[service:${this.info.id}] started`);
-  }
-
-  async stop(): Promise<void> {
-    this.info.status = "stopped";
-    console.log(`[service:${this.info.id}] stopped`);
-  }
-
-  getHealth(): ServiceInfo {
-    return { ...this.info };
-  }
-
-  getInstance(): PaperBroker {
-    return this.broker;
+    super(
+      { id: SERVICE_IDS.PAPER_BROKER, name: "Paper Broker", description: "Realistic paper trading simulation" },
+      new PaperBroker(bus)
+    );
   }
 }
 
-class StateRecoveryService implements ServiceLifecycle {
-  private recovery: StateRecovery;
-  private info: ServiceInfo = {
-    id: SERVICE_IDS.STATE_RECOVERY,
-    name: "State Recovery",
-    version: "0.1.0",
-    description: "Application persistence and restart recovery",
-    status: "registered",
-  };
-
+class StateRecoveryService extends BaseServiceWrapper<StateRecovery> {
   constructor(bus: import("@finance/core").TypedEventBus) {
-    this.recovery = new StateRecovery(bus);
-  }
-
-  async initialize(): Promise<void> {
-    this.info.status = "initialized";
-  }
-
-  async start(): Promise<void> {
-    await this.recovery.start();
-    this.info.status = "active";
-    console.log(`[service:${this.info.id}] started`);
-  }
-
-  async stop(): Promise<void> {
-    await this.recovery.stop();
-    this.info.status = "stopped";
-    console.log(`[service:${this.info.id}] stopped`);
-  }
-
-  getHealth(): ServiceInfo {
-    return { ...this.info };
-  }
-
-  getInstance(): StateRecovery {
-    return this.recovery;
+    const rec = new StateRecovery(bus);
+    super(
+      { id: SERVICE_IDS.STATE_RECOVERY, name: "State Recovery", description: "Application persistence and restart recovery" },
+      rec,
+      { onStart: (r) => r.start(), onStop: (r) => r.stop() }
+    );
   }
 }
 
-class OrderManagerService implements ServiceLifecycle {
-  private manager: OrderManager;
-  private info: ServiceInfo = {
-    id: SERVICE_IDS.ORDER_MANAGER,
-    name: "Order Manager",
-    version: "0.1.0",
-    description: "Order lifecycle management with state machine",
-    status: "registered",
-  };
-
+class OrderManagerService extends BaseServiceWrapper<OrderManager> {
   constructor(bus: import("@finance/core").TypedEventBus) {
-    this.manager = new OrderManager(bus);
-  }
-
-  async initialize(): Promise<void> {
-    this.info.status = "initialized";
-  }
-
-  async start(): Promise<void> {
-    this.info.status = "active";
-    console.log(`[service:${this.info.id}] started`);
-  }
-
-  async stop(): Promise<void> {
-    this.info.status = "stopped";
-    console.log(`[service:${this.info.id}] stopped`);
-  }
-
-  getHealth(): ServiceInfo {
-    return { ...this.info };
-  }
-
-  getInstance(): OrderManager {
-    return this.manager;
+    super(
+      { id: SERVICE_IDS.ORDER_MANAGER, name: "Order Manager", description: "Order lifecycle management with state machine" },
+      new OrderManager(bus)
+    );
   }
 }
 
-class TradeEngineService implements ServiceLifecycle {
-  private engine: TradeEngine;
-  private info: ServiceInfo = {
-    id: SERVICE_IDS.TRADE_ENGINE,
-    name: "Trade Engine",
-    version: "0.1.0",
-    description: "Trade management separate from orders",
-    status: "registered",
-  };
-
+class TradeEngineService extends BaseServiceWrapper<TradeEngine> {
   constructor(bus: import("@finance/core").TypedEventBus) {
-    this.engine = new TradeEngine(bus);
-  }
-
-  async initialize(): Promise<void> {
-    this.info.status = "initialized";
-  }
-
-  async start(): Promise<void> {
-    this.info.status = "active";
-    console.log(`[service:${this.info.id}] started`);
-  }
-
-  async stop(): Promise<void> {
-    this.info.status = "stopped";
-    console.log(`[service:${this.info.id}] stopped`);
-  }
-
-  getHealth(): ServiceInfo {
-    return { ...this.info };
-  }
-
-  getInstance(): TradeEngine {
-    return this.engine;
+    super(
+      { id: SERVICE_IDS.TRADE_ENGINE, name: "Trade Engine", description: "Trade management separate from orders" },
+      new TradeEngine(bus)
+    );
   }
 }
 
-class AgentMemoryService implements ServiceLifecycle {
-  private memory: AgentMemory;
-  private info: ServiceInfo = {
-    id: SERVICE_IDS.AGENT_MEMORY,
-    name: "Agent Memory",
-    version: "0.1.0",
-    description: "Structured persistent memory for agents",
-    status: "registered",
-  };
-
+class AgentMemoryService extends BaseServiceWrapper<AgentMemory> {
   constructor() {
-    this.memory = new AgentMemory();
+    const dir = process.env.AGENT_MEMORY_DIR || path.join(DATA_DIR, "memory");
+    const mem = new AgentMemory({ persistDir: dir });
+    super(
+      { id: SERVICE_IDS.AGENT_MEMORY, name: "Agent Memory", description: "Structured persistent memory for agents (file-persisted, no SQLite hang)" },
+      mem
+    );
   }
-
-  async initialize(): Promise<void> {
-    this.info.status = "initialized";
+  override async initialize(): Promise<void> {
+    await this.inner.load().catch(() => {});
+    (this as unknown as { info: ServiceInfo }).info.status = "initialized";
   }
-
-  async start(): Promise<void> {
-    this.info.status = "active";
-    console.log(`[service:${this.info.id}] started`);
+  override async start(): Promise<void> {
+    await this.inner.load().catch(() => {});
+    this.inner.startAutoCleanup(60_000);
+    (this as unknown as { info: ServiceInfo }).info.status = "active";
+    const s = this.inner.getStats();
+    console.log(`[service:${SERVICE_IDS.AGENT_MEMORY}] started entries=${s.entries} traces=${s.traces} persist=${s.persistPath}`);
   }
-
-  async stop(): Promise<void> {
-    this.info.status = "stopped";
-    console.log(`[service:${this.info.id}] stopped`);
-  }
-
-  getHealth(): ServiceInfo {
-    return { ...this.info };
-  }
-
-  getInstance(): AgentMemory {
-    return this.memory;
+  override async stop(): Promise<void> {
+    this.inner.stopAutoCleanup();
+    await this.inner.flush().catch(() => {});
+    (this as unknown as { info: ServiceInfo }).info.status = "stopped";
+    console.log(`[service:${SERVICE_IDS.AGENT_MEMORY}] stopped`);
   }
 }
 
-class OpencodeGatewayService implements ServiceLifecycle {
-  private gateway: OpencodeCliGateway;
-  private info: ServiceInfo = {
-    id: SERVICE_IDS.OPENCODE_GATEWAY,
-    name: "OpenCode CLI Gateway",
-    version: "0.1.0",
-    description: "Permissioned gateway for opencode CLI path + execution (path gateways)",
-    status: "registered",
-  };
-
+class OpencodeGatewayService extends BaseServiceWrapper<OpencodeCliGateway> {
+  private daemon: OpencodeDaemonManager;
   constructor(bus: import("@finance/core").TypedEventBus) {
-    this.gateway = new OpencodeCliGateway(bus);
+    super(
+      { id: SERVICE_IDS.OPENCODE_GATEWAY, name: "OpenCode CLI Gateway", description: "Permissioned gateway for opencode CLI path + execution (path gateways)" },
+      new OpencodeCliGateway(bus)
+    );
+    this.daemon = new OpencodeDaemonManager();
   }
-
-  async initialize(): Promise<void> {
-    this.info.status = "initialized";
+  override async start(): Promise<void> {
+    await this.inner.getCliInfo().catch(() => {});
+    await this.daemon.start().catch((err) => console.warn(`[opencode:daemon] background start failed:`, err));
+    (this as unknown as { info: ServiceInfo }).info.status = "active";
+    const cli = await this.inner.getCliInfo().catch(() => null);
+    const daemonUrl = this.daemon.getDaemonUrl();
+    console.log(`[service:${SERVICE_IDS.OPENCODE_GATEWAY}] started cli=${cli?.cliPath ?? "not found"} exists=${cli?.exists ?? false}${daemonUrl ? ` daemon=${daemonUrl}` : ""}`);
   }
-
-  async start(): Promise<void> {
-    // warm cache
-    await this.gateway.getCliInfo().catch(() => {});
-    this.info.status = "active";
-    const cli = await this.gateway.getCliInfo().catch(() => null);
-    console.log(`[service:${this.info.id}] started cli=${cli?.cliPath ?? "not found"} exists=${cli?.exists ?? false}`);
+  override async stop(): Promise<void> {
+    this.daemon.stop();
+    (this as unknown as { info: ServiceInfo }).info.status = "stopped";
+    console.log(`[service:${SERVICE_IDS.OPENCODE_GATEWAY}] stopped`);
   }
-
-  async stop(): Promise<void> {
-    this.info.status = "stopped";
-    console.log(`[service:${this.info.id}] stopped`);
-  }
-
-  getHealth(): ServiceInfo {
-    return { ...this.info };
-  }
-
-  getInstance(): OpencodeCliGateway {
-    return this.gateway;
-  }
+  getDaemon(): OpencodeDaemonManager { return this.daemon; }
 }
 
 // ---------------------------------------------------------------------------
 // Strategy Registry Service Wrapper
 // ---------------------------------------------------------------------------
 
-class StrategyRegistryService implements ServiceLifecycle {
-  private registry: StrategyRegistry;
-  private info: ServiceInfo = {
-    id: SERVICE_IDS.STRATEGY_REGISTRY,
-    name: "Strategy Registry",
-    version: "0.1.0",
-    description: "Pluggable strategy management and registration",
-    status: "registered",
-  };
-
+class StrategyRegistryService extends BaseServiceWrapper<StrategyRegistry> {
   constructor() {
-    this.registry = new StrategyRegistry();
-    registerDefaultStrategies(this.registry);
+    const registry = new StrategyRegistry();
+    registerDefaultStrategies(registry);
+    super(
+      { id: SERVICE_IDS.STRATEGY_REGISTRY, name: "Strategy Registry", description: "Pluggable strategy management and registration" },
+      registry
+    );
   }
-
-  async initialize(): Promise<void> {
-    this.info.status = "initialized";
-  }
-
-  async start(): Promise<void> {
-    this.info.status = "active";
-    console.log(`[service:${this.info.id}] started (${this.registry.size()} strategies)`);
-  }
-
-  async stop(): Promise<void> {
-    this.info.status = "stopped";
-    console.log(`[service:${this.info.id}] stopped`);
-  }
-
-  getHealth(): ServiceInfo {
-    return { ...this.info };
-  }
-
-  getInstance(): StrategyRegistry {
-    return this.registry;
+  override async start(): Promise<void> {
+    (this as unknown as { info: ServiceInfo }).info.status = "active";
+    console.log(`[service:${SERVICE_IDS.STRATEGY_REGISTRY}] started (${this.inner.size()} strategies)`);
   }
 }
 
 
-class DialogueEngineService implements ServiceLifecycle {
-  private engine: DialogueEngine;
-  private info: ServiceInfo = {
-    id: SERVICE_IDS.DIALOGUE_ENGINE,
-    name: "Dialogue Engine",
-    version: "0.1.0",
-    description: "Multi-agent conversational dialogue layer for OpenMausBot",
-    status: "registered",
-  };
-
+class DialogueEngineService extends BaseServiceWrapper<DialogueEngine> {
   constructor(bus: import("@finance/core").TypedEventBus) {
-    this.engine = new DialogueEngine(bus);
-  }
-
-  async initialize(): Promise<void> {
-    this.info.status = "initialized";
-  }
-
-  async start(): Promise<void> {
-    this.info.status = "active";
-    console.log(`[service:${this.info.id}] started`);
-  }
-
-  async stop(): Promise<void> {
-    this.engine.destroy();
-    this.info.status = "stopped";
-    console.log(`[service:${this.info.id}] stopped`);
-  }
-
-  getHealth(): ServiceInfo {
-    return { ...this.info };
-  }
-
-  getInstance(): DialogueEngine {
-    return this.engine;
+    const engine = new DialogueEngine(bus);
+    super(
+      { id: SERVICE_IDS.DIALOGUE_ENGINE, name: "Dialogue Engine", description: "Multi-agent conversational dialogue layer for OpenMausBot" },
+      engine,
+      { onStop: (e) => e.destroy() }
+    );
   }
 }
 
@@ -735,6 +473,57 @@ export function getDialogueEngine(): DialogueEngine | undefined {
 
 export function getChat(): import("../chat/chat-service.js").ChatCore | undefined { return getService<ChatService>(SERVICE_IDS.CHAT)?.getInstance(); }
 
+let cliSessionManagerInstance: CliSessionManager | null = null;
+let providerRegistryInstance: ProviderRegistry | null = null;
+let engineManagerInstance: EngineManager | null = null;
+let financeToolRegistryInstance: FinanceToolRegistry | null = null;
+let agentRuntimeInstance: AgentRuntime | null = null;
+
+function getCliSessionManager(): CliSessionManager {
+  if (!cliSessionManagerInstance) {
+    const daemon = OpencodeDaemonManager.getInstance();
+    const daemonUrl = daemon?.getDaemonUrl() ?? undefined;
+    cliSessionManagerInstance = createCliSessionManager({ daemonUrl });
+  }
+  return cliSessionManagerInstance;
+}
+
+export function getProviderRegistry(): ProviderRegistry {
+  if (!providerRegistryInstance) {
+    providerRegistryInstance = new ProviderRegistry();
+  }
+  return providerRegistryInstance;
+}
+
+export function getEngineManager(): EngineManager {
+  if (!engineManagerInstance) {
+    engineManagerInstance = new EngineManager(getProviderRegistry(), getCliSessionManager());
+  }
+  return engineManagerInstance;
+}
+
+export function getFinanceToolRegistry(): FinanceToolRegistry {
+  if (!financeToolRegistryInstance) {
+    financeToolRegistryInstance = new FinanceToolRegistry({
+      pipeline: getExecutionPipeline(),
+    });
+  } else if (getExecutionPipeline()) {
+    financeToolRegistryInstance.setPipeline(getExecutionPipeline()!);
+  }
+  return financeToolRegistryInstance;
+}
+
+export function getAgentRuntime(): AgentRuntime {
+  if (!agentRuntimeInstance) {
+    agentRuntimeInstance = new AgentRuntime({
+      engineManager: getEngineManager(),
+      toolRegistry: getFinanceToolRegistry(),
+      bus: runtime?.getEventBus(),
+    });
+  }
+  return agentRuntimeInstance;
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle helpers
 // ---------------------------------------------------------------------------
@@ -750,4 +539,12 @@ export async function stopRuntime(): Promise<void> {
     await runtime.stop();
     runtime = null;
   }
+  if (cliSessionManagerInstance) {
+    await cliSessionManagerInstance.terminateAll();
+    cliSessionManagerInstance = null;
+  }
+  providerRegistryInstance = null;
+  engineManagerInstance = null;
+  financeToolRegistryInstance = null;
+  agentRuntimeInstance = null;
 }

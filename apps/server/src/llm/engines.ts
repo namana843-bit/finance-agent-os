@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute, join, resolve as resolvePath } from "node:path";
+import { DATA_DIR } from "../config.js";
+import { autoResolveCliPath } from "./cli-resolver.js";
 
 export interface DetectedEngine {
   name: string;
@@ -31,6 +32,11 @@ const KNOWN_ENGINES: KnownEngine[] = [
     command: "ollama",
     suggestedArgs: ["run", "{model}", "{prompt}"],
   },
+  { name: "hermes", command: "hermes", suggestedArgs: ["-z", "{prompt}"] },
+  { name: "agy", command: "agy", suggestedArgs: ["exec", "{prompt}"] },
+  { name: "opencode", command: "opencode", suggestedArgs: ["run", "{prompt}"] },
+  { name: "qwen", command: "qwen", suggestedArgs: ["-p", "{prompt}"] },
+  { name: "pi", command: "pi", suggestedArgs: ["-p", "{prompt}"] },
 ];
 
 function defaultExecImpl(cmd: string): Promise<string | null> {
@@ -184,7 +190,7 @@ export const ENGINE_CATALOG: EngineCatalogEntry[] = [
     group: "cloud",
     kind: "cli",
     command: "hermes",
-    suggestedArgs: ["-p", "{prompt}"],
+    suggestedArgs: ["-z", "{prompt}"],
   },
   {
     id: "pi",
@@ -212,14 +218,7 @@ export interface EngineStatus extends EngineCatalogEntry {
 }
 
 function defaultDataDir(): string {
-  // src/llm -> src -> server root, then .data (mirrors core/storage.ts)
-  try {
-    const currentDir = dirname(fileURLToPath(import.meta.url));
-    const serverRoot = join(currentDir, "..", "..");
-    return join(serverRoot, ".data");
-  } catch {
-    return join(process.cwd(), ".data");
-  }
+  return process.env.FINANCE_DATA_DIR || DATA_DIR;
 }
 
 function enginesFile(dataDir?: string): string {
@@ -284,36 +283,7 @@ export async function saveEngineOverride(
 }
 
 function resolveCommandPath(command: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const raw = command.trim().replace(/^"(.*)"$/, "$1");
-    // Absolute (or relative) file path — check the file directly instead of
-    // PATH lookup (`where`/`which` only resolve bare command names).
-    if (
-      isAbsolute(raw) ||
-      raw.includes("/") ||
-      raw.includes("\\") ||
-      raw.startsWith(".")
-    ) {
-      const abs = resolvePath(raw);
-      stat(abs).then(
-        (st) => resolve(st.isFile() ? abs : null),
-        () => resolve(null),
-      );
-      return;
-    }
-    const probe = process.platform === "win32" ? "where" : "which";
-    execFile(probe, [command], (error, stdout) => {
-      if (error) {
-        resolve(null);
-        return;
-      }
-      const first = String(stdout ?? "")
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .find((line) => line.length > 0);
-      resolve(first ?? null);
-    });
-  });
+  return autoResolveCliPath(command);
 }
 
 export function probeVersion(

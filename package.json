@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "pnpm -r dev",
+    "dev": "pnpm -r --parallel dev",
     "dev:server": "pnpm --filter @finance/server dev",
     "dev:desktop": "pnpm --filter @finance/dashboard dev",
     "desktop:dev": "pnpm -r dev",
@@ -24,5 +24,11 @@
     "typecheck": "pnpm -r exec tsc --noEmit",
     "test": "pnpm -r test"
   },
-  "packageManager": "pnpm@9.0.0"
+  "packageManager": "pnpm@9.0.0",
+  "devDependencies": {
+    "prisma": "^5.19.0"
+  },
+  "dependencies": {
+    "@prisma/client": "5.22.0"
+  }
 }
