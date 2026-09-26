@@ -240,7 +240,7 @@ export class ChatCore {
       threadBot !== undefined && threadBot.agentId !== "supervisor";
 
     let planId: string | null = null;
-    if (!isExclusiveDm && this.submitTask) {
+    if (this.submitTask) {
       try {
         const res = await this.submitTask(content, threadId);
         const rec = asRecord(res);

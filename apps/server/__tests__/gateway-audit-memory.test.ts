@@ -209,12 +209,12 @@ describe("AgentMemory", () => {
 
   it("should support TTL expiration", async () => {
     const memory = new AgentMemory();
-    memory.set("test", "state", "temp", "value", 1); // 1ms TTL
+    memory.set("test", "state", "temp", "value", 50); // 50ms TTL
 
     expect(memory.get("test", "state", "temp")).toBe("value");
 
     // Wait for TTL
-    await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 60));
     expect(memory.get("test", "state", "temp")).toBeUndefined();
   });
 
