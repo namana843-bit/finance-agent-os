@@ -274,11 +274,15 @@ export class CliProvider implements LLMProvider {
   private buildPrompt(
     messages: ChatRequest["messages"],
     tools?: ChatRequest["tools"],
+    agentId?: string,
   ): string {
-    if (messages.length === 1 && messages[0]?.role === "user" && (!tools || tools.length === 0)) {
+    if (messages.length === 1 && messages[0]?.role === "user" && !agentId && (!tools || tools.length === 0)) {
       return messages[0]?.content ?? "";
     }
     const parts: string[] = [];
+    if (agentId) {
+      parts.push(`Active Finance Agent OS agent: ${agentId}. Follow only this agent's role and tool policy.`);
+    }
     for (const m of messages) {
       if (m.role === "system") parts.push(`System: ${m.content}`);
       else if (m.role === "user") parts.push(`User: ${m.content}`);
@@ -361,14 +365,23 @@ export class CliProvider implements LLMProvider {
       return;
     }
 
-    const prompt = this.buildPrompt(request.messages, request.tools);
+    const prompt = this.buildPrompt(request.messages, request.tools, botId);
+    const sessionArgs = this.defaultArgs.map((arg) => arg.split("{model}").join(model));
+    const isOpencode = this.command.includes("opencode");
+    if (isOpencode) {
+      const runIndex = sessionArgs.indexOf("run");
+      const opencodeAgent = botId?.replace(/[^a-zA-Z0-9_-]/g, "-");
+      if (runIndex !== -1 && opencodeAgent && !sessionArgs.includes("--agent")) {
+        sessionArgs.splice(runIndex + 1, 0, "--agent", opencodeAgent, "--model", model);
+      }
+    }
 
     let session: CliSession;
     try {
       session = await this.sessionManager.getOrCreateSession(
         botId ?? this.botId,
         resolved,
-        this.defaultArgs,
+        sessionArgs,
         { cwd: this.cwd, env: this.env, timeoutMs: this.timeoutMs, spawnImpl: this.spawnImpl }
       );
     } catch (err) {

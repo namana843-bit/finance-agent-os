@@ -205,13 +205,32 @@ export class EngineManager {
     }));
   }
 
-  getProviderForEngine(engineId: string): { provider: LLMProvider; model?: string } {
+  async getProviderForEngine(engineId: string): Promise<{ provider: LLMProvider; model?: string }> {
     const config = this.engineConfigs.get(engineId);
     if (config) {
+      // Honor a user-pasted executable path for CLI engines (e.g. opencode-cli
+      // → catalog "opencode" override) while keeping the engine's own args.
+      if (config.type === "cli") {
+        const overridden = await this.resolveOverriddenCliProvider(
+          engineId,
+          config.args,
+          config.name,
+        );
+        if (overridden) {
+          return { provider: overridden, model: (config as any).model };
+        }
+      }
       const provider = this.registry.get(config.provider) || this.registry.get(engineId);
       if (provider) {
         return { provider, model: (config as any).model };
       }
+    }
+
+    // Catalog engine: build (and refresh) a CLI provider
+    // from its effective command so an overridden executable path actually runs.
+    const cliEngine = await this.resolveCliEngine(engineId);
+    if (cliEngine) {
+      return { provider: cliEngine };
     }
 
     // Direct fallback lookup by provider ID
@@ -229,5 +248,74 @@ export class EngineManager {
     }
 
     throw new Error(`No provider registered for engine '${engineId}'`);
+  }
+
+  /** Normalized candidate ids for an engine (opencode-cli → opencode). */
+  private engineIdCandidates(engineId: string): string[] {
+    const ids = [engineId];
+    if (engineId.endsWith("-cli")) ids.push(engineId.slice(0, -4));
+    if (engineId.startsWith("cli-")) ids.push(engineId.slice(4));
+    return ids;
+  }
+
+  /** Resolve a catalog CLI engine id to a CliProvider using the
+   *  user's overridden command path (engines.json), registering it for reuse. */
+  private async resolveCliEngine(engineId: string): Promise<LLMProvider | undefined> {
+    try {
+      const { findEngineEntry, loadEngineOverrides, resolveEngineCommand } = await import("./engines.js");
+      const entry = await findEngineEntry(engineId);
+      if (!entry || entry.kind !== "cli") return undefined;
+      const overrides = await loadEngineOverrides();
+      const command = resolveEngineCommand(entry, overrides);
+      if (!command || command.trim() === "") return undefined;
+      return this.registerCliEngineProvider(engineId, entry.name, command.trim(), entry.suggestedArgs);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Only returns a provider when the user explicitly pasted an override path
+   *  for one of the engine's catalog ids — preserves default behavior otherwise. */
+  private async resolveOverriddenCliProvider(
+    engineId: string,
+    args: string[] | undefined,
+    name?: string,
+  ): Promise<LLMProvider | undefined> {
+    try {
+      const { findEngineEntry, loadEngineOverrides } = await import("./engines.js");
+      const overrides = await loadEngineOverrides();
+      for (const candidate of this.engineIdCandidates(engineId)) {
+        const command = overrides[candidate];
+        if (typeof command !== "string" || command.trim() === "") continue;
+        const entry = await findEngineEntry(candidate);
+        return this.registerCliEngineProvider(
+          engineId,
+          name ?? entry?.name ?? engineId,
+          command.trim(),
+          args ?? entry?.suggestedArgs,
+        );
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private registerCliEngineProvider(
+    id: string,
+    name: string,
+    command: string,
+    args: string[] | undefined,
+  ): LLMProvider {
+    const provider = new CliProvider({
+      id,
+      name,
+      command,
+      args,
+      timeoutMs: 300000,
+      sessionManager: this.cliSessionManager,
+    });
+    this.registry.register(provider);
+    return provider;
   }
 }

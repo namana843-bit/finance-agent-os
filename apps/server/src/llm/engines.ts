@@ -35,6 +35,8 @@ const KNOWN_ENGINES: KnownEngine[] = [
   { name: "hermes", command: "hermes", suggestedArgs: ["-z", "{prompt}"] },
   { name: "agy", command: "agy", suggestedArgs: ["exec", "{prompt}"] },
   { name: "opencode", command: "opencode", suggestedArgs: ["run", "{prompt}"] },
+  { name: "kilocode", command: "kilocode", suggestedArgs: ["run", "{prompt}"] },
+  { name: "gencode", command: "gencode", suggestedArgs: ["run", "{prompt}"] },
   { name: "qwen", command: "qwen", suggestedArgs: ["-p", "{prompt}"] },
   { name: "pi", command: "pi", suggestedArgs: ["-p", "{prompt}"] },
 ];
@@ -174,6 +176,24 @@ export const ENGINE_CATALOG: EngineCatalogEntry[] = [
     group: "cloud",
     kind: "cli",
     command: "opencode",
+    install: "npm install -g opencode-ai",
+    suggestedArgs: ["run", "{prompt}"],
+  },
+  {
+    id: "kilocode",
+    name: "Kilo Code",
+    group: "cloud",
+    kind: "cli",
+    command: "kilocode",
+    install: "npm install -g @kilocode/cli",
+    suggestedArgs: ["run", "{prompt}"],
+  },
+  {
+    id: "gencode",
+    name: "GenCode",
+    group: "cloud",
+    kind: "cli",
+    command: "gencode",
     suggestedArgs: ["run", "{prompt}"],
   },
   {
@@ -217,12 +237,53 @@ export interface EngineStatus extends EngineCatalogEntry {
   version?: string;
 }
 
+interface EnginesFile {
+  overrides: Record<string, string>;
+}
+
 function defaultDataDir(): string {
   return process.env.FINANCE_DATA_DIR || DATA_DIR;
 }
 
 function enginesFile(dataDir?: string): string {
   return join(dataDir ?? defaultDataDir(), "engines.json");
+}
+
+function normalizeOverrides(raw: unknown): Record<string, string> {
+  if (typeof raw !== "object" || raw === null) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(
+    raw as Record<string, unknown>,
+  )) {
+    if (typeof value === "string" && value.trim() !== "") {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+async function readEnginesFile(dataDir?: string): Promise<EnginesFile> {
+  try {
+    const raw = await readFile(enginesFile(dataDir), "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown> | null;
+    return {
+      overrides: normalizeOverrides(parsed?.overrides),
+    };
+  } catch {
+    return { overrides: {} };
+  }
+}
+
+async function writeEnginesFile(
+  dataDir: string | undefined,
+  file: EnginesFile,
+): Promise<void> {
+  const dir = dataDir ?? defaultDataDir();
+  await mkdir(dir, { recursive: true });
+  const target = join(dir, "engines.json");
+  const tmp = `${target}.${process.pid}.tmp`;
+  await writeFile(tmp, JSON.stringify(file, null, 2), "utf-8");
+  await rename(tmp, target);
 }
 
 export function resolveEngineCommand(
@@ -239,24 +300,15 @@ export function resolveEngineCommand(
 export async function loadEngineOverrides(
   dataDir?: string,
 ): Promise<Record<string, string>> {
-  try {
-    const raw = await readFile(enginesFile(dataDir), "utf-8");
-    const parsed: unknown = JSON.parse(raw);
-    const overrides: unknown =
-      (parsed as { overrides?: unknown } | null)?.overrides ?? {};
-    if (typeof overrides !== "object" || overrides === null) return {};
-    const out: Record<string, string> = {};
-    for (const [key, value] of Object.entries(
-      overrides as Record<string, unknown>,
-    )) {
-      if (typeof value === "string" && value.trim() !== "") {
-        out[key] = value;
-      }
-    }
-    return out;
-  } catch {
-    return {};
-  }
+  return (await readEnginesFile(dataDir)).overrides;
+}
+
+/** Resolve an engine id to a catalog entry. */
+export async function findEngineEntry(
+  id: string,
+  _dataDir?: string,
+): Promise<EngineCatalogEntry | undefined> {
+  return ENGINE_CATALOG.find((e) => e.id === id);
 }
 
 export async function saveEngineOverride(
@@ -266,17 +318,13 @@ export async function saveEngineOverride(
 ): Promise<void> {
   try {
     const dir = dataDir ?? defaultDataDir();
-    const overrides = await loadEngineOverrides(dir);
+    const file = await readEnginesFile(dir);
     if (command === undefined) {
-      delete overrides[id];
+      delete file.overrides[id];
     } else {
-      overrides[id] = command;
+      file.overrides[id] = command;
     }
-    await mkdir(dir, { recursive: true });
-    const file = join(dir, "engines.json");
-    const tmp = `${file}.${process.pid}.tmp`;
-    await writeFile(tmp, JSON.stringify({ overrides }, null, 2), "utf-8");
-    await rename(tmp, file);
+    await writeEnginesFile(dir, file);
   } catch {
     // Never throws — persistence is best-effort.
   }
@@ -327,8 +375,9 @@ export async function getEngineStatuses(
 ): Promise<EngineStatus[]> {
   try {
     const overrides = await loadEngineOverrides();
+    const entries: EngineCatalogEntry[] = [...ENGINE_CATALOG];
     const base: EngineStatus[] = await Promise.all(
-      ENGINE_CATALOG.map(async (entry) => {
+      entries.map(async (entry) => {
         try {
           const effectiveCommand = resolveEngineCommand(entry, overrides);
           const overridden =

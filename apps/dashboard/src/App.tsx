@@ -1618,6 +1618,8 @@ export function App() {
                     className="w-full h-9 rounded-md border border-input bg-transparent px-3 py-1 text-xs shadow-sm mt-1 outline-none"
                   >
                     <option value="opencode-cli">OpenCode (CLI)</option>
+                    <option value="kilocode">Kilo Code (CLI)</option>
+                    <option value="gencode">GenCode (CLI)</option>
                     <option value="ollama-local">Ollama (Local)</option>
                     <option value="openai-gpt4">OpenAI (Cloud)</option>
                     <option value="qwen-cli">Qwen (CLI)</option>

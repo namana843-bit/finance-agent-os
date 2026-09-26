@@ -137,10 +137,10 @@ export default function EnginesPage() {
           </p>
         </div>
         <a
-          href="/chat"
+          href="#/dashboard"
           className="ml-auto text-xs px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10"
         >
-          Back to chat
+          Back to dashboard
         </a>
       </div>
 

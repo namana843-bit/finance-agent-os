@@ -1,6 +1,6 @@
 // Finance Agent OS API client — merged HEAD (finance) + main (chat) + agent-runtime
-import { fetchJson } from "./fetch";
-export { API_BASE } from "./fetch";
+import { API_BASE, fetchJson } from "./fetch";
+export { API_BASE };
 
 export type Tick = {
   symbol: string;

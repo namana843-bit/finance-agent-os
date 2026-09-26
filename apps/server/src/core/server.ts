@@ -1332,26 +1332,31 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
 
   app.post<{
     Params: { id: string };
-    Body: { command?: string };
+    Body: { command?: string; name?: string };
   }>("/api/llm/engines/:id/cli", async (request, reply) => {
     const body = request.body ?? {};
     const command = typeof body.command === "string" ? body.command.trim() : "";
+    const id = request.params.id.trim();
     if (!command) {
       return reply.status(400).send({ error: "command is required and must be a non-empty string" });
     }
+    if (!id) {
+      return reply.status(400).send({ error: "engine id is required" });
+    }
     try {
       const mod = await import("../llm/engines.js") as unknown as {
-        ENGINE_CATALOG: Array<{ id: string }>;
+        findEngineEntry: (id: string) => Promise<{ id: string } | undefined>;
         saveEngineOverride: (dataDir: string | undefined, id: string, command: string | undefined) => Promise<void>;
         getEngineStatuses: (probe?: boolean) => Promise<Array<{ id: string } & Record<string, unknown>>>;
       };
-      const entry = mod.ENGINE_CATALOG.find((e) => e.id === request.params.id);
+      const entry = await mod.findEngineEntry(id);
       if (!entry) {
-        return reply.status(404).send({ error: `unknown engine '${request.params.id}'` });
+        return reply.status(404).send({ error: `unknown engine id '${id}'` });
       }
-      await mod.saveEngineOverride(undefined, request.params.id, command);
+      // Known catalog engine — persist a path override.
+      await mod.saveEngineOverride(undefined, id, command);
       const statuses = await mod.getEngineStatuses();
-      const engine = statuses.find((s) => s.id === request.params.id) ?? null;
+      const engine = statuses.find((s) => s.id === id) ?? null;
       return { ok: true, engine };
     } catch (err) {
       return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
@@ -1363,17 +1368,18 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   }>("/api/llm/engines/:id/cli", async (request, reply) => {
     try {
       const mod = await import("../llm/engines.js") as unknown as {
-        ENGINE_CATALOG: Array<{ id: string }>;
+        findEngineEntry: (id: string) => Promise<{ id: string } | undefined>;
         saveEngineOverride: (dataDir: string | undefined, id: string, command: string | undefined) => Promise<void>;
         getEngineStatuses: (probe?: boolean) => Promise<Array<{ id: string } & Record<string, unknown>>>;
       };
-      const entry = mod.ENGINE_CATALOG.find((e) => e.id === request.params.id);
+      const id = request.params.id.trim();
+      const entry = await mod.findEngineEntry(id);
       if (!entry) {
-        return reply.status(404).send({ error: `unknown engine '${request.params.id}'` });
+        return reply.status(404).send({ error: `unknown engine id '${id}'` });
       }
-      await mod.saveEngineOverride(undefined, request.params.id, undefined);
+      await mod.saveEngineOverride(undefined, id, undefined);
       const statuses = await mod.getEngineStatuses();
-      const engine = statuses.find((s) => s.id === request.params.id) ?? null;
+      const engine = statuses.find((s) => s.id === id) ?? null;
       return { ok: true, engine };
     } catch (err) {
       return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
@@ -1561,7 +1567,7 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       const engineId = typeof body.engine === "string" ? body.engine.trim() : "";
       if (engineId) {
         let mod: {
-          ENGINE_CATALOG: Array<{ id: string; kind: string; command: string; suggestedArgs?: string[] }>;
+          findEngineEntry: (id: string) => Promise<{ id: string; kind: string; command: string; suggestedArgs?: string[] } | undefined>;
           loadEngineOverrides: (dataDir?: string) => Promise<Record<string, string>>;
           resolveEngineCommand: (entry: { id: string; command: string }, overrides: Record<string, string>) => string;
         };
@@ -1570,7 +1576,7 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
         } catch (err) {
           return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
         }
-        const entry = mod.ENGINE_CATALOG.find((e) => e.id === engineId);
+        const entry = await mod.findEngineEntry(engineId);
         if (!entry) {
           return reply.status(404).send({ error: `unknown engine '${engineId}'` });
         }

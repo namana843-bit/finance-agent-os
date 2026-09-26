@@ -1,4 +1,4 @@
-import type { TypedEventBus } from "@finance/core";
+﻿import type { TypedEventBus } from "@finance/core";
 import type {
   LLMEvent,
   LLMMessage,
@@ -68,7 +68,6 @@ export class AgentRuntime {
         description: "Specialized BTC technical analyst and momentum trading strategy generator",
         role: "Quantitative Analyst",
         engine: "opencode-cli",
-        model: "opencode",
         systemPrompt: "You are an expert BTC quantitative analyst agent for Finance Agent OS running via OpenCode CLI. Analyze prices, compute technical indicators (RSI, MACD, Supertrend), inspect portfolio state, and create structured trade proposals when high-probability setups exist.",
         tools: [
           "get_market_price",
@@ -88,7 +87,6 @@ export class AgentRuntime {
         description: "Monitors portfolio leverage, drawdown, and validates trade candidates against risk policies",
         role: "Risk & Compliance Guardian",
         engine: "opencode-cli",
-        model: "opencode",
         systemPrompt: "You are an automated risk guardian agent for Finance Agent OS running via OpenCode CLI. Monitor portfolio exposure, calculate risk metrics, and verify all trade proposals against hard risk parameters.",
         tools: ["get_portfolio", "get_market_price"],
         permissions: { execution: false },
@@ -100,7 +98,6 @@ export class AgentRuntime {
         description: "Local CLI execution engine driver",
         role: "Local CLI Execution Engine",
         engine: "opencode-cli",
-        model: "opencode",
         systemPrompt: "You are a local CLI agent driver running via OpenCode CLI execution.",
         tools: ["get_market_price", "get_portfolio"],
         permissions: { execution: false },
@@ -111,7 +108,6 @@ export class AgentRuntime {
         description: "Macro crypto market orderbook depth and sentiment scanner",
         role: "Market Researcher",
         engine: "opencode-cli",
-        model: "opencode",
         systemPrompt: "You are a macro crypto market researcher running via OpenCode CLI. Inspect price history, volume trends, and market orderbook depth to deliver clear insights.",
         tools: ["get_market_price", "get_ohlcv"],
         permissions: { execution: false },
@@ -238,7 +234,7 @@ export class AgentRuntime {
     const onExternalAbort = () => runCtrl.abort();
     externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
 
-    const { provider, model: defaultModel } = this.engineManager.getProviderForEngine(config.engine);
+    const { provider, model: defaultModel } = await this.engineManager.getProviderForEngine(config.engine);
     const selectedModel = config.model || defaultModel;
 
     const toolDefs = provider.supportsTools()
@@ -412,3 +408,4 @@ export class AgentRuntime {
     void this.saveConversationHistory(config.id, messages.filter((m) => m.role !== "system"));
   }
 }
+

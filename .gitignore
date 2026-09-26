@@ -1,6 +1,7 @@
 node_modules
 .next
 dist
+dist-electron
 .pnpm-store
 .DS_Store
 .env
@@ -20,3 +21,9 @@ apps/server/dist
 !scripts/
 !scripts/openbot.js
 C:/Users/Naman/AppData/Local/Temp/finance-*
+scratch/
+prisma/prisma/
+*.db
+*.db-journal
+*.sqlite
+dashboard_screenshot.png

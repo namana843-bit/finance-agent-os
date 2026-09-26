@@ -123,6 +123,8 @@ describe("detectCliEngines", () => {
       "hermes",
       "agy",
       "opencode",
+      "kilocode",
+      "gencode",
       "qwen",
       "pi",
     ]);
@@ -145,7 +147,7 @@ describe("detectCliEngines", () => {
       throw new Error("probe exploded");
     };
     const engines = await detectCliEngines(execImpl);
-    expect(engines).toHaveLength(10);
+    expect(engines).toHaveLength(12);
     for (const e of engines) {
       expect(e.found).toBe(false);
     }
