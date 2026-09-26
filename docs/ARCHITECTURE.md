@@ -207,13 +207,14 @@ finance-agent-os/
 │   │   └── package.json
 │   │
 │   └── server/                     # Fastify API Server & Multi-Agent Runtime (:4132)
-│       ├── __tests__/              # 18 Test Suites (266 passing unit & integration tests)
+│       ├── __tests__/              # 27 Test Suites (350+ unit and integration tests)
 │       │   ├── live-safety.test.ts          # Phase 8: Hard limits, Kill Switch, Reconciliation
 │       │   ├── backtesting-trustworthy.test.ts # Phase 7: Zero look-ahead bias, execution simulation
 │       │   ├── binance-market.test.ts       # Phase 6: WebSocket streams, rate-limiting
 │       │   ├── agent-loop.test.ts           # Phase 5: Anti-loop guard, proposals, sanitized memory
 │       │   ├── risk-gate.test.ts            # Phase 4: HMAC risk tickets, broker boundary
 │       │   ├── order-lifecycle.integration.test.ts # Phase 3: Canonical order state machine
+│       │   ├── llm-cli.test.ts              # LLM engine CLI integration & streaming
 │       │   └── ...                          # Paper broker, tools, runtime, supervisor tests
 │       └── src/
 │           ├── agents/             # Autonomous agent implementations (Supervisor, Quant, Risk, etc.)
