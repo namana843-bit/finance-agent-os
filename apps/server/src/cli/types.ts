@@ -8,6 +8,14 @@
 /** Normalized lifecycle state for a managed CLI session. */
 export type CliSessionState = "starting" | "ready" | "busy" | "stopped" | "failed";
 
+/** How a managed session executes tasks. */
+export type CliSessionMode = "one-shot" | "persistent";
+
+/** One-shot: each task spawns a short-lived process. Persistent: tasks are
+ * multiplexed over a long-lived connection owned by the adapter (e.g. a
+ * daemon). Adapters declare what they support; the manager dispatches. */
+export const CLI_SESSION_MODES: readonly CliSessionMode[] = ["one-shot", "persistent"] as const;
+
 /** How a task reaches the CLI process — not every CLI reads stdin. */
 export type CliTaskDelivery = "argv" | "stdin" | "rpc";
 
@@ -27,6 +35,14 @@ export interface CliMetadata {
   engineAliases: string[];
   /** Optional install hint shown by the desktop UI. */
   installHint?: string;
+  /** Actionable auth guidance when the CLI reports missing credentials. */
+  authHint?: string;
+  /**
+   * Session modes this adapter supports. Defaults to `["one-shot"]` when
+   * absent (backward compatible). Adapters with a daemon / persistent
+   * transport declare `["one-shot", "persistent"]`.
+   */
+  sessionModes?: CliSessionMode[];
 }
 
 export interface CliToolActivity {
@@ -76,6 +92,8 @@ export interface CliTaskResult {
   timedOut: boolean;
   cancelled: boolean;
   durationMs: number;
+  /** True when `output` was truncated at the session output limit. */
+  outputTruncated?: boolean;
   error?: string;
 }
 
@@ -83,6 +101,8 @@ export interface CliSessionSummary {
   id: string;
   adapterId: string;
   status: CliSessionState;
+  /** Session execution mode negotiated at start (default: "one-shot"). */
+  mode: CliSessionMode;
   command: string;
   cwd?: string;
   createdAt: number;
@@ -110,9 +130,19 @@ export type CliEvent =
       cwd?: string;
     })
   | (CliEventBase & {
+      type: "task_started";
+      /** Session execution mode for this task. */
+      mode: CliSessionMode;
+    })
+  | (CliEventBase & {
       type: "output";
       stream: "stdout" | "stderr";
       chunk: string;
+    })
+  | (CliEventBase & {
+      /** One parsed text delta (JSON-line `delta`/`content`/`text` chunk). */
+      type: "text_delta";
+      content: string;
     })
   | (CliEventBase & {
       type: "tool_activity";
@@ -199,4 +229,87 @@ export interface CliAdapter extends CliAdapterHooks {
   requiresShell(executable: string): boolean;
   /** Optional daemon / server-mode lifecycle owner. */
   readonly daemon?: CliDaemonController;
+  /**
+   * Optional framed transport for `rpc`-delivery adapters (persistent mode).
+   * `argv`/`stdin` adapters leave this undefined — no CLI is forced into one
+   * protocol. The manager uses it only when the session runs in
+   * `persistent` mode.
+   */
+  createTransport?(session: { sessionId: string; adapterId: string }): ProtocolTransport | null;
+}
+
+// ---------------------------------------------------------------------------
+// Environment policy + spawn limits (centralized in process-runner / manager)
+// ---------------------------------------------------------------------------
+
+/**
+ * Environment variable names that session/adapters must never override.
+ * The process runner drops these keys (case-insensitively on Windows) from
+ * per-session overrides — the child always inherits the server's own values.
+ */
+export const CLI_DENIED_ENV_KEYS: readonly string[] = [
+  "PATH",
+  "PATHEXT",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "COMSPEC",
+  "SYSTEMROOT",
+] as const;
+
+/** Keys whose values are secrets — redacted from logs and error strings. */
+export const CLI_SECRET_ENV_PATTERN = /api[_-]?key|secret|token|password|credential/i;
+
+/** Replace secret-looking values with `[REDACTED]` for logging. */
+export function redactCliEnvForLog(env: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    out[key] = CLI_SECRET_ENV_PATTERN.test(key) ? "[REDACTED]" : value;
+  }
+  return out;
+}
+
+/** Central spawn/output limits. */
+export interface CliSpawnLimits {
+  /** Hard per-process timeout (ms). */
+  timeoutMs: number;
+  /** Max buffered stdout+stderr bytes kept per process. */
+  maxBufferBytes: number;
+  /** Max accumulated task output characters surfaced to callers. */
+  maxOutputChars: number;
+}
+
+export const DEFAULT_CLI_SPAWN_LIMITS: CliSpawnLimits = {
+  timeoutMs: 300_000,
+  maxBufferBytes: 4 * 1024 * 1024,
+  maxOutputChars: 256_000,
+};
+
+// ---------------------------------------------------------------------------
+// Protocol transport abstraction (opt-in, for persistent/rpc adapters only)
+// ---------------------------------------------------------------------------
+
+/** Framed message handler for a persistent CLI connection. */
+export type ProtocolMessageHandler = (message: unknown) => void;
+
+/**
+ * Minimal transport for CLIs that speak a structured protocol over a
+ * long-lived connection (daemon socket, stdio JSON-RPC, …). Plain
+ * argv/stdin CLIs never implement this — the one-shot process path in
+ * `process-runner.ts` remains their only transport.
+ */
+export interface ProtocolTransport {
+  /** Transport kind for diagnostics (e.g. "jsonrpc-stdio", "daemon-socket"). */
+  readonly kind: string;
+  /** True while the underlying connection is usable. */
+  isConnected(): boolean;
+  /** Send one framed message. Queued or throws when disconnected. */
+  send(message: unknown): void;
+  /** Subscribe to inbound messages. Returns an unsubscribe function. */
+  onMessage(handler: ProtocolMessageHandler): () => void;
+  /** Close the connection and release resources. Idempotent. */
+  close(): void;
 }

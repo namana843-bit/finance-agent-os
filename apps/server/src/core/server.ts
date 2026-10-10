@@ -656,7 +656,77 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   // -------------------------------------------------------------------------
   // Generic CLI adapter layer — adapter-agnostic (OpenCode is just one adapter).
   // The desktop UI discovers available CLIs here instead of hard-coding names.
+  //
+  // Trust model: same as every other route in this server (single-user
+  // localhost app — no per-route auth). Process spawning is never exposed
+  // directly: sessions run adapter-declared argv via the central runner
+  // (no shell strings), env overrides pass the denied-key filter, and no
+  // response payload ever includes environment values.
   // -------------------------------------------------------------------------
+
+  const CLI_MAX_TIMEOUT_MS = 1_800_000; // 30 min
+  const CLI_MAX_TASK_CHARS = 200_000;
+  const CLI_MAX_ARGS = 50;
+  const CLI_MAX_ARG_CHARS = 4_000;
+  const CLI_MAX_ENV_KEYS = 50;
+  const CLI_ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+  /** Clamp timeoutMs; returns null when the value is unusable. */  function normalizeCliTimeoutMs(value: unknown): number | undefined | null {
+    if (value === undefined) return undefined;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+    return Math.min(Math.floor(value), CLI_MAX_TIMEOUT_MS);
+  }
+
+  function validateCliEnv(env: unknown): { ok: true; value?: Record<string, string> } | { ok: false; error: string } {
+    if (env === undefined) return { ok: true };
+    if (!env || typeof env !== "object" || Array.isArray(env)) {
+      return { ok: false, error: "env must be an object of string to string" };
+    }
+    const entries = Object.entries(env as Record<string, unknown>);
+    if (entries.length > CLI_MAX_ENV_KEYS) {
+      return { ok: false, error: `env allows at most ${CLI_MAX_ENV_KEYS} keys` };
+    }
+    const value: Record<string, string> = {};
+    for (const [key, val] of entries) {
+      if (!CLI_ENV_KEY_RE.test(key) || key.length > 128) {
+        return { ok: false, error: `invalid env key '${key.slice(0, 64)}'` };
+      }
+      if (typeof val !== "string" || val.length > 8_192) {
+        return { ok: false, error: `invalid env value for '${key.slice(0, 64)}'` };
+      }
+      value[key] = val;
+    }
+    return { ok: true, value };
+  }
+
+  function validateCliArgs(args: unknown): { ok: true; value?: string[] } | { ok: false; error: string } {
+    if (args === undefined) return { ok: true };
+    if (!Array.isArray(args) || args.length > CLI_MAX_ARGS) {
+      return { ok: false, error: `args must be an array of at most ${CLI_MAX_ARGS} strings` };
+    }
+    for (const arg of args) {
+      if (typeof arg !== "string" || arg.length > CLI_MAX_ARG_CHARS) {
+        return { ok: false, error: "each arg must be a string" };
+      }
+    }
+    return { ok: true, value: args as string[] };
+  }
+
+  async function validateCliCwd(cwd: unknown): Promise<{ ok: true; value?: string } | { ok: false; error: string }> {
+    if (cwd === undefined) return { ok: true };
+    if (typeof cwd !== "string" || cwd.length === 0 || cwd.length > 1_024) {
+      return { ok: false, error: "cwd must be a non-empty path string" };
+    }
+    try {
+      const { stat } = await import("node:fs/promises");
+      const st = await stat(cwd);
+      if (!st.isDirectory()) return { ok: false, error: "cwd is not a directory" };
+    } catch {
+      return { ok: false, error: "cwd does not exist" };
+    }
+    return { ok: true, value: cwd };
+  }
+
   app.get("/api/cli/adapters", async () => {
     const cli = getCliManager();
     const adapters = await Promise.all(
@@ -695,23 +765,48 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   app.post<{
-    Body: { adapterId?: string; cwd?: string; env?: Record<string, string>; args?: string[]; timeoutMs?: number };
+    Body: { adapterId?: string; cwd?: string; env?: Record<string, string>; args?: string[]; timeoutMs?: number; mode?: string };
   }>("/api/cli/sessions", async (request, reply) => {
     const body = request.body ?? {};
     const adapterId = typeof body.adapterId === "string" ? body.adapterId.trim() : "";
     if (!adapterId) {
       return reply.status(400).send({ error: "adapterId is required" });
     }
+    if (!getCliManager().has(adapterId)) {
+      return reply.status(404).send({ error: `unknown CLI adapter '${adapterId}'` });
+    }
+    if (body.mode !== undefined && body.mode !== "one-shot" && body.mode !== "persistent") {
+      return reply.status(400).send({ error: "mode must be 'one-shot' or 'persistent'" });
+    }
+    const timeoutMs = normalizeCliTimeoutMs(body.timeoutMs);
+    if (timeoutMs === null) {
+      return reply.status(400).send({ error: "timeoutMs must be a positive number" });
+    }
+    const cwd = await validateCliCwd(body.cwd);
+    if (!cwd.ok) {
+      return reply.status(400).send({ error: cwd.error });
+    }
+    const env = validateCliEnv(body.env);
+    if (!env.ok) {
+      return reply.status(400).send({ error: env.error });
+    }
+    const args = validateCliArgs(body.args);
+    if (!args.ok) {
+      return reply.status(400).send({ error: args.error });
+    }
     try {
       const session = await getCliManager().start(adapterId, {
-        cwd: body.cwd,
-        env: body.env,
-        args: body.args,
-        timeoutMs: body.timeoutMs,
+        ...(cwd.value !== undefined ? { cwd: cwd.value } : {}),
+        ...(env.value !== undefined ? { env: env.value } : {}),
+        ...(args.value !== undefined ? { args: args.value } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(body.mode !== undefined ? { mode: body.mode as "one-shot" | "persistent" } : {}),
       });
       return { session: session.getSummary() };
     } catch (err) {
-      return reply.status(404).send({ error: err instanceof Error ? err.message : String(err) });
+      const message = err instanceof Error ? err.message : String(err);
+      // Unsupported mode / misconfigured adapter — caller error, not missing.
+      return reply.status(400).send({ error: message });
     }
   });
 
@@ -732,16 +827,38 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     if (!task.trim()) {
       return reply.status(400).send({ error: "task is required" });
     }
+    if (task.length > CLI_MAX_TASK_CHARS) {
+      return reply.status(400).send({ error: `task allows at most ${CLI_MAX_TASK_CHARS} characters` });
+    }
+    for (const [key, cap] of [["model", 256], ["agentId", 256]] as const) {
+      const value = (body as Record<string, unknown>)[key];
+      if (value !== undefined && (typeof value !== "string" || value.length > cap)) {
+        return reply.status(400).send({ error: `${key} must be a string of at most ${cap} characters` });
+      }
+    }
+    const timeoutMs = normalizeCliTimeoutMs(body.timeoutMs);
+    if (timeoutMs === null) {
+      return reply.status(400).send({ error: "timeoutMs must be a positive number" });
+    }
+    const session = getCliManager().getSession(request.params.id);
+    if (!session) {
+      return reply.status(404).send({ error: `unknown CLI session '${request.params.id}'` });
+    }
+    if (session.isStopped || session.status === "failed") {
+      return reply.status(409).send({ error: `CLI session '${request.params.id}' is ${session.status}` });
+    }
     try {
       const result = await getCliManager().sendTask(request.params.id, {
         task,
         model: body.model,
         agentId: body.agentId,
-        timeoutMs: body.timeoutMs,
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       });
+      // result carries the normalized outcome: ok / exitCode / timedOut /
+      // cancelled / error (auth, startup, timeout and protocol failures).
       return reply.status(result.ok ? 200 : 500).send({ result });
     } catch (err) {
-      return reply.status(404).send({ error: err instanceof Error ? err.message : String(err) });
+      return reply.status(409).send({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

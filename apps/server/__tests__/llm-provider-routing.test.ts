@@ -34,17 +34,18 @@ function freshStack(): { registry: ProviderRegistry; manager: EngineManager } {
 }
 
 describe("engine → provider → adapter routing", () => {
-  it("routes claude/codex/gemini/opencode engines to their adapter providers", async () => {
+  it("routes catalog CLI engines to same-id providers carrying adapter argv", async () => {
     const { manager } = freshStack();
-    for (const [engine, providerId] of [
-      ["claude", "cli-claude"],
-      ["codex", "cli-codex"],
-      ["gemini", "cli-gemini"],
-      ["opencode", "cli-opencode"],
+    for (const [engine, command] of [
+      ["claude", "claude"],
+      ["codex", "codex"],
+      ["gemini", "gemini"],
     ] as Array<[string, string]>) {
       const { provider } = await manager.getProviderForEngine(engine);
-      expect(provider.id).toBe(providerId);
+      expect(provider.id).toBe(engine);
     }
+    // Pre-existing config id keeps its adapter-bound provider.
+    expect((await manager.getProviderForEngine("opencode")).provider.id).toBe("cli-opencode");
   });
 
   it("preserves API providers (openai, ollama)", async () => {

@@ -146,13 +146,10 @@ export class EngineManager {
       command: "opencode",
       args: ["run", "--auto", "{prompt}"],
     });
-    for (const [id, name, command, args] of [
-      ["claude", "Claude Code", "claude", ["-p", "{prompt}"]],
-      ["codex", "Codex", "codex", ["exec", "{prompt}"]],
-      ["gemini", "Gemini", "gemini", ["-p", "{prompt}"]],
-    ] as Array<[string, string, string, string[]]>) {
-      this.engineConfigs.set(id, { type: "cli", provider: "cli", name, command, args });
-    }
+    // NB: no per-CLI engine configs here — catalog CLI ids (claude, codex,
+    // gemini, …) resolve through `resolveCliEngine`, which registers a
+    // provider named exactly like the engine id with argv from the owning
+    // adapter. Engine-id-named providers therefore always carry adapter argv.
     this.engineConfigs.set("opencode", {
       type: "cli",
       provider: "cli",
@@ -297,28 +294,17 @@ export class EngineManager {
       return { provider: directProvider };
     }
 
-    // Authoritative adapter routing: any engine id owned by a registered CLI
-    // adapter resolves to that adapter's provider (`cli-<adapter>`), creating
-    // it lazily so catalog ids work without an explicit engine config.
+    // CLI fallback: resolve through the CLI manager's adapters and bind the
+    // found adapter's own executable + argv. Never fall back to an unrelated
+    // registered CLI provider (that silently ran the wrong binary).
     const adapter = this.cliManager.findByEngineId(engineId);
     if (adapter) {
       const meta = adapter.getMetadata();
-      const adapterProviderId = `cli-${meta.id}`;
-      const existing = this.registry.get(adapterProviderId);
-      if (existing) {
-        return { provider: existing };
-      }
-      const created = new CliProvider({
-        id: adapterProviderId,
-        name: `${meta.name} CLI`,
-        command: meta.executable,
-        args: [...meta.defaultArgs],
-        timeoutMs: 300000,
-        sessionManager: this.cliSessionManager,
-        cliManager: this.cliManager,
-      });
-      this.registry.register(created);
-      return { provider: created };
+      const adapterEngine = `cli-${meta.id}`;
+      const adapterProvider =
+        this.registry.get(adapterEngine) ??
+        this.registerCliEngineProvider(adapterEngine, meta.name, meta.executable, [...meta.defaultArgs]);
+      return { provider: adapterProvider };
     }
 
     if (engineId.includes("cli")) {
@@ -349,7 +335,16 @@ export class EngineManager {
       const overrides = await loadEngineOverrides();
       const command = resolveEngineCommand(entry, overrides);
       if (!command || command.trim() === "") return undefined;
-      return this.registerCliEngineProvider(engineId, entry.name, command.trim(), entry.suggestedArgs);
+      // Authoritative argv comes from the registered adapter that owns this
+      // command; the catalog entry only supplies display metadata otherwise.
+      const adapter = this.cliManager.findByExecutable(command.trim());
+      const meta = adapter?.getMetadata();
+      return this.registerCliEngineProvider(
+        engineId,
+        meta?.name ?? entry.name,
+        command.trim(),
+        meta ? [...meta.defaultArgs] : entry.suggestedArgs,
+      );
     } catch {
       return undefined;
     }

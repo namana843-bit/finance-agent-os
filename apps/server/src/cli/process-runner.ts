@@ -12,6 +12,7 @@
 // ============================================================================
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { CLI_DENIED_ENV_KEYS } from "./types.js";
 
 export interface CliProcessSpec {
   command: string;
@@ -41,6 +42,20 @@ export interface CliProcessResult {
   cancelled: boolean;
   spawnError?: string;
   durationMs: number;
+  /** True when stdout/stderr were truncated at `maxBufferBytes`. */
+  truncated?: boolean;
+}
+
+/** Drop denied env keys from per-session overrides (case-insensitive). */
+export function filterEnvOverrides(env?: Record<string, string>): Record<string, string> | undefined {
+  if (!env || Object.keys(env).length === 0) return undefined;
+  const denied = new Set(CLI_DENIED_ENV_KEYS.map((key) => key.toUpperCase()));
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (denied.has(key.toUpperCase())) continue;
+    out[key] = value;
+  }
+  return out;
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -93,10 +108,10 @@ export function killProcessTree(child: ChildProcess): void {
   grace.unref?.();
 }
 
-function appendBounded(buffer: string, chunk: string, maxBytes: number): string {
+function appendBounded(buffer: string, chunk: string, maxBytes: number): { text: string; truncated: boolean } {
   const next = buffer + chunk;
-  if (next.length <= maxBytes) return next;
-  return next.slice(next.length - maxBytes);
+  if (next.length <= maxBytes) return { text: next, truncated: false };
+  return { text: next.slice(next.length - maxBytes), truncated: true };
 }
 
 /**
@@ -117,12 +132,14 @@ export function runCliProcess(
     let timedOut = false;
     let cancelled = false;
     let settled = false;
+    let truncated = false;
 
     let child: ChildProcess;
     try {
+      const overrides = filterEnvOverrides(spec.env);
       const env =
-        spec.env && Object.keys(spec.env).length > 0
-          ? { ...process.env, ...spec.env }
+        overrides && Object.keys(overrides).length > 0
+          ? { ...process.env, ...overrides }
           : undefined;
       child = spawn(spec.command, spec.args, {
         cwd: spec.cwd,
@@ -159,6 +176,7 @@ export function runCliProcess(
         cancelled,
         spawnError,
         durationMs: Date.now() - started,
+        ...(truncated ? { truncated: true as const } : {}),
       });
     };
 
@@ -178,13 +196,17 @@ export function runCliProcess(
 
     child.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf-8");
-      stdout = appendBounded(stdout, text, maxBuffer);
+      const next = appendBounded(stdout, text, maxBuffer);
+      stdout = next.text;
+      truncated = truncated || next.truncated;
       handlers.onStdoutChunk?.(text);
     });
 
     child.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf-8");
-      stderr = appendBounded(stderr, text, maxBuffer);
+      const next = appendBounded(stderr, text, maxBuffer);
+      stderr = next.text;
+      truncated = truncated || next.truncated;
       handlers.onStderrChunk?.(text);
     });
 

@@ -105,10 +105,12 @@ export function calculateBacktestMetrics(input: MetricCalculationInput): Extende
       ? (annualizedMean - riskFreeRate) / (annualizedVolatility / 100)
       : 0;
 
+  // No downside deviation -> no downside risk observed; report 0 instead of
+  // echoing Sharpe (which would overstate risk-adjusted performance).
   const sortinoRatio =
     annualizedDownsideStdDev > 0
       ? (annualizedMean - riskFreeRate) / annualizedDownsideStdDev
-      : sharpeRatio;
+      : 0;
 
   // 4. Max Drawdown & Drawdown Duration
   let peak = initialCapital;

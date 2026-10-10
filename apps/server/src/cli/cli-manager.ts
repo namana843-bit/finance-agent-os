@@ -4,6 +4,13 @@
 //
 //   Desktop UI / Runtime → CliManager → CliAdapter → adapter implementation
 //
+// AUTHORITATIVE SESSION LAYER: this manager is the single owner of CLI
+// session lifecycle (start → tasks → stop/cleanup) and of process spawning
+// (via `process-runner.ts`). `llm/cli-session.ts` (PersistentCliSession) is
+// a legacy LLM-layer driver kept for backward compatibility — new code must
+// use CliManager. Persistent-mode multiplexing lives behind the adapter
+// `createTransport()` hook; one-shot argv/stdin CLIs never see it.
+//
 // The manager owns: registration, lookup, validation, session start/stop,
 // task dispatch, normalized event streaming and process cleanup. It contains
 // zero CLI-specific logic.
@@ -16,6 +23,7 @@ import type {
   CliAdapter,
   CliEvent,
   CliMetadata,
+  CliSessionMode,
   CliSessionState,
   CliSessionSummary,
   CliStartOptions,
@@ -24,6 +32,7 @@ import type {
   CliToolActivity,
   CliValidationResult,
 } from "./types.js";
+import { DEFAULT_CLI_SPAWN_LIMITS } from "./types.js";
 import { runCliProcess, type CliProcessResult } from "./process-runner.js";
 import { splitLines } from "./parsing.js";
 
@@ -34,6 +43,8 @@ export interface CliManagerOptions {
   runProcessImpl?: typeof runCliProcess;
   defaultTimeoutMs?: number;
   validationTtlMs?: number;
+  /** Max accumulated task output characters surfaced to callers. */
+  maxOutputChars?: number;
 }
 
 type RunProcessFn = typeof runCliProcess;
@@ -90,6 +101,8 @@ class CliEventStream implements AsyncIterable<CliEvent> {
 export class CliManagedSession {
   readonly id: string;
   readonly adapterId: string;
+  /** Session execution mode negotiated at start. */
+  readonly mode: CliSessionMode;
   readonly createdAt: number;
   lastActivityAt: number;
   tasks = 0;
@@ -100,6 +113,7 @@ export class CliManagedSession {
   private readonly stream = new CliEventStream();
   private readonly runProcessImpl: RunProcessFn;
   private readonly defaultTimeoutMs: number;
+  private readonly maxOutputChars: number;
   private statusValue: CliSessionState = "starting";
   private resolvedExecutable: string | null = null;
   private activeAbort: AbortController | null = null;
@@ -108,18 +122,22 @@ export class CliManagedSession {
   constructor(opts: {
     id: string;
     adapter: CliAdapter;
+    mode: CliSessionMode;
     options: CliStartOptions;
     emit: (event: CliEvent) => void;
     runProcessImpl: RunProcessFn;
     defaultTimeoutMs: number;
+    maxOutputChars: number;
   }) {
     this.id = opts.id;
     this.adapter = opts.adapter;
     this.adapterId = opts.adapter.getMetadata().id;
+    this.mode = opts.mode;
     this.options = opts.options;
     this.emit = opts.emit;
     this.runProcessImpl = opts.runProcessImpl;
     this.defaultTimeoutMs = opts.defaultTimeoutMs;
+    this.maxOutputChars = opts.maxOutputChars;
     this.createdAt = Date.now();
     this.lastActivityAt = this.createdAt;
   }
@@ -141,6 +159,7 @@ export class CliManagedSession {
       id: this.id,
       adapterId: this.adapterId,
       status: this.statusValue,
+      mode: this.mode,
       command: this.command,
       cwd: this.options.cwd ?? this.adapter.defaultCwd?.(),
       createdAt: this.createdAt,
@@ -227,10 +246,31 @@ export class CliManagedSession {
       cwd,
       timestamp: Date.now(),
     });
+    this.emitEvent({ ...base, type: "task_started", mode: this.mode, timestamp: Date.now() });
 
     const textParts: string[] = [];
+    let outputChars = 0;
+    let outputTruncated = false;
     const toolActivities: CliToolActivity[] = [];
     let stdoutBuffer = "";
+
+    /** Bounded append — drops the tail once the session output limit is hit. */
+    const pushText = (text: string) => {
+      if (outputTruncated) return;
+      const room = this.maxOutputChars - outputChars;
+      if (room <= 0) {
+        outputTruncated = true;
+        return;
+      }
+      if (text.length <= room) {
+        textParts.push(text);
+        outputChars += text.length;
+        return;
+      }
+      textParts.push(text.slice(0, room));
+      outputChars += room;
+      outputTruncated = true;
+    };
 
     const handleLine = (rawLine: string) => {
       const trimmed = rawLine.trim();
@@ -248,10 +288,11 @@ export class CliManagedSession {
         return;
       }
       if (chunk && chunk.type === "delta") {
-        textParts.push(chunk.content);
+        pushText(chunk.content);
+        this.emitEvent({ ...base, type: "text_delta", content: chunk.content, timestamp: Date.now() });
         return;
       }
-      textParts.push(rawLine + "\n");
+      pushText(rawLine + "\n");
     };
 
     const result: CliProcessResult = await this.runProcessImpl(
@@ -341,6 +382,7 @@ export class CliManagedSession {
       timedOut: result.timedOut,
       cancelled: result.cancelled,
       durationMs: result.durationMs,
+      ...(outputTruncated || result.truncated ? { outputTruncated: true as const } : {}),
       ...(errorMessage !== undefined ? { error: errorMessage } : {}),
     };
   }
@@ -393,13 +435,15 @@ export class CliManager extends EventEmitter {
   private readonly runProcessImpl: RunProcessFn;
   private readonly defaultTimeoutMs: number;
   private readonly validationTtlMs: number;
+  private readonly maxOutputChars: number;
 
   constructor(opts?: CliManagerOptions) {
     super();
     this.bus = opts?.bus;
     this.runProcessImpl = opts?.runProcessImpl ?? runCliProcess;
-    this.defaultTimeoutMs = opts?.defaultTimeoutMs ?? 300_000;
+    this.defaultTimeoutMs = opts?.defaultTimeoutMs ?? DEFAULT_CLI_SPAWN_LIMITS.timeoutMs;
     this.validationTtlMs = opts?.validationTtlMs ?? 30_000;
+    this.maxOutputChars = opts?.maxOutputChars ?? DEFAULT_CLI_SPAWN_LIMITS.maxOutputChars;
   }
 
   /** Attach/refresh the event-bus bridge (runtime composition root). */
@@ -411,13 +455,18 @@ export class CliManager extends EventEmitter {
   // Registration + lookup
   // -------------------------------------------------------------------------
 
-  register(adapter: CliAdapter): void {
+  register(adapter: CliAdapter, opts?: { replace?: boolean }): void {
     if (!adapter || typeof adapter.getMetadata !== "function") {
       throw new Error("Cannot register invalid CLI adapter");
     }
     const meta = adapter.getMetadata();
     if (!meta || typeof meta.id !== "string" || meta.id.trim() === "") {
       throw new Error("Cannot register CLI adapter without id");
+    }
+    if (this.adapters.has(meta.id) && opts?.replace !== true) {
+      throw new Error(
+        `CLI adapter '${meta.id}' is already registered — pass { replace: true } to replace it`,
+      );
     }
     this.adapters.set(meta.id, adapter);
     this.validationCache.delete(meta.id);
@@ -517,18 +566,35 @@ export class CliManager extends EventEmitter {
   // Sessions
   // -------------------------------------------------------------------------
 
-  async start(adapterId: string, opts?: CliStartOptions): Promise<CliManagedSession> {
+  async start(
+    adapterId: string,
+    opts?: CliStartOptions & { mode?: CliSessionMode },
+  ): Promise<CliManagedSession> {
     const adapter = this.adapters.get(adapterId);
     if (!adapter) {
       throw new Error(`Unknown CLI adapter '${adapterId}'`);
     }
+    const supported = adapter.getMetadata().sessionModes ?? ["one-shot"];
+    const requested = opts?.mode ?? "one-shot";
+    if (!supported.includes(requested)) {
+      throw new Error(
+        `CLI adapter '${adapterId}' does not support '${requested}' sessions (supports: ${supported.join(", ")})`,
+      );
+    }
+    if (requested === "persistent" && typeof adapter.createTransport !== "function") {
+      throw new Error(
+        `CLI adapter '${adapterId}' declares persistent mode but provides no protocol transport`,
+      );
+    }
     const session = new CliManagedSession({
       id: `cli-${adapterId}-${randomUUID().slice(0, 8)}`,
       adapter,
+      mode: requested,
       options: opts ?? {},
       emit: (event) => this.emitEvent(event),
       runProcessImpl: this.runProcessImpl,
       defaultTimeoutMs: this.defaultTimeoutMs,
+      maxOutputChars: this.maxOutputChars,
     });
     this.sessions.set(session.id, session);
     this.emit("session", session.getSummary());

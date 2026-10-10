@@ -18,7 +18,8 @@ export function analyzePerformance(
   const losses = result.trades.filter((t) => t.pnl <= 0);
   const grossProfit = wins.reduce((s, t) => s + t.pnl, 0);
   const grossLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
-  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : wins.length > 0 ? Infinity : 0;
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : wins.length > 0 ? Number.MAX_SAFE_INTEGER : 0;
+  const profitFactorLabel = Number.isFinite(profitFactor) ? profitFactor.toFixed(2) : "n/a (no losses)";
   const avgWin = wins.length > 0 ? grossProfit / wins.length : 0;
   const avgLoss = losses.length > 0 ? grossLoss / losses.length : 0;
   const expectancy = result.trades.length > 0 ? (wins.length * avgWin - losses.length * avgLoss) / result.trades.length : 0;
@@ -49,7 +50,7 @@ export function analyzePerformance(
     if (profitFactor < cfg.minProfitFactor) verdict = "fail";
   }
   if (profitFactor < cfg.minProfitFactor) {
-    reasons.push(`profitFactor ${profitFactor.toFixed(2)} < min ${cfg.minProfitFactor}`);
+    reasons.push(`profitFactor ${profitFactorLabel} < min ${cfg.minProfitFactor}`);
     if (verdict === "pass" && result.totalReturn < 0) verdict = "fail";
   }
   if (result.tradeCount === 0) {
