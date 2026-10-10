@@ -258,17 +258,17 @@ export class EngineManager {
       return { provider: directProvider };
     }
 
-    // CLI fallback: resolve through the CLI manager's adapters, then fall back to
-    // any registered CLI provider (preserves legacy behaviour for unknown ids).
+    // CLI fallback: resolve through the CLI manager's adapters and bind the
+    // found adapter's own executable + argv. Never fall back to an unrelated
+    // registered CLI provider (that silently ran the wrong binary).
     const adapter = this.cliManager.findByEngineId(engineId);
     if (adapter) {
-      const adapterEngine = `cli-${adapter.getMetadata().id}`;
+      const meta = adapter.getMetadata();
+      const adapterEngine = `cli-${meta.id}`;
       const adapterProvider =
         this.registry.get(adapterEngine) ??
-        Array.from(this.registry.list()).find((p) => p instanceof CliProvider);
-      if (adapterProvider) {
-        return { provider: adapterProvider };
-      }
+        this.registerCliEngineProvider(adapterEngine, meta.name, meta.executable, [...meta.defaultArgs]);
+      return { provider: adapterProvider };
     }
 
     if (engineId.includes("cli")) {
@@ -299,7 +299,16 @@ export class EngineManager {
       const overrides = await loadEngineOverrides();
       const command = resolveEngineCommand(entry, overrides);
       if (!command || command.trim() === "") return undefined;
-      return this.registerCliEngineProvider(engineId, entry.name, command.trim(), entry.suggestedArgs);
+      // Authoritative argv comes from the registered adapter that owns this
+      // command; the catalog entry only supplies display metadata otherwise.
+      const adapter = this.cliManager.findByExecutable(command.trim());
+      const meta = adapter?.getMetadata();
+      return this.registerCliEngineProvider(
+        engineId,
+        meta?.name ?? entry.name,
+        command.trim(),
+        meta ? [...meta.defaultArgs] : entry.suggestedArgs,
+      );
     } catch {
       return undefined;
     }
