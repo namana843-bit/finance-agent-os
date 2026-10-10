@@ -35,6 +35,8 @@ export interface CliMetadata {
   engineAliases: string[];
   /** Optional install hint shown by the desktop UI. */
   installHint?: string;
+  /** Actionable auth guidance when the CLI reports missing credentials. */
+  authHint?: string;
   /**
    * Session modes this adapter supports. Defaults to `["one-shot"]` when
    * absent (backward compatible). Adapters with a daemon / persistent
