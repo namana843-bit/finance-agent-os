@@ -7,10 +7,9 @@ An event-driven autonomous financial operating system powered by specialized col
 
 ## ✨ Features
 
-- **7 autonomous agents** communicating via `TypedEventBus` (`packages/core/src/event-bus.ts:1`) — registered in `apps/server/src/core/runtime.ts:253-264`
+- **6 autonomous agents** communicating via `TypedEventBus` (`packages/core/src/event-bus.ts:1`) — registered in `apps/server/src/core/runtime.ts:253-264`
 - **7-stage execution pipeline** — Signal Validation → LoopGuard → KillSwitch → HardLimits → Risk HMAC Ticket → Gateway → OrderManager → PaperBroker
 - **Real backtesting** — zero look-ahead, `next_bar_open` execution, slippage/spread/fees, Sharpe/Sortino/CAGR/Drawdown/ProfitFactor
-- **OpenCode multi-agent orchestration** — `opencode.json` defines a `finance-agent` orchestrator that delegates to 4 permissioned specialists
 - **Markdown instruction system** — `AGENTS`, `SOUL`, `TOOLS`, `FINANCE_RULES`, `RISK_RULES`, `AGENT_LOOP`, `ROADMAP` specs drive agent behaviour
 - **File-persisted Agent Memory** — no SQLite hang: `memory/agent-memory.json` + `traces.jsonl` (5MB rotate, TTL cleanup)
 - **Desktop OS** — Vite + React 18 + Electron trading desk (alpha lab, risk, telemetry, orderbook, PnL)
@@ -28,8 +27,8 @@ An event-driven autonomous financial operating system powered by specialized col
              ┌────────────────────────┼────────────────────────┐
              │                        │                        │
       Trading Desk UI         Multi-Agent Rooms       Live Telemetry & Signals
-     (AlphaQuant, Risk,     (Live Trading Floor,      (Orderbook, VaR, TWAP,
-      ExecRouter, Intel)       Alpha Lab, Risk)        PnL & Active Alphas)
+     (Supervisor, Risk,      (Live Trading Floor,      (Orderbook, VaR, TWAP,
+      Execution, Intel)        Alpha Lab, Risk)        PnL & Active Alphas)
              │                        │                        │
              └────────────────────────┼────────────────────────┘
                                       │  HTTP REST / SSE Stream
@@ -41,11 +40,11 @@ An event-driven autonomous financial operating system powered by specialized col
       │                               │                               │
  TRADING AGENTS                     TOOLS                         SERVICES
   • Supervisor (Coordinator)       • Market Depth / OHLCV        • FinanceGateway
-  • AlphaQuant (Quant/Signals)     • Volatility Surface / RSI    • OrderManager (Canonical)
-  • RiskSentinel (VaR/Drawdown)    • Portfolio Margin / Risk     • PaperBroker (Risk-Gated)
-  • ExecRouter (TWAP/Slippage)     • Strategy Backtesting        • BinanceRuntime (Read-Only)
-  • MarketIntel (Order Flow/CVD)   • Exchange Providers          • ExecutionSimulator
-  • PortfolioLead (NAV/Rebalance)  • Memory Traces (Sanitized)   • ExecutionPipeline
+  • Market (Data/Orderbook)        • Volatility Surface / RSI    • OrderManager (Canonical)
+  • Quant (Signals/Indicators)     • Portfolio Margin / Risk     • PaperBroker (Risk-Gated)
+  • Risk (VaR/Drawdown/Tickets)    • Strategy Backtesting        • BinanceRuntime (Read-Only)
+  • Portfolio (NAV/Rebalance)      • Exchange Providers          • ExecutionSimulator
+  • Execution (TWAP/Slippage)      • Memory Traces (Sanitized)   • ExecutionPipeline
       │                               │                               │
       └───────────────────────────────┼───────────────────────────────┘
                                       ▼
@@ -117,23 +116,9 @@ All agents live in `apps/server/src/agents/` and are wired in `apps/server/src/c
 | **`Portfolio`** | `agents/portfolio/index.ts` | Balances, positions, NAV, rebalancing |
 | **`Execution`** | `agents/execution/index.ts` | TWAP/VWAP slicing, PaperBroker orders, slippage |
 | **`Demo`** | `agents/demo-agent/index.ts` | Demo/test agent |
-| **LLM Bridge** | `llm/agent-runtime.ts` + `llm/engines.ts` + `llm/cli-session.ts` | `ProviderRegistry`/`EngineManager`/`CliSessionManager` for opencode `AgentRuntime` |
+| **LLM Bridge** | `llm/agent-runtime.ts` + `llm/engines.ts` + `llm/cli-session.ts` | `ProviderRegistry`/`EngineManager`/`CliSessionManager` for `AgentRuntime` |
 
 Talk to them: `SupervisorAgent.submitTask("buy 0.1 BTC if RSI <30")` → `bus.publish({type:"supervisor.task"})` → fan-out. Via HTTP: `POST /api/chat` or `POST /api/publish`.
-
-## 🧭 OpenCode Multi-Agent Configuration
-
-`opencode.json` defines the LLM-side agent topology used by this repository (distinct from the runtime agents above):
-
-| Agent | Mode | Role |
-| :--- | :--- | :--- |
-| **`finance-agent`** | `primary` (default) | Orchestrator — decomposes the task, delegates to a specialist, validates the result, returns the final answer |
-| **`market-research-agent`** | `subagent` | Markets, companies, sectors, macro research (`webfetch` only — no edit/shell) |
-| **`btc-quant-agent`** | `subagent` | BTC quant research, indicators, backtests (`python *` shell allowed, everything else `ask`) |
-| **`risk-guardian-agent`** | `subagent` | Independent risk review → returns exactly `PASS` / `FAIL` / `NEEDS_REVIEW` (fully sandboxed: no edit/shell/webfetch) |
-| **`opencode-cli-agent`** | `subagent` | Repository engineering — inspect, edit, debug, run tests (`git push *` denied, other shells `ask`) |
-
-Shared guardrails in every system prompt: paper trading by default, never bypass risk limits/kill switches, never invent market data or backtest results, prevent look-ahead bias, account for fees/slippage, protect secrets.
 
 ## 📚 Markdown Instruction System
 
@@ -208,7 +193,6 @@ finance-agent-os/
 ├── docs/                           # subsystem specs (ARCHITECTURE, API, EVENTS, RISK, …)
 ├── prisma/                         # slim schema (9 models)
 ├── scripts/                        # verify-honesty.mjs + CLI scaffold
-├── opencode.json                   # OpenCode multi-agent configuration
 └── AGENTS/SOUL/TOOLS/FINANCE_RULES/RISK_RULES.md
 ```
 
