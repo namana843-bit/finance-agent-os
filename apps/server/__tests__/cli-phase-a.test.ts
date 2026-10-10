@@ -17,19 +17,24 @@ describe("phase-a adapters", () => {
       executable: "claude",
       taskDelivery: "argv",
     });
-    expect(createCodexAdapter().getMetadata().defaultArgs).toEqual(["exec", "{prompt}"]);
-    expect(createGeminiAdapter().getMetadata().defaultArgs).toEqual(["-p", "{prompt}"]);
+    expect(createCodexAdapter().getMetadata().defaultArgs).toEqual(["exec", "--json", "{prompt}"]);
+    expect(createGeminiAdapter().getMetadata().defaultArgs).toEqual([
+      "-p",
+      "{prompt}",
+      "--output-format",
+      "stream-json",
+    ]);
   });
 
   it("builds one-shot argv with prompt substitution", () => {
     const claude = createClaudeAdapter();
     expect(claude.buildOneShotArgs(["-p", "{prompt}"], "hi", { daemonUrl: null })).toEqual(["-p", "hi"]);
-    // claude appends --model only when set
+    // claude inserts --model after -p only when set (verified: claude -p --model)
     expect(claude.decorateTaskArgs(["-p", "{prompt}"], { model: "sonnet" })).toEqual([
       "-p",
-      "{prompt}",
       "--model",
       "sonnet",
+      "{prompt}",
     ]);
     expect(claude.decorateTaskArgs(["-p", "{prompt}"], {})).toEqual(["-p", "{prompt}"]);
   });
