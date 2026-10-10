@@ -87,3 +87,11 @@ export function getDefaultCliManager(): CliManager {
 export function resetDefaultCliManager(): void {
   defaultManager = null;
 }
+
+/**
+ * Test helper — installs a preconfigured manager (e.g. with an injected
+ * process runner) as the shared instance. Production code must not call this.
+ */
+export function setDefaultCliManager(manager: CliManager): void {
+  defaultManager = manager;
+}
