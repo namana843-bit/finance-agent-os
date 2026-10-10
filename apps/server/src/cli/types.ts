@@ -200,6 +200,10 @@ export interface CliAdapterHooks {
   decorateDaemonArgs(args: string[], daemonUrl: string): string[];
   /** Parse one stdout line into a streaming chunk (null = plain text). */
   parseLine(line: string): CliStreamChunk | null;
+  /** Transport this adapter speaks (`argv` default). Callers must honor it:
+   *  `stdin` tasks travel via stdin, `rpc` requires an RPC transport and must
+   *  fail explicitly when none is implemented. */
+  getTaskDelivery?(): CliTaskDelivery;
   /** Can this adapter keep a persistent session against `daemonUrl`? */
   supportsDaemonMode(daemonUrl: string | null): boolean;
 }

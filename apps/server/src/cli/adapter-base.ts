@@ -12,6 +12,7 @@ import type {
   CliMetadata,
   CliSessionMode,
   CliStreamChunk,
+  CliTaskDelivery,
   CliValidationResult,
   ProtocolTransport,
 } from "./types.js";
@@ -103,6 +104,10 @@ export abstract class CliAdapterBase implements CliAdapter {
 
   parseLine(line: string): CliStreamChunk | null {
     return parseJsonLineChunk(line);
+  }
+
+  getTaskDelivery(): CliTaskDelivery {
+    return this.metadata.taskDelivery;
   }
 
   /** Only daemon-owned adapters can run persistent sessions. */
