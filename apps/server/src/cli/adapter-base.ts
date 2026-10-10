@@ -32,6 +32,15 @@ export function defaultOneShotArgs(templates: string[], task: string): string[] 
   return out;
 }
 
+/**
+ * Shared shell policy: Windows OS wrappers (.cmd/.bat/.ps1) require a shell;
+ * everything else spawns directly. Single source of truth — process runners
+ * and session managers must call this instead of re-implementing the check.
+ */
+export function requiresShellForExecutable(executable: string): boolean {
+  return process.platform === "win32" && /\.(cmd|bat|ps1)$/i.test(executable);
+}
+
 export abstract class CliAdapterBase implements CliAdapter {
   private readonly metadata: CliMetadata;
 
@@ -109,7 +118,7 @@ export abstract class CliAdapterBase implements CliAdapter {
 
   /** Windows OS wrappers need a shell; everything else spawns directly. */
   requiresShell(executable: string): boolean {
-    return process.platform === "win32" && /\.(cmd|bat|ps1)$/i.test(executable);
+    return requiresShellForExecutable(executable);
   }
 
   async resolveExecutable(command?: string): Promise<string | null> {
