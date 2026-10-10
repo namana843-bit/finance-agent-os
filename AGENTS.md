@@ -18,7 +18,6 @@ finance-agent-os/
 │   └── shared/           # Types, event schemas, risk ticket interfaces
 ├── docs/                 # System documentation & specifications
 ├── prisma/               # Prisma database schema (SQLite / dev)
-└── opencode.json         # OpenCode multi-agent configuration
 ```
 
 ### Key Technologies
