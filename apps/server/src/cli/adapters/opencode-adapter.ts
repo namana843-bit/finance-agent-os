@@ -41,6 +41,7 @@ export class OpenCodeAdapter extends CliAdapterBase {
       defaultArgs: [...OPENCODE_DEFAULT_RUN_ARGS],
       engineAliases: ["opencode", "opencode-cli"],
       installHint: "npm install -g opencode-ai",
+      sessionModes: ["one-shot", "persistent"],
     });
   }
 
