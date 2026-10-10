@@ -10,6 +10,9 @@
 import type { TypedEventBus } from "@finance/core";
 import { CliManager } from "./cli-manager.js";
 import { OpenCodeAdapter, createOpenCodeAdapter } from "./adapters/opencode-adapter.js";
+import { ClaudeAdapter, createClaudeAdapter } from "./adapters/claude-adapter.js";
+import { CodexAdapter, createCodexAdapter } from "./adapters/codex-adapter.js";
+import { GeminiAdapter, createGeminiAdapter } from "./adapters/gemini-adapter.js";
 
 export * from "./types.js";
 export {
@@ -30,6 +33,9 @@ export { CliAdapterBase, defaultOneShotArgs } from "./adapter-base.js";
 export { CliManager, CliManagedSession } from "./cli-manager.js";
 export type { CliManagerOptions } from "./cli-manager.js";
 export { OpenCodeAdapter, createOpenCodeAdapter } from "./adapters/opencode-adapter.js";
+export { ClaudeAdapter, createClaudeAdapter } from "./adapters/claude-adapter.js";
+export { CodexAdapter, createCodexAdapter } from "./adapters/codex-adapter.js";
+export { GeminiAdapter, createGeminiAdapter } from "./adapters/gemini-adapter.js";
 export { OpencodeDaemonManager } from "./adapters/opencode-daemon.js";
 export type { OpencodeDaemonConfig } from "./adapters/opencode-daemon.js";
 export { CustomCliAdapter, createCustomCliAdapter } from "./adapters/custom-adapter.js";
@@ -55,7 +61,10 @@ export function createDefaultCliManager(opts?: { bus?: TypedEventBus }): CliMana
   const manager = new CliManager(opts);
   // --- Adapter registration layer (add future CLIs here only) -------------
   manager.register(createOpenCodeAdapter());
-  // Future adapters: manager.register(createClaudeCodeAdapter()) etc.
+  manager.register(createClaudeAdapter());
+  manager.register(createCodexAdapter());
+  manager.register(createGeminiAdapter());
+  // Future adapters: custom descriptors via createCustomCliAdapter() etc.
   return manager;
 }
 
