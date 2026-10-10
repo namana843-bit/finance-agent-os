@@ -10,7 +10,6 @@ An event-driven autonomous financial operating system powered by specialized col
 - **7 autonomous agents** communicating via `TypedEventBus` (`packages/core/src/event-bus.ts:1`) — registered in `apps/server/src/core/runtime.ts:253-264`
 - **7-stage execution pipeline** — Signal Validation → LoopGuard → KillSwitch → HardLimits → Risk HMAC Ticket → Gateway → OrderManager → PaperBroker
 - **Real backtesting** — zero look-ahead, `next_bar_open` execution, slippage/spread/fees, Sharpe/Sortino/CAGR/Drawdown/ProfitFactor
-- **OpenCode multi-agent orchestration** — `opencode.json` defines a `finance-agent` orchestrator that delegates to 4 permissioned specialists
 - **Markdown instruction system** — `AGENTS`, `SOUL`, `TOOLS`, `FINANCE_RULES`, `RISK_RULES`, `AGENT_LOOP`, `ROADMAP` specs drive agent behaviour
 - **File-persisted Agent Memory** — no SQLite hang: `memory/agent-memory.json` + `traces.jsonl` (5MB rotate, TTL cleanup)
 - **Desktop OS** — Vite + React 18 + Electron trading desk (alpha lab, risk, telemetry, orderbook, PnL)
@@ -121,20 +120,6 @@ All agents live in `apps/server/src/agents/` and are wired in `apps/server/src/c
 
 Talk to them: `SupervisorAgent.submitTask("buy 0.1 BTC if RSI <30")` → `bus.publish({type:"supervisor.task"})` → fan-out. Via HTTP: `POST /api/chat` or `POST /api/publish`.
 
-## 🧭 OpenCode Multi-Agent Configuration
-
-`opencode.json` defines the LLM-side agent topology used by this repository (distinct from the runtime agents above):
-
-| Agent | Mode | Role |
-| :--- | :--- | :--- |
-| **`finance-agent`** | `primary` (default) | Orchestrator — decomposes the task, delegates to a specialist, validates the result, returns the final answer |
-| **`market-research-agent`** | `subagent` | Markets, companies, sectors, macro research (`webfetch` only — no edit/shell) |
-| **`btc-quant-agent`** | `subagent` | BTC quant research, indicators, backtests (`python *` shell allowed, everything else `ask`) |
-| **`risk-guardian-agent`** | `subagent` | Independent risk review → returns exactly `PASS` / `FAIL` / `NEEDS_REVIEW` (fully sandboxed: no edit/shell/webfetch) |
-| **`opencode-cli-agent`** | `subagent` | Repository engineering — inspect, edit, debug, run tests (`git push *` denied, other shells `ask`) |
-
-Shared guardrails in every system prompt: paper trading by default, never bypass risk limits/kill switches, never invent market data or backtest results, prevent look-ahead bias, account for fees/slippage, protect secrets.
-
 ## 📚 Markdown Instruction System
 
 Agent behaviour and platform policy are specified in versioned Markdown at the repo root and in `docs/`:
@@ -208,7 +193,6 @@ finance-agent-os/
 ├── docs/                           # subsystem specs (ARCHITECTURE, API, EVENTS, RISK, …)
 ├── prisma/                         # slim schema (9 models)
 ├── scripts/                        # verify-honesty.mjs + CLI scaffold
-├── opencode.json                   # OpenCode multi-agent configuration
 └── AGENTS/SOUL/TOOLS/FINANCE_RULES/RISK_RULES.md
 ```
 
