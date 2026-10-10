@@ -36,12 +36,22 @@ export const OPENCODE_ALLOWED_COMMANDS = [
   "providers",
   "stats",
   "export",
+  "import",
   "session",
   "agent",
   "run",
   "serve",
   "web",
   "debug",
+  "acp",
+  "mcp",
+  "attach",
+  "upgrade",
+  "uninstall",
+  "github",
+  "pr",
+  "plugin",
+  "db",
 ] as const;
 
 /** Default argv template for one-shot agent runs. */
