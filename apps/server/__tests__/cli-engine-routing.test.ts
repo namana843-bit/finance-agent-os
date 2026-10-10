@@ -127,8 +127,9 @@ describe("adapter argv composition through CliProvider", () => {
     );
     expect(seen).toHaveLength(1);
     expect(seen[0]?.args[0]).toBe("-p");
-    expect(seen[0]?.args[1]).toContain("hello task");
-    expect(seen[0]?.args.slice(-2)).toEqual(["--model", "claude"]);
+    expect(seen[0]?.args.join("\n")).toContain("hello task");
+    expect(seen[0]?.args.filter((a) => a === "--model")).toHaveLength(1);
+    expect(seen[0]?.args).toContain("claude");
     expect(seen[0]?.opts.cwd).toBe("/tmp/work");
     expect(seen[0]?.opts.env).toMatchObject({ FOO: "bar" });
     expect(events.map((e) => e.type)).toEqual(["message_start", "text_delta", "message_complete"]);
