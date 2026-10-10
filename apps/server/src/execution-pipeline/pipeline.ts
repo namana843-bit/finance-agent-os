@@ -24,6 +24,7 @@ import { DEFAULT_PIPELINE_CONFIG, PIPELINE_EVENTS } from "./types.js";
 
 import type { KillSwitch } from "../safety/kill-switch.js";
 import type { HardLimitsValidator } from "../safety/hard-limits.js";
+import { isTestModeEnabled } from "../test-mode/sandbox.js";
 
 export interface ExecutionPipelineDeps {
   bus: TypedEventBus;
@@ -58,6 +59,8 @@ export class ExecutionPipeline {
   private inflight = new Map<string, Promise<PipelineResult>>();
   private completedByCorrelation = new Map<string, PipelineResult>();
   private orderIdempotency = new Map<string, string>(); // idempotencyKey -> orderId
+  /** Test/simulation sandbox — hard-disables the live path regardless of env. */
+  private sandboxMode: boolean;
 
   constructor(deps: ExecutionPipelineDeps) {
     this.bus = deps.bus;
@@ -69,8 +72,14 @@ export class ExecutionPipeline {
     this.killSwitch = deps.killSwitch;
     this.hardLimits = deps.hardLimits;
     this.audit = deps.pipelineAudit ?? new PipelineAuditLog(this.bus);
-    this.config = { ...DEFAULT_PIPELINE_CONFIG, ...deps.config };
-    if (this.config.liveTradingEnabled && !isLiveEnvEnabled()) {
+    // Explicit config wins; otherwise inherit the process-wide sandbox flag.
+    this.sandboxMode = deps.config?.sandboxMode ?? isTestModeEnabled();
+    this.config = { ...DEFAULT_PIPELINE_CONFIG, ...deps.config, sandboxMode: this.sandboxMode };
+    if (this.sandboxMode && this.config.liveTradingEnabled) {
+      console.warn("[execution-pipeline] sandbox/test mode — forcing paper-only (live trading is non-bypassable here)");
+      this.config.liveTradingEnabled = false;
+    }
+    if (this.config.liveTradingEnabled && !this.isLiveEnvAllowed()) {
       console.warn("[execution-pipeline] liveTradingEnabled requested but LIVE_TRADING_ENABLED!=true — forcing paper-only");
       this.config.liveTradingEnabled = false;
     }
@@ -78,8 +87,20 @@ export class ExecutionPipeline {
 
   getConfig(): PipelineConfig { return { ...this.config }; }
   getAuditLog(): PipelineAuditLog { return this.audit; }
-  isLiveEnabled(): boolean { return this.config.liveTradingEnabled && isLiveEnvEnabled(); }
+  /** True when running inside the isolated test/simulation sandbox. */
+  isSandboxMode(): boolean { return this.sandboxMode; }
+  isLiveEnabled(): boolean { return !this.sandboxMode && this.config.liveTradingEnabled && isLiveEnvEnabled(); }
+  /**
+   * Non-bypassable live gate. In sandbox/test mode this is always false —
+   * flipping LIVE_TRADING_ENABLED in the environment cannot re-enable it.
+   */
+  private isLiveEnvAllowed(): boolean {
+    return !this.sandboxMode && isLiveEnvEnabled();
+  }
   enableLiveTrading(): void {
+    if (this.sandboxMode) {
+      throw new Error("Live trading is disabled in test/simulation sandbox mode — this is non-bypassable");
+    }
     if (!isLiveEnvEnabled()) throw new Error("Live trading not enabled — set LIVE_TRADING_ENABLED=true in env first");
     this.config.liveTradingEnabled = true;
   }
@@ -144,13 +165,16 @@ export class ExecutionPipeline {
       return this.result(false, "kill_switch", reason, correlationId, signalId, auditIds, started);
     }
 
-    if (this.config.liveTradingEnabled && !isLiveEnvEnabled()) {
-      pushAudit("live_disabled", PIPELINE_EVENTS.LIVE_BLOCKED, false, "Live trading blocked — LIVE_TRADING_ENABLED != true", { signal });
-      return this.result(false, "live_disabled", "Live trading blocked — set LIVE_TRADING_ENABLED=true", correlationId, signalId, auditIds, started);
+    if (this.config.liveTradingEnabled && !this.isLiveEnvAllowed()) {
+      const reason = this.sandboxMode
+        ? "Live trading blocked — running inside the test/simulation sandbox"
+        : "Live trading blocked — LIVE_TRADING_ENABLED != true";
+      pushAudit("live_disabled", PIPELINE_EVENTS.LIVE_BLOCKED, false, reason, { signal, sandboxMode: this.sandboxMode });
+      return this.result(false, "live_disabled", reason, correlationId, signalId, auditIds, started);
     }
 
-    this.bus.publish({ type: PIPELINE_EVENTS.SIGNAL_RECEIVED, data: { signalId, correlationId, signal, timestamp: Date.now() }, source: "execution-pipeline", correlationId });
-    pushAudit("received", PIPELINE_EVENTS.SIGNAL_RECEIVED, null, undefined, { signal });
+    this.bus.publish({ type: PIPELINE_EVENTS.SIGNAL_RECEIVED, data: { signalId, correlationId, signal, timestamp: Date.now(), sandboxMode: this.sandboxMode }, source: "execution-pipeline", correlationId });
+    pushAudit("received", PIPELINE_EVENTS.SIGNAL_RECEIVED, null, undefined, { signal, sandboxMode: this.sandboxMode });
 
     const v = validateSignal(signal);
     if (!v.valid || !v.normalized) {

@@ -210,7 +210,7 @@ export class ChatCore {
   async sendUserMessage(
     threadId: string,
     content: string,
-    opts?: { agentId?: string },
+    opts?: { agentId?: string; botId?: string },
   ): Promise<SendResult> {
     const thread = await this.storage.getThread(threadId);
     if (thread === null || thread === undefined) {
@@ -231,13 +231,23 @@ export class ChatCore {
     // Exclusive targeting: if this thread is bound to one specific bot
     // (DM), only that agent acts. Never fan out to the supervisor pipeline
     // or other agents from a DM thread (supervisor DMs still coordinate).
-    const threadBotIdRaw = thread.metadata?.["botId"];
+    const threadBotIdRaw =
+      opts?.botId ??
+      (opts?.agentId && opts.agentId !== "user" ? opts.agentId : undefined) ??
+      thread.metadata?.["botId"];
     const threadBot =
       typeof threadBotIdRaw === "string" && threadBotIdRaw.length > 0
         ? (this.bots.get(threadBotIdRaw) as BotWithOptionalLlm | undefined)
         : undefined;
+
+    const isSupervisorTarget =
+      threadBotIdRaw === "supervisor" ||
+      threadBotIdRaw === "chief" ||
+      (threadBot !== undefined && threadBot.agentId === "supervisor");
+
     const isExclusiveDm =
-      threadBot !== undefined && threadBot.agentId !== "supervisor";
+      (threadBot !== undefined && !isSupervisorTarget) ||
+      (typeof threadBotIdRaw === "string" && threadBotIdRaw.length > 0 && !isSupervisorTarget);
 
     let planId: string | null = null;
     if (this.submitTask) {
@@ -270,10 +280,11 @@ export class ChatCore {
     // Optional LLM reply. Never throws and never changes the SendResult shape.
     // Runtime wiring passes `getLlm` lazily (see note at top of file).
     try {
-      const botIdRaw = thread.metadata?.["botId"];
+      const botIdRaw = threadBotIdRaw;
       if (typeof botIdRaw === "string" && botIdRaw.length > 0) {
         const bot = this.bots.get(botIdRaw) as BotWithOptionalLlm | undefined;
         const llmCfg = bot?.llm;
+        let replied = false;
         if (bot !== undefined && llmCfg !== undefined) {
           const service = this.getLlm?.();
           if (service !== undefined && service.isConfigured(llmCfg)) {
@@ -294,8 +305,20 @@ export class ChatCore {
                 timestamp: Date.now(),
                 agentId: bot.agentId,
               });
+              replied = true;
             }
           }
+        }
+        if (isExclusiveDm && !replied && bot !== undefined) {
+          await this.storage.saveMessage({
+            id: `msg-${Date.now()}-dm`,
+            threadId,
+            channelId: thread.channelId,
+            role: "assistant",
+            content: `[${bot.name}] Received: "${content}". Operating strictly within my persona (${bot.personality}). Awaiting specific commands.`,
+            timestamp: Date.now(),
+            agentId: bot.agentId,
+          });
         }
       }
     } catch {

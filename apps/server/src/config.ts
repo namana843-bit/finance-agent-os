@@ -2,9 +2,40 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic.js";
+import {
+  applySandboxEnv,
+  getSandboxState,
+  isTestModeEnabled,
+  resolveSandboxPort,
+  writeSandboxMarker,
+  type SandboxState,
+} from "./test-mode/sandbox.js";
+
+// ---------------------------------------------------------------------------
+// Test / simulation sandbox bootstrap.
+// Must run BEFORE DATA_DIR is computed so every downstream persistence root
+// (order-manager, agent-memory, core/storage, llm persistence, …) resolves
+// into the isolated sandbox instead of the production data dir.
+// Enable with FINANCE_TEST_MODE=true (see test-mode/sandbox.ts for all flags).
+// ---------------------------------------------------------------------------
+export const SANDBOX: SandboxState = applySandboxEnv();
+if (SANDBOX.enabled) {
+  writeSandboxMarker(SANDBOX.sandboxDir);
+  console.log(
+    `[test-mode] sandbox active — dataDir=${SANDBOX.dataDir} executionMode=paper liveTradingEnabled=false port=${SANDBOX.port}`,
+  );
+}
+
+export { isTestModeEnabled, getSandboxState };
+export type { SandboxState };
 
 export const DATA_DIR = process.env.FINANCE_DATA_DIR || process.env.OMB_DATA_DIR || join(homedir(), ".finance-agent");
-export const DEFAULT_PORT = Number(process.env.PORT || process.env.FINANCE_PORT || 4132);
+
+const PRODUCTION_DEFAULT_PORT = 4132;
+export const DEFAULT_PORT = Number(
+  process.env.PORT || process.env.FINANCE_PORT || (SANDBOX.enabled ? resolveSandboxPort() : PRODUCTION_DEFAULT_PORT),
+);
+
 
 export interface AppConfig {
   port?: number;

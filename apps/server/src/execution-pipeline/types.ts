@@ -24,6 +24,13 @@ export interface PipelineSignal {
 export interface PipelineConfig {
   /** Live trading must remain disabled unless explicitly enabled + env allows it */
   liveTradingEnabled: boolean;
+  /**
+   * Test/simulation sandbox mode (non-bypassable).
+   * When true the pipeline refuses to enable live trading even if
+   * LIVE_TRADING_ENABLED=true is set in the environment. Defaults to the
+   * process-wide sandbox flag (FINANCE_TEST_MODE et al.) when omitted.
+   */
+  sandboxMode?: boolean;
   /** Enforce risk approval (default true) */
   requireRiskApproval: boolean;
   /** Enable audit log publishing (default true) */

@@ -225,6 +225,42 @@ describe("ChatCore sendUserMessage", () => {
       messages.some((m) => m.role === "user" && m.content === "Analyze ETH"),
     ).toBe(true);
   });
+
+  it("enforces strict bot DM isolation: does NOT publish supervisor.task for specific bots", async () => {
+    const storage = await makeStorage();
+    const core = new ChatCore({
+      bus,
+      storage,
+      submitTask: async () => {
+        return { planId: "plan-isolated" };
+      },
+    });
+
+    const seen: FinanceEvent[] = [];
+    bus.subscribeTo("supervisor.task", (e) => {
+      seen.push(e);
+    });
+
+    // Create a thread for the quant bot
+    const thread = await core.createThread({ title: "Quant DM", botId: "quant" });
+    const { message, planId } = await core.sendUserMessage(thread.id, "Calculate RSI for BTC", {
+      botId: "quant",
+    });
+
+    // Returns mapped planId without error
+    expect(planId).toBe("plan-isolated");
+
+    // Must NOT publish supervisor.task event to the bus (which would trigger Supervisor multi-agent execution)
+    expect(seen).toHaveLength(0);
+
+    // Messages in thread must only be user and addressed bot
+    const messages = await core.getMessages(thread.id);
+    expect(messages.length).toBeGreaterThanOrEqual(1);
+    expect(messages[0].role).toBe("user");
+    if (messages.length > 1) {
+      expect(messages[1].agentId).toBe("quant");
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -51,6 +51,9 @@ import {
   importAgentApi,
   fetchEnginesApi,
   fetchOllamaModelsApi,
+  fetchOpencodeModelsApi,
+  updateOpencodeModelApi,
+  type OpencodeModelsResponse,
   saveEngineCliOverride,
   streamAgentChat,
   fetchTicks,
@@ -282,7 +285,7 @@ export function App() {
   const [conversations, setConversations] =
     useState<Record<string, MultiAgentMessage[]>>(INITIAL_CONVERSATIONS);
   const [inputVal, setInputVal] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
+  const [typingAgents, setTypingAgents] = useState<Record<string, boolean>>({});
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isInspectorOpen, setIsInspectorOpen] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -306,11 +309,19 @@ export function App() {
   const [savingEngineId, setSavingEngineId] = useState<string | null>(null);
   const [savedSuccessId, setSavedSuccessId] = useState<string | null>(null);
 
+  // OpenCode Models State (Subprocess & CLI Integration)
+  const [opencodeModelsData, setOpencodeModelsData] = useState<OpencodeModelsResponse | null>(null);
+  const [isLoadingOpencodeModels, setIsLoadingOpencodeModels] = useState(false);
+  const [modelSearchQuery, setModelSearchQuery] = useState("");
+  const [selectedProviderFilter, setSelectedProviderFilter] = useState<string>("all");
+  const [settingsActiveTab, setSettingsActiveTab] = useState<"engines" | "opencode-models">("engines");
+  const [copiedModelName, setCopiedModelName] = useState<string | null>(null);
+
   // Create Agent Form State
   const [newAgentName, setNewAgentName] = useState("");
   const [newAgentRole, setNewAgentRole] = useState("BTC Quant Analyst");
   const [newAgentEngine, setNewAgentEngine] = useState("opencode-cli");
-  const [newAgentModel, setNewAgentModel] = useState("qwen2.5-coder");
+  const [newAgentModel, setNewAgentModel] = useState("opencode/space-bunny-free");
   const [newAgentPrompt, setNewAgentPrompt] = useState(
     "You are an expert quantitative trading agent. Analyze market data and construct high-sharpe trade proposals."
   );
@@ -319,6 +330,7 @@ export function App() {
   const activeAgent =
     agents.find((a) => a.id === activeChatId) || agents[0] || DEFAULT_AGENTS[0];
   const activeMessages = conversations[activeChatId] || [];
+  const isCurrentAgentTyping = Boolean(activeAgent && typingAgents[activeAgent.id]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -370,6 +382,11 @@ export function App() {
       } catch {}
 
       try {
+        const opencodeRes = await fetchOpencodeModelsApi();
+        if (opencodeRes) setOpencodeModelsData(opencodeRes);
+      } catch {}
+
+      try {
         const tickRes = await fetchTicks({ limit: 8 });
         if (tickRes?.ticks) setTicks(tickRes.ticks);
       } catch {}
@@ -405,7 +422,7 @@ export function App() {
         behavior: "smooth",
       });
     }
-  }, [activeMessages, isTyping]);
+  }, [activeMessages, typingAgents]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -476,10 +493,91 @@ export function App() {
     );
   };
 
-  // Real Streaming Send Message
+  const handleRefreshOpencodeModels = async () => {
+    setIsLoadingOpencodeModels(true);
+    try {
+      const res = await fetchOpencodeModelsApi(true);
+      if (res) setOpencodeModelsData(res);
+    } catch (err) {
+      console.error("Failed to refresh OpenCode models:", err);
+    } finally {
+      setIsLoadingOpencodeModels(false);
+    }
+  };
+
+  const handleCopyModel = (name: string) => {
+    if (navigator?.clipboard?.writeText) {
+      void navigator.clipboard.writeText(name);
+    }
+    setCopiedModelName(name);
+    setTimeout(() => setCopiedModelName(null), 2000);
+  };
+
+  const handleSetAgentModel = async (agentId: string, newModel: string, applyToAll = false) => {
+    try {
+      const res = await updateOpencodeModelApi({
+        model: newModel,
+        agentId: applyToAll ? undefined : agentId,
+        applyToAll,
+      });
+      if (res?.data) {
+        setOpencodeModelsData(res.data);
+      }
+    } catch (err) {
+      console.error("Failed to update model in opencode.json:", err);
+    }
+
+    if (applyToAll) {
+      setAgents((prev) =>
+        prev.map((a) => ({
+          ...a,
+          model: newModel,
+        }))
+      );
+      for (const a of agents) {
+        void createAgent({
+          id: a.id,
+          name: a.name,
+          engine: a.engine,
+          model: newModel,
+          systemPrompt: a.systemPrompt,
+          tools: a.tools,
+          permissions: a.permissions,
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    const target = agents.find((a) => a.id === agentId);
+    if (!target) return;
+    const updatedAgent = {
+      ...target,
+      model: newModel,
+    };
+    try {
+      await createAgent({
+        id: updatedAgent.id,
+        name: updatedAgent.name,
+        engine: updatedAgent.engine,
+        model: updatedAgent.model,
+        systemPrompt: updatedAgent.systemPrompt,
+        tools: updatedAgent.tools,
+        permissions: updatedAgent.permissions,
+      });
+    } catch {}
+    setAgents((prev) =>
+      prev.map((a) => (a.id === agentId ? updatedAgent : a))
+    );
+  };
+
+  // Real Streaming Send Message (isolated per agent/session)
   const handleSend = async (overrideText?: string) => {
     const textToSend = (overrideText || inputVal).trim();
     if (!textToSend || !activeAgent) return;
+
+    // Capture target chat session ID strictly to prevent any cross-agent bleeding
+    const targetChatId = activeAgent.id;
+    const targetAgent = activeAgent;
 
     const userMsg: MultiAgentMessage = {
       id: Date.now().toString(),
@@ -493,18 +591,18 @@ export function App() {
 
     setConversations((prev) => ({
       ...prev,
-      [activeChatId]: [...(prev[activeChatId] || []), userMsg],
+      [targetChatId]: [...(prev[targetChatId] || []), userMsg],
     }));
     setInputVal("");
-    setIsTyping(true);
+    setTypingAgents((prev) => ({ ...prev, [targetChatId]: true }));
 
     const assistantMsgId = `asst-${Date.now()}`;
     const initialAssistantMsg: MultiAgentMessage = {
       id: assistantMsgId,
-      agentId: activeAgent.id,
-      agentName: activeAgent.name,
-      agentBadge: activeAgent.badge,
-      agentColor: activeAgent.avatarColor,
+      agentId: targetAgent.id,
+      agentName: targetAgent.name,
+      agentBadge: targetAgent.badge,
+      agentColor: targetAgent.avatarColor,
       role: "assistant",
       content: "",
       timestamp: new Date().toLocaleTimeString([], {
@@ -516,13 +614,13 @@ export function App() {
 
     setConversations((prev) => ({
       ...prev,
-      [activeChatId]: [...(prev[activeChatId] || []), initialAssistantMsg],
+      [targetChatId]: [...(prev[targetChatId] || []), initialAssistantMsg],
     }));
 
     try {
-      await streamAgentChat(activeAgent.id, textToSend, (event) => {
+      await streamAgentChat(targetAgent.id, textToSend, (event) => {
         setConversations((prev) => {
-          const chatMsgs = [...(prev[activeChatId] || [])];
+          const chatMsgs = [...(prev[targetChatId] || [])];
           const msgIdx = chatMsgs.findIndex((m) => m.id === assistantMsgId);
           if (msgIdx === -1) return prev;
 
@@ -573,23 +671,23 @@ export function App() {
           }
 
           chatMsgs[msgIdx] = target;
-          return { ...prev, [activeChatId]: chatMsgs };
+          return { ...prev, [targetChatId]: chatMsgs };
         });
       });
     } catch (err) {
       setConversations((prev) => {
-        const chatMsgs = [...(prev[activeChatId] || [])];
+        const chatMsgs = [...(prev[targetChatId] || [])];
         const msgIdx = chatMsgs.findIndex((m) => m.id === assistantMsgId);
         if (msgIdx !== -1) {
           chatMsgs[msgIdx] = {
             ...chatMsgs[msgIdx],
-            content: `⚠️ Engine Error: Failed to execute prompt on engine (${activeAgent.engine}). Please verify engine settings.`,
+            content: `⚠️ Engine Error: Failed to execute prompt on engine (${targetAgent.engine}). Please verify engine settings.`,
           };
         }
-        return { ...prev, [activeChatId]: chatMsgs };
+        return { ...prev, [targetChatId]: chatMsgs };
       });
     } finally {
-      setIsTyping(false);
+      setTypingAgents((prev) => ({ ...prev, [targetChatId]: false }));
     }
   };
 
@@ -839,10 +937,15 @@ export function App() {
             {/* Quick Engine Status Indicator */}
             <Badge
               variant={activeOpencodeEng?.found ? "success" : "secondary"}
-              className="hidden sm:inline-flex text-[11px] gap-1.5 py-1 px-2.5"
+              className="hidden sm:inline-flex text-[11px] gap-1.5 py-1 px-2.5 cursor-pointer hover:opacity-80 transition-opacity"
+              onClick={() => {
+                setSettingsActiveTab("opencode-models");
+                setIsSettingsOpen(true);
+              }}
+              title="Click to view OpenCode CLI models"
             >
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              CLI: {activeOpencodeEng?.found ? "Ready" : "Detected"}
+              CLI: {activeOpencodeEng?.found ? "Ready" : "Detected"}{opencodeModelsData?.total ? ` (${opencodeModelsData.total} models)` : ""}
             </Badge>
 
             {/* Import Button */}
@@ -1445,7 +1548,7 @@ export function App() {
                 );
               })}
 
-              {isTyping && (
+              {isCurrentAgentTyping && (
                 <div className="flex items-center gap-3">
                   <Avatar className="h-8 w-8 border border-border/40">
                     <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">
@@ -1496,7 +1599,7 @@ export function App() {
                     <Button
                       variant="default"
                       size="icon"
-                      disabled={!inputVal.trim() || isTyping}
+                      disabled={!inputVal.trim() || isCurrentAgentTyping}
                       onClick={() => handleSend()}
                       className="h-8 w-8 rounded-lg shadow-sm"
                     >
@@ -1562,20 +1665,43 @@ export function App() {
                       Engine Diagnostics
                     </div>
                     <Card className="p-3 border-border/50 bg-card/60 space-y-2 text-xs">
-                      <div className="flex justify-between">
+                      <div className="flex justify-between items-center">
                         <span className="text-muted-foreground">Active Engine:</span>
-                        <span className="font-mono">{activeAgent.engine}</span>
+                        <span className="font-mono font-medium">{activeAgent.engine}</span>
                       </div>
-                      <div className="flex justify-between">
+                      <div className="flex justify-between items-center">
                         <span className="text-muted-foreground">Model:</span>
-                        <span className="font-mono">{activeAgent.model}</span>
+                        <span className="font-mono text-[11px] truncate max-w-[140px]" title={activeAgent.model}>
+                          {activeAgent.model}
+                        </span>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Status:</span>
-                        <Badge variant="success" className="text-[10px] h-4">
-                          OK
+                      <div className="flex justify-between items-center">
+                        <span className="text-muted-foreground">Verification:</span>
+                        <Badge
+                          variant={opencodeModelsData?.models.includes(activeAgent.model) ? "success" : "secondary"}
+                          className="text-[10px] h-4"
+                        >
+                          {opencodeModelsData?.models.includes(activeAgent.model) ? "Verified (CLI)" : "Configured"}
                         </Badge>
                       </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-muted-foreground">CLI Models:</span>
+                        <span className="font-mono text-primary font-semibold">
+                          {opencodeModelsData?.total ? `${opencodeModelsData.total} models` : "Detecting..."}
+                        </span>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full h-7 text-[11px] gap-1.5 mt-1 border-primary/30 hover:bg-primary/10"
+                        onClick={() => {
+                          setSettingsActiveTab("opencode-models");
+                          setIsSettingsOpen(true);
+                        }}
+                      >
+                        <Terminal className="h-3 w-3 text-primary" />
+                        <span>Explore OpenCode Models</span>
+                      </Button>
                     </Card>
                   </div>
                 </div>
@@ -1627,15 +1753,36 @@ export function App() {
                 </div>
 
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">
-                    Model
-                  </label>
-                  <Input
-                    value={newAgentModel}
-                    onChange={(e) => setNewAgentModel(e.target.value)}
-                    placeholder="e.g. qwen2.5-coder"
-                    className="mt-1 h-9 text-xs"
-                  />
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      Model
+                    </label>
+                    {newAgentEngine === "opencode-cli" && opencodeModelsData?.total ? (
+                      <span className="text-[10px] text-primary font-mono">
+                        {opencodeModelsData.total} models
+                      </span>
+                    ) : null}
+                  </div>
+                  {newAgentEngine === "opencode-cli" && opencodeModelsData?.models?.length ? (
+                    <select
+                      value={newAgentModel}
+                      onChange={(e) => setNewAgentModel(e.target.value)}
+                      className="w-full h-9 rounded-md border border-input bg-card px-2 py-1 text-xs shadow-sm mt-1 outline-none font-mono"
+                    >
+                      {opencodeModelsData.models.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <Input
+                      value={newAgentModel}
+                      onChange={(e) => setNewAgentModel(e.target.value)}
+                      placeholder="e.g. opencode/space-bunny-free"
+                      className="mt-1 h-9 text-xs"
+                    />
+                  )}
                 </div>
               </div>
 
@@ -1686,85 +1833,339 @@ export function App() {
 
         {/* ENGINE SETTINGS DIALOG (shadcn Dialog) */}
         <Dialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
-          <DialogContent className="max-w-xl">
+          <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <Settings2 className="h-5 w-5 text-primary" />
-                <span>Engine & Provider Registry</span>
+                <span>Engine & Model Registry</span>
               </DialogTitle>
               <DialogDescription>
-                Manage CLI binaries, paths, and local model providers.
+                Manage CLI binaries, paths, and explore models discovered via Python subprocess.
               </DialogDescription>
             </DialogHeader>
 
-            <ScrollArea className="max-h-[60vh] pr-2">
-              <div className="space-y-3 py-2">
-                {enginesList.map((eng) => (
-                  <Card key={eng.id} className="p-3 border-border/60 bg-card/60 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="font-semibold text-xs flex items-center gap-2">
-                        <span>{eng.name}</span>
-                        <span className="text-[10px] font-mono text-muted-foreground">
-                          ({eng.kind})
-                        </span>
-                      </div>
-                      <Badge
-                        variant={eng.found ? "success" : "secondary"}
-                        className="text-[10px] h-4"
+            <Tabs
+              value={settingsActiveTab}
+              onValueChange={(v) => setSettingsActiveTab(v as any)}
+              className="w-full"
+            >
+              <TabsList className="grid grid-cols-2 mb-3">
+                <TabsTrigger value="engines" className="text-xs">
+                  Engines & Paths
+                </TabsTrigger>
+                <TabsTrigger
+                  value="opencode-models"
+                  className="text-xs flex items-center gap-1.5"
+                >
+                  <Terminal className="h-3.5 w-3.5 text-primary" />
+                  <span>OpenCode Models</span>
+                  <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                    {opencodeModelsData?.total ?? 0}
+                  </Badge>
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="engines">
+                <ScrollArea className="max-h-[55vh] pr-2">
+                  <div className="space-y-3 py-2">
+                    {enginesList.map((eng) => (
+                      <Card
+                        key={eng.id}
+                        className="p-3 border-border/60 bg-card/60 space-y-2"
                       >
-                        {eng.found ? "DETECTED" : "UNAVAILABLE"}
+                        <div className="flex items-center justify-between">
+                          <div className="font-semibold text-xs flex items-center gap-2">
+                            <span>{eng.name}</span>
+                            <span className="text-[10px] font-mono text-muted-foreground">
+                              ({eng.kind})
+                            </span>
+                          </div>
+                          <Badge
+                            variant={eng.found ? "success" : "secondary"}
+                            className="text-[10px] h-4"
+                          >
+                            {eng.found ? "DETECTED" : "UNAVAILABLE"}
+                          </Badge>
+                        </div>
+
+                        {eng.kind === "cli" && (
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-muted-foreground font-mono">
+                              Executable Command / File Path:
+                            </label>
+                            <div className="flex items-center gap-2">
+                              <Input
+                                value={
+                                  editingEnginePaths[eng.id] ??
+                                  eng.effectiveCommand ??
+                                  eng.command
+                                }
+                                onChange={(e) =>
+                                  setEditingEnginePaths((prev) => ({
+                                    ...prev,
+                                    [eng.id]: e.target.value,
+                                  }))
+                                }
+                                placeholder="e.g. opencode or C:\path\to\opencode.exe"
+                                className="h-8 text-xs font-mono"
+                              />
+                              <Button
+                                size="sm"
+                                variant={
+                                  savedSuccessId === eng.id
+                                    ? "default"
+                                    : "outline"
+                                }
+                                onClick={() => void handleSaveEnginePath(eng.id)}
+                                disabled={savingEngineId === eng.id}
+                                className="h-8 text-xs shrink-0"
+                              >
+                                {savingEngineId === eng.id
+                                  ? "Saving..."
+                                  : savedSuccessId === eng.id
+                                  ? "Saved ✓"
+                                  : "Save Path"}
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+
+                        {eng.path && (
+                          <div className="text-[10px] text-muted-foreground font-mono truncate">
+                            Resolved: {eng.path}
+                          </div>
+                        )}
+                      </Card>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </TabsContent>
+
+              <TabsContent value="opencode-models" className="space-y-3">
+                {/* Status Bar */}
+                <Card className="p-3 border-border/60 bg-card/60 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                      <span className="font-semibold text-xs">
+                        OpenCode CLI Integration
+                      </span>
+                      <Badge variant="outline" className="text-[10px] font-mono">
+                        Python Subprocess
                       </Badge>
                     </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs gap-1.5"
+                      onClick={() => void handleRefreshOpencodeModels()}
+                      disabled={isLoadingOpencodeModels}
+                    >
+                      <RefreshCw
+                        className={`h-3 w-3 ${
+                          isLoadingOpencodeModels ? "animate-spin" : ""
+                        }`}
+                      />
+                      <span>{isLoadingOpencodeModels ? "Refreshing..." : "Refresh"}</span>
+                    </Button>
+                  </div>
+                  <div className="text-[11px] font-mono text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
+                    <span>
+                      CLI:{" "}
+                      <span className="text-foreground">
+                        {opencodeModelsData?.cliPath || "opencode"}
+                      </span>
+                    </span>
+                    <span>
+                      Discovered:{" "}
+                      <span className="text-primary font-bold">
+                        {opencodeModelsData?.total ?? 0} models
+                      </span>
+                    </span>
+                    {opencodeModelsData?.cachedAt && (
+                      <span>
+                        Cached:{" "}
+                        <span className="text-foreground">
+                          {new Date(opencodeModelsData.cachedAt).toLocaleTimeString()}
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                </Card>
 
-                    {eng.kind === "cli" && (
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-muted-foreground font-mono">
-                          Executable Command / File Path:
-                        </label>
-                        <div className="flex items-center gap-2">
-                          <Input
-                            value={
-                              editingEnginePaths[eng.id] ??
-                              eng.effectiveCommand ??
-                              eng.command
-                            }
-                            onChange={(e) =>
-                              setEditingEnginePaths((prev) => ({
-                                ...prev,
-                                [eng.id]: e.target.value,
-                              }))
-                            }
-                            placeholder="e.g. opencode or C:\path\to\opencode.exe"
-                            className="h-8 text-xs font-mono"
-                          />
-                          <Button
-                            size="sm"
-                            variant={
-                              savedSuccessId === eng.id ? "default" : "outline"
-                            }
-                            onClick={() => void handleSaveEnginePath(eng.id)}
-                            disabled={savingEngineId === eng.id}
-                            className="h-8 text-xs shrink-0"
-                          >
-                            {savingEngineId === eng.id
-                              ? "Saving..."
-                              : savedSuccessId === eng.id
-                              ? "Saved ✓"
-                              : "Save Path"}
-                          </Button>
+                {/* Project opencode.json Config Status */}
+                {opencodeModelsData?.projectConfig?.exists && (
+                  <Card className="p-3 border-border/60 bg-card/40 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold">
+                        Project Bindings (opencode.json)
+                      </span>
+                      <Badge variant="secondary" className="text-[10px]">
+                        9 Configured Agents
+                      </Badge>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="p-2 rounded border border-border/40 bg-background/50">
+                        <div className="text-[10px] text-muted-foreground">Default Primary Model</div>
+                        <div className="font-mono text-[11px] font-semibold text-primary truncate">
+                          {opencodeModelsData.projectConfig.default_model}
+                        </div>
+                        <div className="text-[10px] text-emerald-400 mt-0.5">
+                          {opencodeModelsData.projectConfig.default_model_available ? "✓ Verified Available" : "Unverified"}
                         </div>
                       </div>
-                    )}
-
-                    {eng.path && (
-                      <div className="text-[10px] text-muted-foreground font-mono truncate">
-                        Resolved: {eng.path}
+                      <div className="p-2 rounded border border-border/40 bg-background/50">
+                        <div className="text-[10px] text-muted-foreground">Default Small Model</div>
+                        <div className="font-mono text-[11px] font-semibold text-amber-400 truncate">
+                          {opencodeModelsData.projectConfig.small_model}
+                        </div>
+                        <div className="text-[10px] text-emerald-400 mt-0.5">
+                          {opencodeModelsData.projectConfig.small_model_available ? "✓ Verified Available" : "Unverified"}
+                        </div>
                       </div>
-                    )}
+                    </div>
                   </Card>
-                ))}
-              </div>
-            </ScrollArea>
+                )}
+
+                {/* Filters & Search */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                      <Input
+                        value={modelSearchQuery}
+                        onChange={(e) => setModelSearchQuery(e.target.value)}
+                        placeholder="Search models (e.g. gemini, bunny, flash, mimo)..."
+                        className="pl-8 h-8 text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Provider Pills */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedProviderFilter("all")}
+                      className={`text-[11px] px-2.5 py-1 rounded-md transition-colors ${
+                        selectedProviderFilter === "all"
+                          ? "bg-primary text-primary-foreground font-medium"
+                          : "bg-muted/50 hover:bg-muted text-muted-foreground"
+                      }`}
+                    >
+                      All ({opencodeModelsData?.total ?? 0})
+                    </button>
+                    {Object.entries(opencodeModelsData?.grouped ?? {}).map(([provider, list]) => (
+                      <button
+                        key={provider}
+                        type="button"
+                        onClick={() => setSelectedProviderFilter(provider)}
+                        className={`text-[11px] px-2.5 py-1 rounded-md uppercase font-mono transition-colors ${
+                          selectedProviderFilter === provider
+                            ? "bg-primary text-primary-foreground font-medium"
+                            : "bg-muted/50 hover:bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        {provider} ({list.length})
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Models List */}
+                <ScrollArea className="max-h-[36vh] pr-2">
+                  <div className="space-y-1.5 py-1">
+                    {(() => {
+                      const list = (opencodeModelsData?.models || []).filter((m) => {
+                        const matchesProv =
+                          selectedProviderFilter === "all" ||
+                          m.toLowerCase().startsWith(selectedProviderFilter.toLowerCase() + "/");
+                        const matchesQ =
+                          !modelSearchQuery.trim() ||
+                          m.toLowerCase().includes(modelSearchQuery.toLowerCase());
+                        return matchesProv && matchesQ;
+                      });
+
+                      if (list.length === 0) {
+                        return (
+                          <div className="text-center py-8 text-xs text-muted-foreground">
+                            No models match your search.
+                          </div>
+                        );
+                      }
+
+                      return list.map((m) => {
+                        const isPrimary = m === opencodeModelsData?.projectConfig?.default_model;
+                        const isSmall = m === opencodeModelsData?.projectConfig?.small_model;
+                        const isActive = m === activeAgent.model;
+
+                        return (
+                          <Card
+                            key={m}
+                            className="p-2.5 border-border/50 bg-card/60 flex items-center justify-between gap-2 hover:border-border transition-colors"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="font-mono text-xs truncate font-medium">
+                                {m}
+                              </span>
+                              {isPrimary && (
+                                <Badge variant="outline" className="text-[9px] border-primary text-primary h-4 shrink-0">
+                                  DEFAULT PRIMARY
+                                </Badge>
+                              )}
+                              {isSmall && (
+                                <Badge variant="outline" className="text-[9px] border-amber-500 text-amber-500 h-4 shrink-0">
+                                  SMALL
+                                </Badge>
+                              )}
+                              {isActive && (
+                                <Badge variant="success" className="text-[9px] h-4 shrink-0">
+                                  ACTIVE
+                                </Badge>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => handleCopyModel(m)}
+                                title="Copy model name"
+                              >
+                                {copiedModelName === m ? (
+                                  <Check className="h-3 w-3 text-emerald-400" />
+                                ) : (
+                                  <Copy className="h-3 w-3 text-muted-foreground" />
+                                )}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant={isActive ? "secondary" : "outline"}
+                                className="h-7 text-[11px] px-2.5"
+                                onClick={() => void handleSetAgentModel(activeAgent.id, m, false)}
+                                disabled={isActive}
+                                title={`Use for ${activeAgent.name}`}
+                              >
+                                {isActive ? "In Use" : "Select"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="default"
+                                className="h-7 text-[11px] px-2.5 bg-primary/90 hover:bg-primary"
+                                onClick={() => void handleSetAgentModel(activeAgent.id, m, true)}
+                                title="Set as default model across all agents and save to opencode.json"
+                              >
+                                Set for All
+                              </Button>
+                            </div>
+                          </Card>
+                        );
+                      });
+                    })()}
+                  </div>
+                </ScrollArea>
+              </TabsContent>
+            </Tabs>
 
             <DialogFooter>
               <Button onClick={() => setIsSettingsOpen(false)} className="text-xs">

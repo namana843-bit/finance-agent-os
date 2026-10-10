@@ -11,6 +11,8 @@ import type {
 import type { LLMProvider, LLMProviderOptions } from "../provider.js";
 import type { SpawnFn } from "../cli-driver.js";
 import { CliSessionManager, createCliSessionManager, CliSession } from "../cli-session.js";
+import type { CliAdapter, CliManager } from "../../cli/index.js";
+import { getDefaultCliManager } from "../../cli/index.js";
 
 export interface CliProviderOptions {
   id?: string;
@@ -22,6 +24,7 @@ export interface CliProviderOptions {
   timeoutMs?: number;
   spawnImpl?: SpawnFn;
   sessionManager?: CliSessionManager;
+  cliManager?: CliManager;
   botId?: string;
 }
 
@@ -149,6 +152,7 @@ export class CliProvider implements LLMProvider {
   private readonly isDefaultSpawn: boolean;
   private readonly sessionManager: CliSessionManager;
   private readonly botId: string;
+  private readonly cliManager: CliManager;
 
   constructor(opts: CliProviderOptions) {
     this.id = opts.id || `cli-${opts.command.replace(/[^a-zA-Z0-9]/g, "-")}`;
@@ -161,7 +165,14 @@ export class CliProvider implements LLMProvider {
     this.isDefaultSpawn = !opts.spawnImpl;
     this.spawnImpl = opts.spawnImpl ?? defaultSpawnImpl;
     this.botId = opts.botId ?? "default";
-    this.sessionManager = opts.sessionManager ?? createCliSessionManager();
+    this.cliManager = opts.cliManager ?? getDefaultCliManager();
+    this.sessionManager =
+      opts.sessionManager ?? createCliSessionManager({ cliManager: this.cliManager });
+  }
+
+  /** CLI adapter that owns this command, if one is registered. */
+  private get adapter(): CliAdapter | undefined {
+    return this.cliManager.findByExecutable(this.command);
   }
 
   supportsTools(): boolean { return true; }
@@ -215,13 +226,13 @@ export class CliProvider implements LLMProvider {
     }
 
     const prompt = this.buildPrompt(request.messages, request.tools, botId);
-    const sessionArgs = this.defaultArgs.map((arg) => arg.split("{model}").join(model));
-    const isOpencode = this.command.includes("opencode");
-    if (isOpencode) {
-      const runIndex = sessionArgs.indexOf("run");
-      const opencodeAgent = botId?.replace(/[^a-zA-Z0-9_-]/g, "-");
-      if (runIndex !== -1 && opencodeAgent && !sessionArgs.includes("--agent")) sessionArgs.splice(runIndex + 1, 0, "--agent", opencodeAgent, "--model", model);
-    }
+    // Legacy `{model}` template substitution first, then adapter-specific task
+    // flags (the OpenCode adapter inserts `--agent`/`--model` after `run`).
+    const templatedArgs = this.defaultArgs.map((arg) => arg.split("{model}").join(model));
+    const adapter = this.adapter;
+    const sessionArgs = adapter
+      ? adapter.decorateTaskArgs(templatedArgs, { model, agentId: botId })
+      : templatedArgs;
 
     let session: CliSession;
     try {
@@ -251,7 +262,7 @@ export class CliProvider implements LLMProvider {
       return;
     }
     if (!hasToolCall && completeText.trim().length === 0) {
-      yield { type: "error", messageId, error: "CLI engine returned empty response", timestamp: Date.now() };
+      yield { type: "error", messageId, error: "CLI engine returned an empty response. The model may currently be unreachable or offline.", timestamp: Date.now() };
       return;
     }
     yield { type: "message_complete", messageId, text: completeText.trim(), timestamp: Date.now() };
@@ -260,7 +271,12 @@ export class CliProvider implements LLMProvider {
   private buildPrompt(messages: ChatRequest["messages"], tools?: ChatRequest["tools"], agentId?: string): string {
     if (messages.length === 1 && messages[0]?.role === "user" && !agentId && (!tools || tools.length === 0)) return messages[0]?.content ?? "";
     const parts: string[] = [];
-    if (agentId) parts.push(`Active Finance Agent OS agent: ${agentId}. Follow only this agent's role and tool policy.`);
+    if (agentId) {
+      parts.push(
+        `Active Finance Agent OS agent: ${agentId}.\n` +
+        `STRICT SINGLE-AGENT POLICY: You are ONLY the ${agentId} agent. Handle this query completely by yourself. Do NOT delegate, do NOT dispatch tasks to other agents, and do NOT invoke other specialists.`
+      );
+    }
     for (const m of messages) {
       if (m.role === "system") parts.push(`System: ${m.content}`);
       else if (m.role === "user") parts.push(`User: ${m.content}`);

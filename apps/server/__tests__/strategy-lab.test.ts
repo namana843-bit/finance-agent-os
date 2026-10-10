@@ -47,7 +47,7 @@ function choppyCandles(n: number, center = 50000): BacktestCandle[] {
 function makeLab(opts: Partial<ConstructorParameters<typeof StrategyLab>[0]> = {}): { lab: StrategyLab; bus: TypedEventBus; registry: StrategyRegistry } {
   const bus = opts.bus ?? new TypedEventBus();
   const registry = opts.strategyRegistry ?? (() => { const r = new StrategyRegistry(); registerDefaultStrategies(r); return r; })();
-  const lab = new StrategyLab({ bus, strategyRegistry: registry, ...opts, bus, strategyRegistry: registry });
+  const lab = new StrategyLab({ bus, strategyRegistry: registry, ...opts });
   return { lab, bus, registry };
 }
 

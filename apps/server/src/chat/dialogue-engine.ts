@@ -204,34 +204,73 @@ export class DialogueEngine {
     const trimmed = content.trim();
     const lower = trimmed.toLowerCase();
 
-    // Exclusive DM routing: a dm-<agent> channel targets ONLY that agent.
+    // Exclusive DM routing: a dm-<agent> channel or direct agentId targets ONLY that agent.
     // Never fan out to the supervisor pipeline or other agents from a DM.
-    const dmTarget = channelId.startsWith("dm-") ? channelId.slice(3) : null;
-    const isDmToNonSupervisor = dmTarget !== null && dmTarget !== "supervisor";
+    const dmTarget = channelId.startsWith("dm-")
+      ? channelId.slice(3)
+      : this.getAgentProfile(channelId)
+      ? channelId
+      : null;
 
-    // Route message based on intent or channel
-    if (!isDmToNonSupervisor && (channelId === "trading-floor" || channelId === "dm-supervisor" || lower.startsWith("analyze") || lower.startsWith("trade") || lower.startsWith("plan"))) {
-      // Post Supervisor acknowledgement
+    if (dmTarget) {
       setTimeout(() => {
-        const sup = this.getAgentProfile("supervisor");
+        const profile = this.getAgentProfile(dmTarget);
+        let replyContent = `I am actively monitoring financial streams according to my persona and strategy parameters. Awaiting specific trading trigger or signal.`;
+
+        if (dmTarget === "supervisor") {
+          replyContent = `Task received: "${trimmed}". Initiating multi-agent execution pipeline...`;
+          this.bus.publish({
+            type: "supervisor.task",
+            data: { task: trimmed, channelId },
+            source: "dialogue-engine",
+          });
+        } else if (dmTarget === "quant") {
+          replyContent = `Running quantitative scans for BTCUSDT and ETHUSDT. Calculating RSI(14), MACD(12,26,9) and EMA crossovers...`;
+        } else if (dmTarget === "risk") {
+          replyContent = `Portfolio Risk Assessment: Total Portfolio Drawdown is at 0.00% (Limit: 20.00%). Max permitted position size: $15,000 USDT. All systems nominal.`;
+        } else if (dmTarget === "portfolio") {
+          replyContent = `Portfolio status: Total equity $100,000.00 USDT. Cash available: $100,000.00 USDT. Open positions: 0. Allocation: 100% Cash.`;
+        } else if (dmTarget === "market") {
+          replyContent = `Market Data Feed: Binance WebSockets active (btcusdt@trade, ethusdt@trade). Tick latency ~12ms.`;
+        } else if (dmTarget === "execution") {
+          replyContent = `Execution Gateway: Connected to Paper Brokerage. Execution route active and awaiting approved orders.`;
+        }
+
         this.postMessage({
           channelId,
-          senderId: sup.id,
-          senderName: sup.name,
-          senderAvatar: sup.avatar,
-          senderRole: sup.role,
-          senderColor: sup.color,
-          content: `Task received: "${trimmed}". Initiating multi-agent execution pipeline...`,
-        });
-
-        // Publish supervisor task to EventBus to trigger backend SupervisorAgent
-        this.bus.publish({
-          type: "supervisor.task",
-          data: { task: trimmed, channelId },
-          source: "dialogue-engine",
+          senderId: profile.id,
+          senderName: profile.name,
+          senderAvatar: profile.avatar,
+          senderRole: profile.role,
+          senderColor: profile.color,
+          content: replyContent,
         });
       }, 300);
-    } else if (channelId === "dm-quant" || lower.includes("signal") || lower.includes("rsi") || lower.includes("macd")) {
+      return userMsg;
+    }
+
+    // Public / Shared channel routing (ONLY for trading-floor)
+    if (channelId === "trading-floor") {
+      if (lower.startsWith("analyze") || lower.startsWith("trade") || lower.startsWith("plan")) {
+        setTimeout(() => {
+          const sup = this.getAgentProfile("supervisor");
+          this.postMessage({
+            channelId,
+            senderId: sup.id,
+            senderName: sup.name,
+            senderAvatar: sup.avatar,
+            senderRole: sup.role,
+            senderColor: sup.color,
+            content: `Task received: "${trimmed}". Initiating multi-agent execution pipeline...`,
+          });
+
+          this.bus.publish({
+            type: "supervisor.task",
+            data: { task: trimmed, channelId },
+            source: "dialogue-engine",
+          });
+        }, 300);
+      } else if (lower.includes("signal") || lower.includes("rsi") || lower.includes("macd")) {
       setTimeout(() => {
         const quant = this.getAgentProfile("quant");
         this.postMessage({
@@ -250,7 +289,7 @@ export class DialogueEngine {
           source: "dialogue-engine",
         });
       }, 300);
-    } else if (channelId === "dm-risk" || lower.includes("risk") || lower.includes("var") || lower.includes("drawdown")) {
+    } else if (lower.includes("risk") || lower.includes("var") || lower.includes("drawdown")) {
       setTimeout(() => {
         const risk = this.getAgentProfile("risk");
         this.postMessage({
@@ -263,7 +302,7 @@ export class DialogueEngine {
           content: `Portfolio Risk Assessment: Total Portfolio Drawdown is at 0.00% (Limit: 20.00%). Max permitted position size: $15,000 USDT. All systems nominal.`,
         });
       }, 300);
-    } else if (channelId === "dm-portfolio" || lower.includes("portfolio") || lower.includes("balance") || lower.includes("pnl")) {
+    } else if (lower.includes("portfolio") || lower.includes("balance") || lower.includes("pnl")) {
       setTimeout(() => {
         const pf = this.getAgentProfile("portfolio");
         this.postMessage({
@@ -276,7 +315,7 @@ export class DialogueEngine {
           content: `Portfolio status: Total equity $100,000.00 USDT. Cash available: $100,000.00 USDT. Open positions: 0. Allocation: 100% Cash.`,
         });
       }, 300);
-    } else if (channelId === "dm-market" || lower.includes("price") || lower.includes("ticker")) {
+    } else if (lower.includes("price") || lower.includes("ticker")) {
       setTimeout(() => {
         const mkt = this.getAgentProfile("market");
         this.postMessage({
@@ -289,22 +328,7 @@ export class DialogueEngine {
           content: `Market Data Feed: Binance WebSockets active (btcusdt@trade, ethusdt@trade). Tick latency ~12ms.`,
         });
       }, 300);
-    } else if (channelId.startsWith("dm-")) {
-      const customAgentId = channelId.replace("dm-", "");
-      // DM exclusivity: only the addressed agent replies. No cross-agent
-      // chatter is triggered from here (see handleEvent guards).
-      const profile = this.getAgentProfile(customAgentId);
-      setTimeout(() => {
-        this.postMessage({
-          channelId,
-          senderId: profile.id,
-          senderName: profile.name,
-          senderAvatar: profile.avatar,
-          senderRole: profile.role,
-          senderColor: profile.color,
-          content: `I am actively monitoring financial streams according to my persona and strategy parameters. Awaiting specific trading trigger or signal.`,
-        });
-      }, 300);
+    }
     }
 
     return userMsg;

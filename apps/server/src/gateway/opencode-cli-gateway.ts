@@ -1,16 +1,31 @@
 // ============================================================================
 // Finance Agent OS — OpenCode CLI Path Gateway
-// Phase: CLI path resolution + permissioned execution gateway for `opencode`
+// Phase: permissioned execution gateway for `opencode`.
 // Agents / Desktop / API must route through this gateway — never spawn directly.
-// Cross-platform: Windows (opencode.cmd / .ps1 / bin/opencode.exe) / Linux / Docker
+//
+// Since the CLI adapter refactor this gateway contains NO OpenCode path/args/
+// protocol knowledge: discovery, version probing and the command allowlist all
+// come from the OpenCode adapter layer (cli/adapters/opencode-paths.ts). The
+// security policy (allowlist + metachar rejection + no-shell spawning) lives
+// here and is unchanged.
 // ============================================================================
 
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import * as path from "node:path";
-import * as os from "node:os";
 import type { TypedEventBus } from "@finance/core";
+import {
+  OPENCODE_ALLOWED_COMMANDS,
+  opencodeEnvCliPath,
+  opencodeNeedsShell as needsShell,
+  probeOpencodeVersion,
+  resolveOpencodeCliPath,
+} from "../cli/adapters/opencode-paths.js";
+import type { OpencodeCliInfo } from "../cli/adapters/opencode-paths.js";
+
+// Backward-compatible re-exports (legacy import paths keep working).
+export { resolveOpencodeCliPath };
+export type { OpencodeCliInfo };
 
 function execFileAsync(
   file: string,
@@ -29,17 +44,6 @@ function execFileAsync(
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-export interface OpencodeCliInfo {
-  cliPath: string | null;
-  resolvedPath: string | null;
-  exists: boolean;
-  version: string | null;
-  platform: string;
-  candidates: string[];
-  envOverride: string | null;
-  timestamp: number;
-}
 
 export interface OpencodeGatewayConfig {
   enabled: boolean;
@@ -76,115 +80,6 @@ export interface OpencodeGatewayStats {
   allowedCommands: string[];
 }
 
-// ---------------------------------------------------------------------------
-// Path resolution — cross-platform
-// ---------------------------------------------------------------------------
-
-function candidatePaths(): string[] {
-  const home = os.homedir();
-  const candidates: string[] = [];
-  const pnpmHome = process.env.PNPM_HOME || path.join(home, "AppData", "Local", "pnpm");
-  // Prefer native .exe over .cmd wrapper on Windows for execFile without shell
-  candidates.push(
-    path.join(home, "AppData", "Roaming", "npm", "node_modules", "opencode-ai", "bin", "opencode.exe"),
-    path.join(home, "AppData", "Roaming", "npm", "opencode.cmd"),
-    path.join(home, "AppData", "Roaming", "npm", "opencode"),
-    path.join(home, "AppData", "Roaming", "npm", "opencode.ps1"),
-    path.join(pnpmHome, "opencode.exe"),
-    path.join(pnpmHome, "opencode.cmd"),
-    path.join(home, ".opencode", "bin", "opencode.exe"),
-    path.join(home, ".opencode", "bin", "opencode.cmd"),
-    path.join(process.cwd(), "node_modules", "opencode-ai", "bin", "opencode.exe"),
-    path.join(process.cwd(), "node_modules", ".bin", "opencode"),
-    path.join(process.cwd(), "node_modules", ".bin", "opencode.cmd"),
-  );
-  // workspace-local
-  candidates.push(
-    path.resolve("node_modules/.bin/opencode"),
-    path.resolve("node_modules/.bin/opencode.cmd"),
-  );
-  // Unix global
-  candidates.push("/usr/local/bin/opencode", "/usr/bin/opencode", "/opt/homebrew/bin/opencode");
-  // where / which fallback will be probed dynamically, but keep PATH lookup
-  return candidates;
-}
-
-function envCliPath(): string | null {
-  return process.env.OPENCODE_CLI_PATH?.trim() || null;
-}
-
-export function resolveOpencodeCliPath(override?: string): OpencodeCliInfo {
-  const envOverride = override ?? envCliPath();
-  const candidates = candidatePaths();
-  const allCandidates = envOverride ? [envOverride, ...candidates] : candidates;
-  let resolved: string | null = null;
-  for (const p of allCandidates) {
-    if (p && existsSync(p)) {
-      resolved = p;
-      break;
-    }
-  }
-  // If no file exists, still return first candidate that would be on PATH
-  // The exec fallback will try `opencode` via PATH
-  const cliPath = resolved ?? (envOverride || candidates[0]!);
-  return {
-    cliPath,
-    resolvedPath: resolved,
-    exists: !!resolved,
-    version: null,
-    platform: os.platform(),
-    candidates: allCandidates,
-    envOverride,
-    timestamp: Date.now(),
-  };
-}
-
-function needsShell(cliPath: string): boolean {
-  return cliPath.endsWith(".cmd") || cliPath.endsWith(".ps1") || cliPath.endsWith(".bat");
-}
-
-async function probeVersion(cliPath: string, timeoutMs: number): Promise<string | null> {
-  const shell = needsShell(cliPath);
-  try {
-    const { stdout } = await execFileAsync(cliPath, ["--version"], { timeout: timeoutMs, windowsHide: true, shell: shell as never });
-    return stdout.trim().split("\n")[0] ?? null;
-  } catch {
-    try {
-      const { stdout } = await execFileAsync("opencode", ["--version"], { timeout: timeoutMs, windowsHide: true, shell: shell as never });
-      return stdout.trim().split("\n")[0] ?? null;
-    } catch {
-      try {
-        const { stdout } = await execFileAsync("npx", ["opencode", "--version"], { timeout: timeoutMs, windowsHide: true, shell: true as never });
-        return stdout.trim().split("\n")[0] ?? null;
-      } catch {
-        return null;
-      }
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Gateway
-// ---------------------------------------------------------------------------
-
-const DEFAULT_ALLOWED = [
-  "--help",
-  "--version",
-  "-v",
-  "-h",
-  "completion",
-  "models",
-  "providers",
-  "stats",
-  "export",
-  "session",
-  "agent",
-  "run",
-  "serve",
-  "web",
-  "debug",
-];
-
 export class OpencodeCliGateway {
   private config: OpencodeGatewayConfig;
   private totalRuns = 0;
@@ -200,8 +95,8 @@ export class OpencodeCliGateway {
   ) {
     this.config = {
       enabled: process.env.OPENCODE_GATEWAY_ENABLED !== "false",
-      cliPathOverride: envCliPath() ?? undefined,
-      allowedCommands: DEFAULT_ALLOWED,
+      cliPathOverride: opencodeEnvCliPath() ?? undefined,
+      allowedCommands: [...OPENCODE_ALLOWED_COMMANDS],
       maxArgs: 20,
       timeoutMs: 30_000,
       ...config,
@@ -218,7 +113,7 @@ export class OpencodeCliGateway {
       return this.cliInfoCache;
     }
     const info = resolveOpencodeCliPath(this.config.cliPathOverride);
-    if (info.cliPath) info.version = await probeVersion(info.cliPath, 5000);
+    if (info.cliPath) info.version = await probeOpencodeVersion(info.cliPath, 5000);
     // if PATH fallback worked, mark exists true when version found
     if (!info.exists && info.version) {
       info.exists = true;

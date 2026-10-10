@@ -27,9 +27,24 @@ export interface Plan {
 export interface ValidationResult { valid: boolean; missingAgents: string[]; missingTools: string[]; reasons: string[]; }
 
 const SYMBOL_MAP: Record<string, string> = { BTC: "BTCUSDT", ETH: "ETHUSDT", BNB: "BNBUSDT", SOL: "SOLUSDT", EURUSD: "EURUSD", AAPL: "AAPL", SPY: "SPY" };
-const KNOWN_SYMBOLS = new Set(["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "BTC", "ETH", "BNB", "SOL", "EURUSD", "AAPL", "SPY"]);
-function normalizeToken(raw: string): string | null { const t = raw.trim().toUpperCase().replace(/[/:-]/g, ""); if (!t) return null; if (KNOWN_SYMBOLS.has(t)) return SYMBOL_MAP[t] ?? t; if (/^[A-Z]{2,5}$/.test(t) && SYMBOL_MAP[t]) return SYMBOL_MAP[t]!; if (/^[A-Z]{3,10}USDT$/.test(t)) return t; return null; }
-export function extractSymbol(task: string): string | null { if (!task || typeof task !== "string") return null; const tokens = task.toUpperCase().split(/[\s,;|]+/).map((s) => s.replace(/^[^\w]+|[^\w]+$/g, "")).filter(Boolean); for (const tok of tokens) { const norm = normalizeToken(tok); if (norm && norm.endsWith("USDT")) return norm; } for (const tok of tokens) { const norm = normalizeToken(tok); if (norm) return norm; } const m = task.toUpperCase().match(/\b([A-Z]{2,6}USDT|[A-Z]{2,5})\b/); return m?.[1] ? normalizeToken(m[1]!) : null; }
+const KNOWN_SYMBOLS = new Set([...Object.keys(SYMBOL_MAP), ...Object.values(SYMBOL_MAP)]);
+function normalizeToken(raw: string): string | null {
+  const t = raw.trim().toUpperCase().replace(/[/:-]/g, "");
+  if (!t) return null;
+  if (KNOWN_SYMBOLS.has(t)) return SYMBOL_MAP[t] ?? t;
+  if (/^[A-Z]{3,10}USDT$/.test(t)) return t;
+  return null;
+}
+export function extractSymbol(task: string): string | null {
+  if (!task || typeof task !== "string") return null;
+  const tokens = task.toUpperCase().split(/[\s,;|]+/).map((s) => s.replace(/^[^\w]+|[^\w]+$/g, "")).filter(Boolean);
+  const normalized = tokens.map(normalizeToken).filter((tok): tok is string => Boolean(tok));
+  const usdtMatch = normalized.find((tok) => tok.endsWith("USDT"));
+  if (usdtMatch) return usdtMatch;
+  if (normalized.length > 0) return normalized[0]!;
+  const m = task.toUpperCase().match(/\b([A-Z]{2,6}USDT|[A-Z]{2,5})\b/);
+  return m?.[1] ? normalizeToken(m[1]!) : null;
+}
 export function classifyTask(task: string): TaskKind { const lower = (task ?? "").toLowerCase(); if (/\bbacktest\b|\bback test\b|\bbt:/.test(lower)) return "backtest"; if (/\bportfolio\b|\bbalance\b|\bpositions?\b|\bpnl\b|\bp&l\b|\ballocation\b/.test(lower)) return "portfolio"; if (/\btrade\b|\bbuy\b|\bsell\b|\border\b|\bexecute\b|\benter\b|\bexit\b/.test(lower)) return "trade"; if (/\banalyze\b|\banalysis\b|\banalyse\b|\bresearch\b|\binspect\b|\bevaluate\b|\bsignal\b/.test(lower)) return "analyze"; return "generic"; }
 function hashSymbol(symbol: string): number { let h = 0; for (let i = 0; i < symbol.length; i++) h = (h * 31 + symbol.charCodeAt(i)) >>> 0; return h; }
 function syntheticPrices(symbol: string, n = 30): number[] { const seed = hashSymbol(symbol || "BTCUSDT"); let p = 50000 + (seed % 20000); const prices: number[] = []; for (let i = 0; i < n; i++) { const step = ((seed * 9301 + 49297 * (i + 1)) % 233280) / 233280 * 100 - 50; p = Math.max(100, p + step); prices.push(Math.round(p * 100) / 100); } return prices; }
