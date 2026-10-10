@@ -31,7 +31,7 @@ export type {
   CliProcessHandlers,
   CliProcessResult,
 } from "./process-runner.js";
-export { CliAdapterBase, defaultOneShotArgs } from "./adapter-base.js";
+export { CliAdapterBase, defaultOneShotArgs, requiresShellForExecutable } from "./adapter-base.js";
 export { CliManager, CliManagedSession } from "./cli-manager.js";
 export type { CliManagerOptions } from "./cli-manager.js";
 export { JsonLineTransport } from "./protocol-transport.js";

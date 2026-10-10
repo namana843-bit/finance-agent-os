@@ -1,5 +1,5 @@
-import { execFile } from "node:child_process";
 import type { LlmCompletion, LlmDriver } from "./types.js";
+import { runCliProcess } from "../cli/process-runner.js";
 
 export type SpawnFn = (
   cmd: string,
@@ -15,36 +15,34 @@ export interface CliDriverOptions {
   spawnImpl?: SpawnFn;
 }
 
-// NOTE: the default spawn implementation deliberately uses execFile WITHOUT
-// `shell: true`. The CLI command path comes from user configuration, and
-// routing it through a shell would allow shell-metacharacter injection
-// (e.g. a command like `foo; rm -rf ~` would execute the trailing payload).
-// execFile invokes the binary directly with an argv array, so no shell
-// parsing or expansion ever happens.
+// NOTE: the default spawn implementation delegates to the shared CLI process
+// runner (`cli/process-runner.ts`) with `shell: false`. The CLI command path
+// comes from user configuration, and routing it through a shell would allow
+// shell-metacharacter injection (e.g. `foo; rm -rf ~` would execute the
+// trailing payload). The runner invokes the binary directly with an argv
+// array, so no shell parsing or expansion ever happens.
 export function defaultSpawnImpl(
   cmd: string,
   args: string[],
   opts: { timeoutMs: number; cwd?: string; env?: Record<string, string> },
 ): Promise<{ stdout: string; stderr: string; code: number }> {
-  return new Promise((resolve, reject) => {
-    const env = opts.env ? { ...process.env, ...opts.env } : undefined;
-    execFile(cmd, args, { timeout: opts.timeoutMs, cwd: opts.cwd, env }, (error, stdout, stderr) => {
-      const out = String(stdout ?? "");
-      const err = String(stderr ?? "");
-      if (error) {
-        if (error.killed) {
-          reject(error);
-          return;
-        }
-        if (typeof error.code === "number") {
-          resolve({ stdout: out, stderr: err, code: error.code });
-          return;
-        }
-        reject(error);
-        return;
-      }
-      resolve({ stdout: out, stderr: err, code: 0 });
-    });
+  return runCliProcess(
+    { command: cmd, args, cwd: opts.cwd, env: opts.env, timeoutMs: opts.timeoutMs },
+  ).then((result) => {
+    if (result.spawnError !== undefined) {
+      throw new Error(result.spawnError);
+    }
+    if (result.timedOut) {
+      const err = new Error(`CLI process killed (timeout ${opts.timeoutMs}ms)`);
+      (err as { killed?: boolean }).killed = true;
+      throw err;
+    }
+    if (result.cancelled) {
+      const err = new Error("CLI process cancelled");
+      (err as { killed?: boolean }).killed = true;
+      throw err;
+    }
+    return { stdout: result.stdout, stderr: result.stderr, code: result.exitCode ?? 1 };
   });
 }
 

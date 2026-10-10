@@ -55,4 +55,23 @@ describe("phase-a adapters", () => {
     expect(typeof res.ok).toBe("boolean");
     expect(res.checkedAt).toBeGreaterThan(0);
   });
+
+  it("one-shot session streams via the shared runner (real node spawn)", async () => {
+    const { CliSessionManager } = await import("../src/llm/cli-session.js");
+    const manager = new CliSessionManager({ cliManager: createDefaultCliManager() });
+    try {
+      const session = await manager.getOrCreateSession("test-bot", "node", [
+        "-e",
+        "process.stdout.write('out-{prompt}')",
+      ]);
+      let text = "";
+      for await (const chunk of session.sendPrompt("X")) {
+        if (chunk.type === "delta" && chunk.content) text += chunk.content;
+        if (chunk.type === "error") throw new Error(chunk.error);
+      }
+      expect(text).toContain("out-X");
+    } finally {
+      await manager.terminateAll();
+    }
+  });
 });
