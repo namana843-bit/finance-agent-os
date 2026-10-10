@@ -91,7 +91,7 @@ export class BacktestEngine {
   constructor(params?: BacktestEngineConfig) {
     if (params?.initialCapital) this.initialCapital = params.initialCapital;
     if (params?.riskPerTradePct) this.riskPerTradePct = params.riskPerTradePct;
-    this.executionMode = params?.executionMode ?? "current_bar_close";
+    this.executionMode = params?.executionMode ?? "next_bar_open";
 
     // Map feeRate and slippage to simulator config
     const slippageBps = params?.slippageBps ?? (params?.slippage ? params.slippage * 10_000 : DEFAULT_EXECUTION_CONFIG.slippageBps);
@@ -201,7 +201,9 @@ export class BacktestEngine {
 
       // 2. Strict Zero Look-ahead Strategy Evaluation
       // The strategy is passed only historical window up to current index i
-      const window = candles.slice(Math.max(0, i - lookback), i + 1).map((c) => c.close);
+      // Exclude the current bar close: the strategy must not see the price it
+      // executes at (otherwise current_bar_close mode has look-ahead bias).
+      const window = candles.slice(Math.max(0, i - lookback), i).map((c) => c.close);
       const result: StrategyResult = strategy.calculate(window);
 
       // 3. Signal handling & order generation

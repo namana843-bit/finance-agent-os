@@ -32,13 +32,17 @@ export class TradeEngine {
   private tradesByOrder = new Map<string, string>(); // orderId -> tradeId
   private openTradesBySymbol = new Map<string, Trade[]>();
   private processedFills = new Set<string>(); // dedup fillId
+  private fillSeq = 0;
 
   constructor(private bus: TypedEventBus) {
     // Auto-create/update trades from canonical order fills
     bus.subscribeTo("order.fill_applied", (event) => {
       const d = event.data as { orderId?: string; clientOrderId?: string; symbol?: string; side?: "buy"|"sell"; quantity?: number; price?: number; fee?: number; correlationId?: string; version?: number; timestamp?: number };
       if (d?.orderId && d.symbol && d.side && typeof d.quantity === "number" && typeof d.price === "number") {
-        const fillId = `${d.orderId}:${d.quantity}:${d.price}:${d.timestamp}`;
+        const fillId =
+          d.version !== undefined
+            ? `${d.orderId}:v${d.version}`
+            : `${d.orderId}:${d.quantity}:${d.price}:${d.fee ?? "nofee"}:${d.timestamp ?? "nots"}:${d.correlationId ?? "nocorr"}:${this.fillSeq++}`;
         if (this.processedFills.has(fillId)) return;
         this.processedFills.add(fillId);
         this.handleFill(d as Required<typeof d>);
