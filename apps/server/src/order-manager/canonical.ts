@@ -21,7 +21,7 @@ export const VALID_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   CREATED: ["PENDING", "CANCELLED", "REJECTED", "FAILED"],
   PENDING: ["SUBMITTED", "CANCELLED", "REJECTED", "FAILED"],
   SUBMITTED: ["PARTIALLY_FILLED", "FILLED", "CANCELLED", "REJECTED", "FAILED"],
-  PARTIALLY_FILLED: ["PARTIALLY_FILLED", "FILLED", "CANCELLED", "FAILED"],
+  PARTIALLY_FILLED: ["PARTIALLY_FILLED", "FILLED", "CANCELLED", "REJECTED", "FAILED"],
   FILLED: [],
   CANCELLED: [],
   REJECTED: [],
@@ -97,5 +97,5 @@ export function isTerminal(status: OrderStatus): boolean {
 }
 
 export function isOpen(status: OrderStatus): boolean {
-  return status === "CREATED" || status === "PENDING" || status === "SUBMITTED" || status === "PARTIALLY_FILLED";
+  return status === "CREATED" || status === "PENDING" || status === "SUBMITTED" || status === "PARTIALLY_FILLED" || status === "FAILED";
 }

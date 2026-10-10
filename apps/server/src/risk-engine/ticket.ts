@@ -4,7 +4,7 @@
 // Absolute rule: No order reaches the broker without verified Risk approval.
 // ============================================================================
 
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 export interface RiskApprovalTicket {
   ticketId: string;
@@ -34,8 +34,16 @@ export interface TicketVerificationResult {
   reason?: string;
 }
 
-// Secret for signing tickets — in production defaults to a generated random key or env
-const RISK_SIGNING_SECRET = process.env.RISK_SIGNING_SECRET || "finance-agent-os-risk-secret-key-2026";
+// Secret for signing tickets — must be set via env in production; dev fallback only.
+function getRiskSigningSecret(): string {
+  const s = process.env.RISK_SIGNING_SECRET;
+  if (s && s.length >= 16) return s;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("RISK_SIGNING_SECRET is required in production (min 16 chars)");
+  }
+  return "finance-agent-os-risk-secret-key-2026";
+}
+const RISK_SIGNING_SECRET = getRiskSigningSecret();
 const DEFAULT_TICKET_TTL_MS = 30_000; // 30 seconds
 
 // Anti-replay cache: tickets can only be redeemed once
@@ -162,7 +170,9 @@ export function verifyRiskTicket(
     opts?.secret,
   );
 
-  if (ticket.signature !== expectedSig) {
+  const a = Buffer.from(ticket.signature, "utf8");
+  const b = Buffer.from(expectedSig, "utf8");
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
     return { valid: false, reason: "Cryptographic signature mismatch on risk approval ticket" };
   }
 

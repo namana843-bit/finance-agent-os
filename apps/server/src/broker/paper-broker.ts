@@ -118,6 +118,7 @@ export class PaperBroker {
       correlationId?: string;
       idempotencyKey?: string;
       riskApprovalTicket?: RiskApprovalTicket;
+      /** @deprecated ignored — risk gate cannot be bypassed */
       bypassRiskGate?: boolean;
     },
   ): Promise<PaperOrder> {
@@ -149,8 +150,8 @@ export class PaperBroker {
       return this.rejectOrder(sym, side, quantity, type, "Invalid order type: must be 'market' or 'limit'");
     }
 
-    // Phase 4: Strict Risk Gate enforcement at broker boundary
-    if (this.config.requireRiskApproval && !opts?.bypassRiskGate) {
+    // Phase 4: Strict Risk Gate enforcement at broker boundary (cannot be bypassed)
+    if (this.config.requireRiskApproval) {
       const ticket = opts?.riskApprovalTicket;
       if (!ticket) {
         this.bus.publish({
