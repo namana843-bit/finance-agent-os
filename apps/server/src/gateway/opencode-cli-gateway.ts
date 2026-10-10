@@ -119,6 +119,23 @@ export class OpencodeCliGateway {
       info.exists = true;
       info.resolvedPath = info.cliPath;
     }
+    // PATH fallback: sync candidates miss shims on PATH (e.g. different
+    // APPDATA in service env). Try async resolver (`where`/`which` + PATH
+    // scan) before giving up to `npx`.
+    if (!info.exists && !info.version) {
+      try {
+        const { autoResolveCliPath } = await import("../cli/resolver.js");
+        const viaPath = await autoResolveCliPath("opencode");
+        if (viaPath) {
+          info.cliPath = viaPath;
+          info.resolvedPath = viaPath;
+          info.exists = true;
+          info.version = await probeOpencodeVersion(viaPath, 5000);
+        }
+      } catch {
+        // ignore — npx fallback in run() still applies
+      }
+    }
     this.cliInfoCache = info;
     this.cliInfoCacheAt = now;
     return info;
@@ -169,26 +186,75 @@ export class OpencodeCliGateway {
     if (!this.config.enabled) {
       return { allowed: false, reason: "OPENCODE_GATEWAY_ENABLED=false" };
     }
-    const cmd = (command ?? args?.[0] ?? "").trim();
-    // Bare `--version` / `--help` without subcommand
-    const first = cmd || args?.[0] || "";
+    // Normalize: prefer explicit args; if only a command string was given,
+    // treat the first token as the subcommand and the remainder as a single
+    // free-text prompt (do NOT split the prompt on whitespace).
+    let argList = args ?? [];
+    let cmdToken = (command ?? "").trim();
+    if (argList.length === 0 && cmdToken) {
+      const tokens = cmdToken.split(/\s+/).filter(Boolean);
+      const first = tokens[0] ?? "";
+      const rest = tokens.slice(1).join(" ");
+      argList = rest ? [first, rest] : [first];
+      cmdToken = first;
+    }
+    const first = cmdToken || argList[0] || "";
     if (!first) {
       return { allowed: false, reason: "command is required" };
     }
-    // Block shell metachars — extended set
-    const joined = [command, ...(args ?? [])].join(" ");
-    if (/[;&|`$><\\(){}\[\]!%*?~\n\r]/.test(joined)) {
-      return { allowed: false, reason: "shell metacharacters not allowed" };
-    }
-    if ((args?.length ?? 0) > this.config.maxArgs) {
+    if ((argList.length ?? 0) > this.config.maxArgs) {
       return { allowed: false, reason: `too many args (max ${this.config.maxArgs})` };
     }
-    const safeArgRe = /^[a-zA-Z0-9._\-/:@=+,]+$/;
-    for (const a of args ?? []) {
-      if (a.startsWith("--")) continue;
-      if (a.startsWith("-") && a.length <= 8 && safeArgRe.test(a)) continue;
-      if (!safeArgRe.test(a) && !this.config.allowedCommands.includes(a)) {
-        return { allowed: false, reason: "arg '" + a + "' contains illegal characters or not in allowlist" };
+    const isRun = first === "run" || argList[0] === "run";
+    // For `run`, everything after flags/options is free-text prompt: only
+    // block shell-dangerous chars (&;|`$<>\n\r), allow ?!.,:%* etc.
+    // For other subcommands keep the strict set.
+    const strictRe = /[;&|`$><\\(){}\[\]!%*?~\n\r]/;
+    const promptRe = /[&;|`$<>\n\r]/;
+    if (isRun) {
+      const runIdx = argList[0] === "run" ? 0 : -1;
+      // prompt starts at first non-flag token after `run`
+      let promptIdx = argList.length;
+      for (let i = runIdx + 1; i < argList.length; i++) {
+        const t = argList[i]!;
+        if (t.startsWith("-")) continue;
+        // `--agent <name>` / `--model <m>` / `--attach <url>` take a value
+        const prev = argList[i - 1];
+        if (prev === "--agent" || prev === "--model" || prev === "--attach" || prev === "--dir" || prev === "--session" || prev === "--command" || prev === "--title" || prev === "--format") continue;
+        promptIdx = i;
+        break;
+      }
+      const prefix = argList.slice(0, promptIdx).join(" ");
+      if (strictRe.test(prefix)) {
+        return { allowed: false, reason: "shell metacharacters not allowed" };
+      }
+      const safeArgRe = /^[a-zA-Z0-9._\-/:@=+,]+$/;
+      for (const a of argList.slice(0, promptIdx)) {
+        if (a.startsWith("--")) continue;
+        if (a === "run") continue;
+        if (a.startsWith("-") && a.length <= 12 && safeArgRe.test(a)) continue;
+        if (!safeArgRe.test(a) && !this.config.allowedCommands.includes(a)) {
+          // allow flag values (agent names, urls, models) with a looser check
+          if (/^[a-zA-Z0-9._\-/:@=+,]+$/.test(a) || /^https?:\/\/\S+$/.test(a)) continue;
+          return { allowed: false, reason: "arg '" + a + "' contains illegal characters or not in allowlist" };
+        }
+      }
+      const prompt = argList.slice(promptIdx).join(" ");
+      if (promptRe.test(command ?? prompt)) {
+        return { allowed: false, reason: "shell metacharacters not allowed in prompt" };
+      }
+    } else {
+      const joined = [cmdToken, ...argList].join(" ");
+      if (strictRe.test(joined)) {
+        return { allowed: false, reason: "shell metacharacters not allowed" };
+      }
+      const safeArgRe = /^[a-zA-Z0-9._\-/:@=+,]+$/;
+      for (const a of argList ?? []) {
+        if (a.startsWith("--")) continue;
+        if (a.startsWith("-") && a.length <= 8 && safeArgRe.test(a)) continue;
+        if (!safeArgRe.test(a) && !this.config.allowedCommands.includes(a)) {
+          return { allowed: false, reason: "arg '" + a + "' contains illegal characters or not in allowlist" };
+        }
       }
     }
     // Allow if first token is in allowlist or starts with --
@@ -207,7 +273,15 @@ export class OpencodeCliGateway {
   async run(req: OpencodeRunRequest): Promise<OpencodeRunResult> {
     this.totalRuns++;
     const started = Date.now();
-    const args = req.args ?? (req.command ? req.command.trim().split(/\s+/).filter(Boolean) : []);
+    // Same normalization as checkAllowed: bare command string keeps the
+    // prompt as ONE arg instead of splitting it on whitespace.
+    let args = req.args ?? [];
+    if (args.length === 0 && req.command) {
+      const tokens = req.command.trim().split(/\s+/).filter(Boolean);
+      const first = tokens[0] ?? "";
+      const rest = tokens.slice(1).join(" ");
+      args = rest ? [first, rest] : first ? [first] : [];
+    }
     const command = req.command ?? args.join(" ");
     const gated = this.checkAllowed(req.command, args);
 
