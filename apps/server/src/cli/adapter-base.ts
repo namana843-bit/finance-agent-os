@@ -10,8 +10,10 @@ import type {
   CliAdapter,
   CliDaemonController,
   CliMetadata,
+  CliSessionMode,
   CliStreamChunk,
   CliValidationResult,
+  ProtocolTransport,
 } from "./types.js";
 import { parseJsonLineChunk } from "./parsing.js";
 import { autoResolveCliPath } from "./resolver.js";
@@ -44,7 +46,13 @@ export abstract class CliAdapterBase implements CliAdapter {
       ...this.metadata,
       defaultArgs: [...this.metadata.defaultArgs],
       engineAliases: [...this.metadata.engineAliases],
+      sessionModes: [...(this.metadata.sessionModes ?? (["one-shot"] as CliSessionMode[]))],
     };
+  }
+
+  /** Session modes this adapter supports (default: one-shot only). */
+  supportsMode(mode: CliSessionMode): boolean {
+    return (this.metadata.sessionModes ?? (["one-shot"] as CliSessionMode[])).includes(mode);
   }
 
   /** Match by adapter id, executable name or resolved path. */
@@ -182,4 +190,11 @@ export abstract class CliAdapterBase implements CliAdapter {
 
   /** Optional daemon / server-mode owner — undefined for one-shot CLIs. */
   readonly daemon?: CliDaemonController;
+
+  /**
+   * Optional framed transport for persistent-mode sessions. One-shot
+   * argv/stdin adapters inherit `undefined` — they are never forced into a
+   * protocol. The manager calls this only for `persistent`-mode sessions.
+   */
+  createTransport?(_session: { sessionId: string; adapterId: string }): ProtocolTransport | null;
 }

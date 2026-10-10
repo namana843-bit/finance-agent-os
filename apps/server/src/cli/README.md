@@ -40,8 +40,29 @@
 //                                              place that names adapters
 //
 // Events (normalized, published as `cli.<type>` on the platform bus):
-//   session_started · output(stdout/stderr) · tool_activity · status_changed
-//   error · session_finished · session_failed
+//   session_started · task_started · output(stdout/stderr) · text_delta
+//   tool_activity · status_changed · error · session_finished · session_failed
+//
+// ## Connection contract (multi-CLI consistency)
+//
+//   • session modes: adapters declare `sessionModes` ("one-shot" and/or
+//     "persistent"). The manager negotiates the mode at `start()` and rejects
+//     unsupported modes — no provider logic in the core runtime.
+//   • one-shot: every task spawns a short-lived process via
+//     `process-runner.ts` (argv array or stdin payload — never a shell
+//     command string). persistent: tasks multiplex over the adapter's
+//     `createTransport()` connection (see `protocol-transport.ts`).
+//   • `protocol-transport.ts` is opt-in: only `rpc`-delivery adapters
+//     implement it. argv/stdin CLIs are never forced into a protocol.
+//   • centralized spawn policy: executable resolution (`resolver.ts`),
+//     denied env overrides + secret redaction (`types.ts`), hard timeout,
+//     AbortSignal cancellation with process-tree cleanup, bounded output
+//     buffers + per-task `maxOutputChars` (`outputTruncated` flag).
+//   • authoritative session layer: `CliManager` owns start → tasks →
+//     stop/cleanup. `llm/cli-session.ts` is legacy (kept for the cli-engine
+//     provider) — new code uses CliManager.
+//   • registration is explicit (`cli/index.ts` only) and duplicate-safe:
+//     re-registering an id throws unless `{ replace: true }`.
 //
 // ## Adding a new CLI adapter (no core changes)
 //

@@ -20,7 +20,7 @@ export {
 } from "./resolver.js";
 export type { CliPathResolution, ResolveCliPathOptions } from "./resolver.js";
 export { parseJsonLineChunk, splitLines } from "./parsing.js";
-export { runCliProcess, killProcessTree } from "./process-runner.js";
+export { runCliProcess, killProcessTree, filterEnvOverrides } from "./process-runner.js";
 export type {
   CliProcessSpec,
   CliProcessHandlers,
@@ -29,6 +29,8 @@ export type {
 export { CliAdapterBase, defaultOneShotArgs } from "./adapter-base.js";
 export { CliManager, CliManagedSession } from "./cli-manager.js";
 export type { CliManagerOptions } from "./cli-manager.js";
+export { JsonLineTransport } from "./protocol-transport.js";
+export type { JsonLineTransportStreams } from "./protocol-transport.js";
 export { OpenCodeAdapter, createOpenCodeAdapter } from "./adapters/opencode-adapter.js";
 export { OpencodeDaemonManager } from "./adapters/opencode-daemon.js";
 export type { OpencodeDaemonConfig } from "./adapters/opencode-daemon.js";

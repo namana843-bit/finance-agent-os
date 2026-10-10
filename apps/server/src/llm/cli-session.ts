@@ -1,3 +1,8 @@
+// AUTHORITATIVE SESSION LAYER: `cli/cli-manager.ts` (CliManager) owns CLI
+// session lifecycle and process spawning for all new code. This module
+// (PersistentCliSession) is the legacy LLM-layer persistent-mode driver,
+// kept for backward compatibility with the `cli-engine` provider. Do not
+// add new session managers — extend CliAdapter / CliManager instead.
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { autoResolveCliPath } from "./cli-resolver.js";
