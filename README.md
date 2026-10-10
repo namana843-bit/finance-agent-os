@@ -76,6 +76,8 @@ An event-driven autonomous financial operating system powered by specialized col
 
 ## 🛡️ Production Safety & Execution Pipeline
 
+Every order passes sequentially through 7 deterministic gates before reaching a broker (matches `RISK_RULES.md`; no LLM/agent can bypass them):
+
 ```mermaid
 flowchart TD
     Sig[Signal / Proposal] --> V[1. Signal Validation]
@@ -90,16 +92,19 @@ flowchart TD
     LG -- depth>5 / burst --> Rej[Rejected & Audited]
     KS -- halt --> Rej
     HL -- exceeds limit --> Rej
-    RG -- missing/expired --> Rej
+    RG -- missing/expired/replayed --> Rej
+    GW -- denied --> Rej
 ```
 
-1. **Signal Validation** — symbol/side/price/quantity + `agentId`; planner `extractQuantity` strictly requires `qty:` or `<n> BTC|ETH|SOL`
-2. **Anti-Loop Guard** (`LoopGuard`) — max depth 5, per-symbol cooldown, dedup via payload hash
-3. **Emergency Kill Switch** (`KillSwitch`) — cancels all open orders, emits `audit.kill_switch_activated`, live mode requires `KILL_SWITCH_OVERRIDE_KEY`
-4. **Hard Limits** — notional, exposure, drawdown, concurrent orders
-5. **Risk Ticket** (`risk-engine/ticket.ts:39`) — HMAC-SHA256, TTL 30s, replay prevention
-6. **OrderManager** — `CREATED→PENDING→SUBMITTED→PARTIALLY_FILLED→FILLED`, atomic `writeFileAtomic`, unified `DATA_DIR`
-7. **Reconciliation** — phantom order / drift detection
+1. **Signal Validation** — symbol/side/price/quantity + `agentId`; planner `extractQuantity` strictly requires `qty:` or `<n> BTC|ETH|SOL`. Free-form text rejected at the edge.
+2. **Anti-Loop Guard** (`LoopGuard`) — max depth 5, 15s per-symbol cooldown, dedup via payload hash.
+3. **Emergency Kill Switch** (`KillSwitch`) — `ARMED` vs `TRIGGERED`; on trigger cancels all open orders in `OrderManager` + `PaperBroker`, emits `audit.kill_switch_activated`. Live re-arm requires `KILL_SWITCH_OVERRIDE_KEY`.
+4. **Hard Limits** — max notional $10k, position size, 25% symbol / 80% gross exposure, 10 open positions, 5% daily loss, 15% drawdown, 3x leverage, 60% min confidence, mandatory stop-loss (if configured).
+5. **Risk Ticket** (`risk-engine/ticket.ts:39`) — HMAC-SHA256 binding symbol/side/qty/price/agentId/strategy/correlationId, TTL 30s, single-use replay prevention.
+6. **Gateway Permissions** (`FinanceGateway`) — agent allowlist, symbol allow/block lists, permission + rate limiter.
+7. **OrderManager** — `CREATED→PENDING→SUBMITTED→PARTIALLY_FILLED→FILLED` (terminal states immutable), atomic `writeFileAtomic`, unified `DATA_DIR`.
+
+Then **Reconciliation** — phantom order / drift detection between Paper Portfolio and exchange liquidity.
 
 ---
 
