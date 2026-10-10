@@ -22,18 +22,24 @@ export class ProviderRegistry {
     this.register(new OpenAICompatibleProvider({ baseUrl: "http://127.0.0.1:1234/v1" }));
     // CLI defaults come from the registered CLI adapters (registration layer),
     // so adding a new CLI never requires touching the engine registry.
-    const opencode = getDefaultCliManager().get("opencode");
-    const meta = opencode?.getMetadata();
-    this.register(
-      new CliProvider({
-        id: "cli-opencode",
-        name: `${meta?.name ?? "OpenCode"} CLI`,
-        command: meta?.executable ?? "opencode",
-        args: meta ? [...meta.defaultArgs] : ["run", "--auto", "{prompt}"],
-        timeoutMs: 300000,
-        cliManager: getDefaultCliManager(),
-      }),
-    );
+    // Authoritative engine→provider→adapter mapping: provider `cli-<adapter>`
+    // always invokes that adapter (`CliManager.findByExecutable`).
+    const manager = getDefaultCliManager();
+    for (const adapterId of ["opencode", "claude", "codex", "gemini"]) {
+      const adapter = manager.get(adapterId);
+      const meta = adapter?.getMetadata();
+      if (!adapter || !meta) continue;
+      this.register(
+        new CliProvider({
+          id: `cli-${meta.id}`,
+          name: `${meta.name} CLI`,
+          command: meta.executable,
+          args: [...meta.defaultArgs],
+          timeoutMs: 300000,
+          cliManager: manager,
+        }),
+      );
+    }
   }
 
   register(provider: LLMProvider): void {
@@ -140,6 +146,13 @@ export class EngineManager {
       command: "opencode",
       args: ["run", "--auto", "{prompt}"],
     });
+    for (const [id, name, command, args] of [
+      ["claude", "Claude Code", "claude", ["-p", "{prompt}"]],
+      ["codex", "Codex", "codex", ["exec", "{prompt}"]],
+      ["gemini", "Gemini", "gemini", ["-p", "{prompt}"]],
+    ] as Array<[string, string, string, string[]]>) {
+      this.engineConfigs.set(id, { type: "cli", provider: "cli", name, command, args });
+    }
     this.engineConfigs.set("opencode", {
       type: "cli",
       provider: "cli",
@@ -230,6 +243,24 @@ export class EngineManager {
       // Honor a user-pasted executable path for CLI engines (e.g. opencode-cli
       // → catalog "opencode" override) while keeping the engine's own args.
       if (config.type === "cli") {
+        // An explicitly named provider (anything but the generic "cli")
+        // always wins — e.g. tests registering a mock provider id.
+        // (Read through `string` — the declared type is literally "cli".)
+        const providerId: string = config.provider;
+        if (providerId !== "cli") {
+          const explicit =
+            this.registry.get(providerId) ?? this.registry.get(engineId);
+          if (explicit) {
+            return { provider: explicit, model: (config as any).model };
+          }
+        } else {
+          // Authoritative mapping: engine `claude` → provider `cli-claude`
+          // (the registered adapter's provider), not the legacy `cli` fallback.
+          const mapped = this.registry.get(`cli-${engineId}`) ?? this.registry.get(engineId);
+          if (mapped) {
+            return { provider: mapped, model: (config as any).model };
+          }
+        }
         const overridden = await this.resolveOverriddenCliProvider(
           engineId,
           config.args,
@@ -242,6 +273,14 @@ export class EngineManager {
       const provider = this.registry.get(config.provider) || this.registry.get(engineId);
       if (provider) {
         return { provider, model: (config as any).model };
+      }
+      if (config.type === "api") {
+        // An API-typed engine whose provider is not registered is
+        // misconfigured — throw explicitly instead of falling through to CLI
+        // substring matching and silently running the wrong backend.
+        throw new Error(
+          `No provider registered for engine '${engineId}' (needs API provider '${config.provider}')`,
+        );
       }
     }
 
@@ -258,17 +297,28 @@ export class EngineManager {
       return { provider: directProvider };
     }
 
-    // CLI fallback: resolve through the CLI manager's adapters, then fall back to
-    // any registered CLI provider (preserves legacy behaviour for unknown ids).
+    // Authoritative adapter routing: any engine id owned by a registered CLI
+    // adapter resolves to that adapter's provider (`cli-<adapter>`), creating
+    // it lazily so catalog ids work without an explicit engine config.
     const adapter = this.cliManager.findByEngineId(engineId);
     if (adapter) {
-      const adapterEngine = `cli-${adapter.getMetadata().id}`;
-      const adapterProvider =
-        this.registry.get(adapterEngine) ??
-        Array.from(this.registry.list()).find((p) => p instanceof CliProvider);
-      if (adapterProvider) {
-        return { provider: adapterProvider };
+      const meta = adapter.getMetadata();
+      const adapterProviderId = `cli-${meta.id}`;
+      const existing = this.registry.get(adapterProviderId);
+      if (existing) {
+        return { provider: existing };
       }
+      const created = new CliProvider({
+        id: adapterProviderId,
+        name: `${meta.name} CLI`,
+        command: meta.executable,
+        args: [...meta.defaultArgs],
+        timeoutMs: 300000,
+        sessionManager: this.cliSessionManager,
+        cliManager: this.cliManager,
+      });
+      this.registry.register(created);
+      return { provider: created };
     }
 
     if (engineId.includes("cli")) {

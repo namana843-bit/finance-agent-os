@@ -516,6 +516,9 @@ class PersistentCliSession extends EventEmitter implements CliSession {
     const finalArgs: string[] = this.hooks
       ? this.hooks.buildOneShotArgs(this.args, prompt, { daemonUrl: this.daemonUrl ?? null })
       : defaultOneShotArgs(this.args, prompt);
+    // `stdin` adapters read the task from stdin, not argv — pass it through
+    // explicitly instead of silently dropping it.
+    const delivery = this.hooks?.getTaskDelivery?.() ?? "argv";
 
     // Support custom / mock spawnImpl if provided
     if (this.spawnImpl && this.spawnImpl !== defaultSpawnImpl) {
@@ -597,6 +600,7 @@ class PersistentCliSession extends EventEmitter implements CliSession {
         shell: requiresShellForExecutable(resolved),
         timeoutMs: this.timeoutMs,
         signal: abort.signal,
+        stdinPayload: delivery === "stdin" ? prompt : undefined,
       },
       {
         onStdoutChunk: (text) => {

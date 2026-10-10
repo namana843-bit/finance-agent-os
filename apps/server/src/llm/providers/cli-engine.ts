@@ -228,24 +228,35 @@ export class CliProvider implements LLMProvider {
     yield { type: "message_start", messageId, model, timestamp: Date.now() };
 
     // Injected spawners are test doubles and should not require a real executable.
+    const prompt = this.buildPrompt(request.messages, request.tools, botId);
+    const adapter = this.adapter;
+    // Fail explicitly for transports this provider cannot speak instead of
+    // silently running the task as argv and dropping it. Checked before
+    // executable resolution so the error names the transport, not PATH.
+    if (adapter?.getTaskDelivery?.() === "rpc") {
+      yield { type: "error", messageId, error: `Engine '${this.id}' requires an RPC transport which is not implemented for CLI '${adapter.getMetadata().id}'.`, timestamp: Date.now() };
+      return;
+    }
     const resolved = this.isDefaultSpawn ? await this.resolvePath(this.command) : this.command;
     if (!resolved) {
       yield { type: "error", messageId, error: `CLI executable '${this.command}' not found. Please verify executable path or installation.`, timestamp: Date.now() };
       return;
     }
 
-    const prompt = this.buildPrompt(request.messages, request.tools, botId);
     // Legacy `{model}` template substitution first, then adapter-specific task
     // flags (the OpenCode adapter inserts `--agent`/`--model` after `run`).
     const templatedArgs = this.defaultArgs.map((arg) => arg.split("{model}").join(model));
-    const adapter = this.adapter;
     const sessionArgs = adapter
       ? adapter.decorateTaskArgs(templatedArgs, { model, agentId: botId })
       : templatedArgs;
 
     let session: CliSession;
     try {
-      session = await this.sessionManager.getOrCreateSession(botId ?? this.botId, resolved, sessionArgs, { cwd: this.cwd, env: this.env, timeoutMs: this.timeoutMs, spawnImpl: this.spawnImpl });
+      // Only forward an explicitly injected spawner (test double). The
+      // built-in default must stay `undefined` so the session takes its
+      // shared-runner path — forwarding the engine-local default would
+      // misroute into the custom-spawner branch and drop the abort signal.
+      session = await this.sessionManager.getOrCreateSession(botId ?? this.botId, resolved, sessionArgs, { cwd: this.cwd, env: this.env, timeoutMs: this.timeoutMs, spawnImpl: this.isDefaultSpawn ? undefined : this.spawnImpl });
     } catch (err) {
       yield { type: "error", messageId, error: `Failed to create CLI session: ${err instanceof Error ? err.message : String(err)}`, timestamp: Date.now() };
       return;
