@@ -3,6 +3,11 @@ import { EventEmitter } from "node:events";
 import { autoResolveCliPath } from "./cli-resolver.js";
 import type { SpawnFn } from "./cli-driver.js";
 import { defaultSpawnImpl } from "./cli-driver.js";
+import type { CliAdapterHooks } from "../cli/types.js";
+import type { CliManager } from "../cli/cli-manager.js";
+import { getDefaultCliManager } from "../cli/index.js";
+import { parseJsonLineChunk } from "../cli/parsing.js";
+import { defaultOneShotArgs } from "../cli/adapter-base.js";
 
 export interface CliSessionOptions {
   command: string;
@@ -14,6 +19,14 @@ export interface CliSessionOptions {
   sessionId: string;
   supportsPersistentMode: boolean;
   daemonUrl?: string;
+  /**
+   * Adapter hooks resolved by the CLI manager (`initials` → adapter). All
+   * CLI-specific behaviour (daemon flags, protocol parsing, model/agent args)
+   * flows through these hooks — this file never names a concrete CLI.
+   */
+  hooks?: CliAdapterHooks | null;
+  /** CLI manager used to resolve hooks when `hooks` is not provided. */
+  cliManager?: CliManager | null;
 }
 
 export interface SessionMetrics {
@@ -76,6 +89,7 @@ class PersistentCliSession extends EventEmitter implements CliSession {
   private readonly timeoutMs: number;
   private readonly spawnImpl: SpawnFn;
   private readonly daemonUrl?: string;
+  private readonly hooks: CliAdapterHooks | null;
 
   private process: ChildProcess | null = null;
   private _state: SessionState = "starting";
@@ -98,6 +112,8 @@ class PersistentCliSession extends EventEmitter implements CliSession {
     this.spawnImpl = opts.spawnImpl ?? defaultSpawnImpl;
     this.supportsPersistentMode = opts.supportsPersistentMode;
     this.daemonUrl = opts.daemonUrl;
+    this.hooks =
+      opts.hooks ?? opts.cliManager?.findByExecutable(opts.command) ?? null;
 
     this.metrics = {
       sessionId: opts.sessionId,
@@ -111,6 +127,15 @@ class PersistentCliSession extends EventEmitter implements CliSession {
       createdAt: Date.now(),
       requestTimings: [],
     };
+  }
+
+  /**
+   * Parse one stdout line using the adapter's protocol hooks. Falls back to the
+   * shared JSON-lines parser for CLIs without a registered adapter.
+   */
+  private parseProtocolLine(line: string): { type: "delta"; content: string } | { type: "tool_call"; name: string; arguments: Record<string, unknown> } | null {
+    if (this.hooks) return this.hooks.parseLine(line);
+    return parseJsonLineChunk(line);
   }
 
   get state(): SessionState {
@@ -147,15 +172,11 @@ class PersistentCliSession extends EventEmitter implements CliSession {
     this.metrics.spawnTime = startTime;
 
     const resolved = (await autoResolveCliPath(this.command)) || this.command;
-    const isOpencode = this.command.includes("opencode") || resolved.includes("opencode");
-    const finalArgs = [...this.args];
-
-    if (isOpencode && finalArgs.includes("run")) {
-      const runIndex = finalArgs.indexOf("run");
-      if (runIndex !== -1) {
-        finalArgs.splice(runIndex + 1, 0, "--attach", this.daemonUrl!);
-      }
-    }
+    // Adapter hook decides daemon-attach flags (OpenCode: `--attach <url>`).
+    const finalArgs =
+      this.daemonUrl && this.hooks
+        ? this.hooks.decorateDaemonArgs([...this.args], this.daemonUrl)
+        : [...this.args];
 
     const useShell =
       process.platform === "win32" &&
@@ -418,26 +439,21 @@ class PersistentCliSession extends EventEmitter implements CliSession {
         const trimmed = line.trim();
         if (!trimmed) continue;
 
-        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-          try {
-            const parsed = JSON.parse(trimmed);
-            if (parsed.tool_call?.name) {
-              push({
-                type: "tool_call",
-                content: trimmed,
-                toolCall: {
-                  name: parsed.tool_call.name,
-                  arguments: parsed.tool_call.arguments || {},
-                },
-              });
-              continue;
-            }
-            const delta = parsed.delta ?? parsed.content ?? parsed.text;
-            if (typeof delta === "string") {
-              push({ type: "delta", content: delta });
-              continue;
-            }
-          } catch {}
+        const protocolChunk = this.parseProtocolLine(trimmed);
+        if (protocolChunk && protocolChunk.type === "tool_call") {
+          push({
+            type: "tool_call",
+            content: trimmed,
+            toolCall: {
+              name: protocolChunk.name,
+              arguments: protocolChunk.arguments,
+            },
+          });
+          continue;
+        }
+        if (protocolChunk && protocolChunk.type === "delta") {
+          push({ type: "delta", content: protocolChunk.content });
+          continue;
         }
 
         push({ type: "delta", content: line + "\n" });
@@ -503,16 +519,11 @@ class PersistentCliSession extends EventEmitter implements CliSession {
       return;
     }
 
-    const isOpencode = this.command.includes("opencode") || (resolved && resolved.includes("opencode"));
-    const finalArgs: string[] = [];
-    for (const template of this.args) {
-      if (template.includes("{model}")) continue;
-      finalArgs.push(template.split("{prompt}").join(prompt));
-      if (isOpencode && template === "run" && this.daemonUrl) {
-        finalArgs.push("--attach", this.daemonUrl);
-        finalArgs.push("--pure");
-      }
-    }
+    // Adapter hook builds the one-shot argv (prompt substitution + transport
+    // flags). Falls back to the legacy generic template behaviour.
+    const finalArgs: string[] = this.hooks
+      ? this.hooks.buildOneShotArgs(this.args, prompt, { daemonUrl: this.daemonUrl ?? null })
+      : defaultOneShotArgs(this.args, prompt);
 
     // Support custom / mock spawnImpl if provided
     if (this.spawnImpl && this.spawnImpl !== defaultSpawnImpl) {
@@ -589,25 +600,23 @@ class PersistentCliSession extends EventEmitter implements CliSession {
         const trimmed = line.trim();
         if (!trimmed) continue;
 
-        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-          try {
-            const parsed = JSON.parse(trimmed);
-            if (parsed.tool_call?.name) {
-              push({ type: "tool_call", content: trimmed, toolCall: { name: parsed.tool_call.name, arguments: parsed.tool_call.arguments || {} } });
-              continue;
-            }
-            const delta = parsed.delta ?? parsed.content ?? parsed.text;
-            if (typeof delta === "string") {
-              push({ type: "delta", content: delta });
-              continue;
-            }
-          } catch {}
+        const protocolChunk = this.parseProtocolLine(trimmed);
+        if (protocolChunk && protocolChunk.type === "tool_call") {
+          push({ type: "tool_call", content: trimmed, toolCall: { name: protocolChunk.name, arguments: protocolChunk.arguments } });
+          continue;
+        }
+        if (protocolChunk && protocolChunk.type === "delta") {
+          push({ type: "delta", content: protocolChunk.content });
+          continue;
         }
         push({ type: "delta", content: line + "\n" });
       }
     });
 
-    child.stderr?.on("data", () => {});
+    let stderrBuffer = "";
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderrBuffer += chunk.toString("utf-8");
+    });
 
     const onError = (err: Error) => {
       end(err);
@@ -627,10 +636,21 @@ class PersistentCliSession extends EventEmitter implements CliSession {
                 push({ type: "delta", content: delta });
               }
             }
-          } catch {}
+          } catch {
+            push({ type: "delta", content: lineBuffer });
+          }
+        } else {
+          push({ type: "delta", content: lineBuffer });
         }
       }
-      end(code !== 0 ? new Error(`CLI process exited with code ${code}`) : undefined);
+      const cleanStderr = stderrBuffer.trim().replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+      if (code !== 0) {
+        end(new Error(cleanStderr || `CLI process exited with code ${code}`));
+      } else if (cleanStderr && queue.length === 0 && !lineBuffer.trim()) {
+        end(new Error(cleanStderr));
+      } else {
+        end();
+      }
     };
 
     child.on("error", onError);
@@ -682,9 +702,18 @@ export class CliSessionManager {
   private readonly idleTimeoutMs = 5 * 60 * 1000;
   private cleanupInterval: NodeJS.Timeout | null = null;
   private readonly daemonUrl: string | null = null;
+  private readonly cliManager: CliManager | null;
 
-  constructor(opts?: { daemonUrl?: string; idleTimeoutMs?: number }) {
+  constructor(opts?: {
+    daemonUrl?: string;
+    idleTimeoutMs?: number;
+    cliManager?: CliManager | null;
+  }) {
     this.daemonUrl = opts?.daemonUrl ?? null;
+    // Default to the shared CLI manager so adapter hooks (daemon flags, argv
+    // decoration, protocol parsing) are always resolved from the adapter layer.
+    this.cliManager =
+      opts?.cliManager === undefined ? getDefaultCliManager() : opts.cliManager;
     if (opts?.idleTimeoutMs) {
       this.idleTimeoutMs = opts.idleTimeoutMs;
     }
@@ -714,8 +743,11 @@ export class CliSessionManager {
     }
 
     const resolvedCommand = (await autoResolveCliPath(command)) || command;
-    const isOpencode = command.includes("opencode") || resolvedCommand.includes("opencode");
-    const supportsPersistent = isOpencode && Boolean(this.daemonUrl);
+    // Adapter hooks decide whether this CLI supports a persistent (daemon) session.
+    const hooks = this.cliManager?.findByExecutable(command, resolvedCommand) ?? null;
+    const supportsPersistent = hooks
+      ? hooks.supportsDaemonMode(this.daemonUrl ?? null)
+      : false;
 
     session = new PersistentCliSession({
       sessionId: key,
@@ -727,6 +759,7 @@ export class CliSessionManager {
       spawnImpl: opts?.spawnImpl,
       supportsPersistentMode: supportsPersistent,
       daemonUrl: supportsPersistent ? this.daemonUrl! : undefined,
+      hooks,
     });
 
     this.sessions.set(key, session);
@@ -799,7 +832,11 @@ export class CliSessionManager {
   }
 }
 
-export function createCliSessionManager(opts?: { daemonUrl?: string; idleTimeoutMs?: number }): CliSessionManager {
+export function createCliSessionManager(opts?: {
+  daemonUrl?: string;
+  idleTimeoutMs?: number;
+  cliManager?: CliManager | null;
+}): CliSessionManager {
   return new CliSessionManager(opts);
 }
 

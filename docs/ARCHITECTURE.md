@@ -81,6 +81,30 @@ TRADING AGENTS                     TOOLS                         SERVICES
 
 ---
 
+## 3. Generic CLI Adapter Layer
+
+External agent CLIs (OpenCode and future adapters) are integrated through a
+generic, extensible adapter layer — the core runtime never depends on a concrete
+CLI. Full design, migration map and the "add a new CLI in one file" guide live
+in `docs/CLI_ADAPTERS.md` (implementation: `apps/server/src/cli/`; code map:
+`apps/server/src/cli/README.md`).
+
+```
+Desktop UI → CLI Manager → CLI Adapter Interface
+                                ├── OpenCodeAdapter        (migrated, default)
+                                ├── CustomCliAdapter       (descriptor-driven)
+                                └── (future: ClaudeCode / Codex / Gemini)
+```
+
+- Backend discovery: `GET /api/cli/adapters` (see `docs/API.md`).
+- Normalized CLI events on the bus: `cli.session_started`, `cli.output`,
+  `cli.tool_activity`, `cli.status_changed`, `cli.error`, `cli.session_finished`,
+  `cli.session_failed`.
+- The pre-existing `/api/opencode/*` endpoints and the permissioned OpenCode
+  gateway are preserved and now resolve through the OpenCode adapter.
+
+---
+
 ## 4. Multi-Agent Collaborative Flow
 
 ```mermaid
@@ -207,13 +231,14 @@ finance-agent-os/
 │   │   └── package.json
 │   │
 │   └── server/                     # Fastify API Server & Multi-Agent Runtime (:4132)
-│       ├── __tests__/              # 27 Test Suites (350+ unit and integration tests)
+│       ├── __tests__/              # 28 Test Suites (test counts pending re-run)
 │       │   ├── live-safety.test.ts          # Phase 8: Hard limits, Kill Switch, Reconciliation
 │       │   ├── backtesting-trustworthy.test.ts # Phase 7: Zero look-ahead bias, execution simulation
 │       │   ├── binance-market.test.ts       # Phase 6: WebSocket streams, rate-limiting
 │       │   ├── agent-loop.test.ts           # Phase 5: Anti-loop guard, proposals, sanitized memory
 │       │   ├── risk-gate.test.ts            # Phase 4: HMAC risk tickets, broker boundary
 │       │   ├── order-lifecycle.integration.test.ts # Phase 3: Canonical order state machine
+│       │   ├── cli-adapters.test.ts      # CLI adapter layer: interface, argv, sessions, streaming
 │       │   ├── llm-cli.test.ts              # LLM engine CLI integration & streaming
 │       │   └── ...                          # Paper broker, tools, runtime, supervisor tests
 │       └── src/
@@ -224,6 +249,7 @@ finance-agent-os/
 │           │   ├── execution-simulator.ts   # Slippage, spread, fees, volume limit, limit fills
 │           │   └── metrics.ts               # Sharpe, Sortino, CAGR, Drawdown, Profit Factor
 │           ├── broker/             # Paper broker simulation with position & PnL accounting
+│           ├── cli/                # Generic CLI adapter layer (CliManager + CliAdapter; see docs/CLI_ADAPTERS.md)
 │           ├── core/               # LoopGuard, server factory, runtime composition
 │           ├── environment/        # Market, portfolio, and paper trading adapters
 │           ├── execution-pipeline/ # 7-stage gated execution pipeline (Signal → Risk → Safety → Broker)

@@ -89,6 +89,25 @@ Base URL: `http://localhost:4132`
 |--------|----------|-------------|
 | GET | `/api/audit?eventType=risk.approved&limit=50` | Audit log |
 
+## CLI Adapters
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/cli/adapters` | List registered CLI adapters with installation info |
+| GET | `/api/cli/adapters/:id` | Adapter metadata + installation status |
+| POST | `/api/cli/adapters/:id/validate` | Re-validate adapter installation |
+| GET | `/api/cli/sessions` | List managed CLI sessions |
+| POST | `/api/cli/sessions` | Start a session (`{adapterId, cwd?, env?, args?, timeoutMs?}`) |
+| GET | `/api/cli/sessions/:id` | Session summary |
+| POST | `/api/cli/sessions/:id/tasks` | Send a task (`{task, model?, agentId?, timeoutMs?}`) |
+| DELETE | `/api/cli/sessions/:id` | Stop a session |
+
+Legacy OpenCode endpoints (`/api/opencode/*`) remain for backward compatibility — they are
+now backed by the OpenCode adapter. Normalized CLI events stream as `cli.*` over SSE.
+These events are server-owned: `POST /api/publish` rejects the `cli.` prefix (along with
+`supervisor.`, `risk.`, `gateway.`, `order.`, `trade.proposal_`, `audit.kill_switch`,
+`opencode.`) with `403` — see `core/server.ts` `deniedPrefixes`.
+
 ## Events (SSE)
 
 | Method | Endpoint | Description |

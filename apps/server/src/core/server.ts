@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import { TypedEventBus, type EventBusOptions } from "@finance/core";
 import type { FinanceEvent, HistoryFilter } from "@finance/shared";
-import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory } from "./runtime.js";
+import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory, getCliManager } from "./runtime.js";
 import { ApprovalError } from "../approvals/types.js";
 import type { LlmConfig } from "../llm/types.js";
 import { CustomBotAgent } from "../agents/custom-bot-agent.js";
@@ -389,7 +389,7 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     if (!body.type || typeof body.type !== "string" || body.type.trim() === "") {
       return reply.status(400).send({ error: "field 'type' is required and must be a non-empty string" });
     }
-    const deniedPrefixes = ["supervisor.", "risk.", "gateway.", "order.", "trade.proposal_", "audit.kill_switch", "opencode."];
+    const deniedPrefixes = ["supervisor.", "risk.", "gateway.", "order.", "trade.proposal_", "audit.kill_switch", "opencode.", "cli."];
     const ttype = body.type.trim();
     if (deniedPrefixes.some((p) => ttype.startsWith(p))) {
       return reply.status(403).send({ error: "event type '" + ttype + "' is not allowed via /api/publish" });
@@ -596,6 +596,26 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     return gw.listPathGateways();
   });
 
+  app.get<{
+    Querystring: { refresh?: string };
+  }>("/api/opencode/models", async (request) => {
+    const refresh = request.query?.refresh === "true" || request.query?.refresh === "1";
+    const { getOpencodeModels } = await import("../llm/opencode-models.js");
+    return getOpencodeModels({ refresh });
+  });
+
+  app.post<{
+    Body: { model: string; agentId?: string; applyToAll?: boolean };
+  }>("/api/opencode/models", async (request, reply) => {
+    const { model, agentId, applyToAll } = request.body ?? {};
+    if (!model || typeof model !== "string") {
+      return reply.status(400).send({ error: "model is required" });
+    }
+    const { updateOpencodeProjectModel } = await import("../llm/opencode-models.js");
+    const updated = await updateOpencodeProjectModel({ model, agentId, applyToAll });
+    return { ok: true, data: updated };
+  });
+
   app.get("/api/gateways", async () => {
     const gw = getGateway();
     const ogw = getOpencodeGateway();
@@ -604,7 +624,7 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       opencodeGateway: ogw ? ogw.listPathGateways() : null,
       paths: {
         finance: ["/api/gateway/trade", "/api/gateway/stats"],
-        opencode: ["/api/opencode/cli-path", "/api/opencode/paths", "/api/opencode/run", "/api/opencode/gateway/stats"],
+        opencode: ["/api/opencode/cli-path", "/api/opencode/paths", "/api/opencode/models", "/api/opencode/run", "/api/opencode/gateway/stats"],
       },
     };
   });
@@ -631,6 +651,107 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     } catch (err) {
       return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Generic CLI adapter layer — adapter-agnostic (OpenCode is just one adapter).
+  // The desktop UI discovers available CLIs here instead of hard-coding names.
+  // -------------------------------------------------------------------------
+  app.get("/api/cli/adapters", async () => {
+    const cli = getCliManager();
+    const adapters = await Promise.all(
+      cli.listMetadata().map(async (meta) => {
+        let installation: unknown = null;
+        try {
+          installation = await cli.validate(meta.id);
+        } catch {
+          installation = null;
+        }
+        return { ...meta, installation };
+      }),
+    );
+    return { adapters };
+  });
+
+  app.get<{ Params: { id: string } }>("/api/cli/adapters/:id", async (request, reply) => {
+    const cli = getCliManager();
+    const adapter = cli.get(request.params.id);
+    if (!adapter) {
+      return reply.status(404).send({ error: `unknown CLI adapter '${request.params.id}'` });
+    }
+    return { adapter: adapter.getMetadata(), installation: await cli.validate(request.params.id) };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/cli/adapters/:id/validate", async (request, reply) => {
+    const cli = getCliManager();
+    if (!cli.has(request.params.id)) {
+      return reply.status(404).send({ error: `unknown CLI adapter '${request.params.id}'` });
+    }
+    return { validation: await cli.validate(request.params.id, { force: true }) };
+  });
+
+  app.get("/api/cli/sessions", async () => {
+    return { sessions: getCliManager().listSessions() };
+  });
+
+  app.post<{
+    Body: { adapterId?: string; cwd?: string; env?: Record<string, string>; args?: string[]; timeoutMs?: number };
+  }>("/api/cli/sessions", async (request, reply) => {
+    const body = request.body ?? {};
+    const adapterId = typeof body.adapterId === "string" ? body.adapterId.trim() : "";
+    if (!adapterId) {
+      return reply.status(400).send({ error: "adapterId is required" });
+    }
+    try {
+      const session = await getCliManager().start(adapterId, {
+        cwd: body.cwd,
+        env: body.env,
+        args: body.args,
+        timeoutMs: body.timeoutMs,
+      });
+      return { session: session.getSummary() };
+    } catch (err) {
+      return reply.status(404).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get<{ Params: { id: string } }>("/api/cli/sessions/:id", async (request, reply) => {
+    const session = getCliManager().getSession(request.params.id);
+    if (!session) {
+      return reply.status(404).send({ error: `unknown CLI session '${request.params.id}'` });
+    }
+    return { session: session.getSummary() };
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { task?: string; model?: string; agentId?: string; timeoutMs?: number };
+  }>("/api/cli/sessions/:id/tasks", async (request, reply) => {
+    const body = request.body ?? {};
+    const task = typeof body.task === "string" ? body.task : "";
+    if (!task.trim()) {
+      return reply.status(400).send({ error: "task is required" });
+    }
+    try {
+      const result = await getCliManager().sendTask(request.params.id, {
+        task,
+        model: body.model,
+        agentId: body.agentId,
+        timeoutMs: body.timeoutMs,
+      });
+      return reply.status(result.ok ? 200 : 500).send({ result });
+    } catch (err) {
+      return reply.status(404).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/cli/sessions/:id", async (request, reply) => {
+    const cli = getCliManager();
+    if (!cli.getSession(request.params.id)) {
+      return reply.status(404).send({ error: `unknown CLI session '${request.params.id}'` });
+    }
+    await cli.stop(request.params.id, "stopped via API");
+    return { ok: true, session: cli.getSession(request.params.id)?.getSummary() ?? null };
   });
 
   // -------------------------------------------------------------------------
@@ -993,14 +1114,16 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     return { messages: engine.getHistory(request.query.channelId, limit) };
   });
 
-  app.post<{ Body: { threadId?: string; title?: string; message?: string; agentId?: string; content?: string; channelId?: string } }>("/api/chat", async (request, reply) => {
-    const body = (request.body ?? {}) as { threadId?: string; title?: string; message?: string; agentId?: string; content?: string; channelId?: string };
+  app.post<{ Body: { threadId?: string; title?: string; message?: string; agentId?: string; botId?: string; content?: string; channelId?: string } }>("/api/chat", async (request, reply) => {
+    const body = (request.body ?? {}) as { threadId?: string; title?: string; message?: string; agentId?: string; botId?: string; content?: string; channelId?: string };
+    const targetBot = body.botId ?? body.agentId;
     if (body.message && typeof body.message === "string" && body.message.trim() !== "") {
       const chat = getChat();
       if (!chat) {
         const engine = getDialogueEngine();
         if (engine) {
-          const message = await engine.handleUserMessage(body.message, body.channelId ?? "trading-floor");
+          const targetChannel = body.channelId ?? (targetBot ? `dm-${targetBot}` : "trading-floor");
+          const message = await engine.handleUserMessage(body.message, targetChannel);
           return { ok: true, message, fallback: "dialogue-engine" };
         }
         return reply.status(503).send({ error: "chat not available" });
@@ -1009,14 +1132,21 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
         let threadId = body.threadId;
         let thread;
         if (!threadId) {
-          thread = await chat.createThread({ title: body.title ?? body.message.slice(0, 60) });
+          thread = await chat.createThread({
+            title: body.title ?? body.message.slice(0, 60),
+            botId: targetBot,
+            channelId: body.channelId,
+          });
           threadId = thread.id;
         } else {
           const threads = await chat.getThreads();
           thread = threads.find((t) => t.id === threadId);
           if (!thread) return reply.status(404).send({ error: "thread not found" });
         }
-        const result = await chat.sendUserMessage(threadId, body.message, { agentId: body.agentId });
+        const result = await chat.sendUserMessage(threadId, body.message, {
+          agentId: body.agentId,
+          botId: targetBot,
+        });
         return { ok: true, thread, message: result.message, planId: result.planId ?? null };
       } catch (err) {
         if (err instanceof Error && err.message === "thread not found") {
@@ -1028,7 +1158,8 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     if (body.content && typeof body.content === "string" && body.content.trim() !== "") {
       const engine = getDialogueEngine();
       if (!engine) return reply.status(503).send({ error: "dialogue engine not available" });
-      const message = await engine.handleUserMessage(body.content, body.channelId ?? "trading-floor");
+      const targetChannel = body.channelId ?? (targetBot ? `dm-${targetBot}` : "trading-floor");
+      const message = await engine.handleUserMessage(body.content, targetChannel);
       return { ok: true, message };
     }
     return reply.status(400).send({ error: "message (ChatCore) or content (dialogue) is required" });

@@ -14,6 +14,8 @@ import { createPlan, type Plan, type PlanStep, type ValidationResult } from "./p
 import { LoopGuard } from "../../core/loop-guard.js";
 import {
   type TradeProposal,
+  type EntryParameters,
+  type RiskParameters,
   validateTradeProposal,
   createTradeProposal,
 } from "./proposal.js";
@@ -28,7 +30,7 @@ export {
   type RiskParameters,
   validateTradeProposal,
   createTradeProposal,
-} from "./proposal.js";
+};
 
 // ---------------------------------------------------------------------------
 // Execution result

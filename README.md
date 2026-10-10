@@ -16,7 +16,8 @@ An event-driven autonomous financial operating system powered by specialized col
 - **Desktop OS** — Vite + React 18 + Electron trading desk (alpha lab, risk, telemetry, orderbook, PnL)
 - **Fastify SSE API** on `:4132` — 70 REST endpoints + event stream
 - **23 registered finance tools** + 4 default strategies (EMA/RSI/MACD/Momentum)
-- **Opencode CLI Gateway** — permissioned `opencode --version` path allowlist with `useShell=false`
+- **Generic CLI adapter layer** — `Desktop UI → CLI Manager → CLI Adapter` (`apps/server/src/cli/`): OpenCode is one adapter (`opencode`) among future adapters (Claude Code, Codex, Gemini, custom descriptors); backend discovery via `GET /api/cli/adapters`, normalized `cli.*` events (details: `docs/CLI_ADAPTERS.md`)
+- **Opencode CLI Gateway** — permissioned `opencode --version` path allowlist with `useShell=false`, now backed by the OpenCode adapter
 
 ## 🏛️ System Architecture
 
@@ -158,7 +159,7 @@ Agent behaviour and platform policy are specified in versioned Markdown at the r
 | Core | `packages/core` `TypedEventBus` + `FinanceRuntime` + `BaseServiceWrapper` (`apps/server/src/core/service-wrapper.ts`) |
 | Dashboard | React 18 + Vite + Electron, `shadcn/ui`, `lib/fetch.ts` (deduped `fetchJson`), `lib/clipboard.ts` |
 | DB | Prisma 5 (slim 9 models) + SQLite `file:./dev.db` + file-persisted `AgentMemory` |
-| Tests | Vitest 3 — 27 files / 351 tests (server) + 3 files (core) |
+| Tests | Vitest 3 — 28 files (server test counts pending re-run) + 3 files (core) |
 
 ## 📁 Repository Structure
 
@@ -169,10 +170,10 @@ finance-agent-os/
 │   │   ├── electron/               # main & preload
 │   │   ├── src/Root.tsx            # hash router (/#/dashboard, /#/engines)
 │   │   ├── src/app/engines/        # engines management page
-│   │   ├── src/lib/{api,chat-api,llm-api,fetch,clipboard}.ts
+│   │   ├── src/lib/{api,chat-api,llm-api,cli-api,fetch,clipboard}.ts
 │   │   └── src/components/ui/*     # shadcn/ui
 │   └── server/                     # Fastify API (:4132) + Multi-Agent Runtime
-│       ├── __tests__/              # 27 vitest suites (351 tests)
+│       ├── __tests__/              # 28 vitest suites (test counts pending re-run; 28 CLI-adapter cases)
 │       └── src/
 │           ├── adapters/           # binance-ws adapter
 │           ├── agents/             # supervisor/planner, quant, risk(VaR), portfolio, execution, market, demo
@@ -181,6 +182,7 @@ finance-agent-os/
 │           ├── backtesting/        # engine + execution-simulator + metrics (Sharpe/Sortino/CAGR/Drawdown)
 │           ├── broker/             # PaperBroker
 │           ├── chat/               # chat service, dialogue engine, bots-as-contacts
+│           ├── cli/                # generic CLI adapter layer (CliManager + adapters; see docs/CLI_ADAPTERS.md)
 │           ├── core/               # LoopGuard, server, runtime, storage(DATA_DIR), service-wrapper
 │           ├── environment/        # market/portfolio/paper adapters
 │           ├── execution-pipeline/ # 7-stage gated pipeline
@@ -245,7 +247,7 @@ pnpm desktop:electron       # native Electron window
 ### 5. Typecheck & Tests
 ```bash
 pnpm typecheck              # tsc --noEmit across 4 workspaces
-pnpm test                   # vitest run (server 351 tests + core)
+pnpm test                   # vitest run (server suite counts pending re-run; see Testing & CI)
 ```
 
 ---
@@ -290,7 +292,7 @@ Base: `http://localhost:4132` — 70 REST routes + SSE.
 | `GET` | `/api/market/state` + `/api/market/candles` `/orderbook` `/ticks` | market |
 | `POST` | `/api/trading/signal` · `/api/backtest/run` · `GET /api/backtest/strategies` | signals & backtests |
 | `GET`/`POST` | `/api/threads` · `/api/threads/:id/messages` · `/api/bots` · `/api/bots/:id/engine` `/model` | chat rooms & bots |
-| `POST` | `/api/publish` | publish bus event (**denylist**: `supervisor.`, `risk.`, `gateway.`, `order.`, `trade.proposal_`, `audit.kill_switch`, `opencode.`) → `403` — `core/server.ts:392` |
+| `POST` | `/api/publish` | publish bus event (**denylist**: `supervisor.`, `risk.`, `gateway.`, `order.`, `trade.proposal_`, `audit.kill_switch`, `opencode.`, `cli.`) → `403` — `core/server.ts:392` |
 | `POST` | `/api/chat` + `GET /api/chat/history` | chat/dialogue |
 | `GET` | `/api/audit` · `/api/execution/status` · `/api/state` | audit trail, pipeline status, state |
 | `GET` | `/api/memory/stats` `traces` `entries` · `DELETE /api/memory` | AgentMemory (file-persisted) |
@@ -299,6 +301,7 @@ Base: `http://localhost:4132` — 70 REST routes + SSE.
 | `GET`/`POST` | `/api/agent-runtime/agents` + `/:id` `export` `import` · `POST /api/agent-runtime/chat/stream` | agent CRUD + streaming chat |
 | `GET` | `/api/gateway/stats` · `/api/gateways` · `POST /api/gateway/trade` | FinanceGateway |
 | `GET` | `/api/opencode/cli-path` `/paths` `/gateway/stats` · `POST /api/opencode/run` | opencode gateway |
+| `GET`/`POST`/`DELETE` | `/api/cli/adapters*` · `/api/cli/sessions*` (`/:id/tasks` to send a task) | generic CLI adapter layer (see `docs/API.md`) |
 | `GET` | `/api/ollama/models` · `/.well-known/finance-agent/environment` | Ollama + environment discovery |
 | `SSE` | `/api/events` (via `TypedEventBus`, filterable by `channelId`/`threadId`/`agentId`/`type`/`runId`) | real-time event stream |
 
@@ -331,7 +334,7 @@ pnpm --filter @finance/server cli add agent my-agent --template quant
 ## 🔐 Security Hardening (Audit 2026-09)
 
 - **CORS** (`core/server.ts:34`): `origin:true+credentials:true` → `ALLOWED_ORIGINS` allowlist callback (fixes wildcard CSRF)
-- **/api/publish** (`core/server.ts:392`): denylist `supervisor.|risk.|gateway.|order.|trade.proposal_|audit.kill_switch|opencode.` → `403`
+- **/api/publish** (`core/server.ts:392`): denylist `supervisor.|risk.|gateway.|order.|trade.proposal_|audit.kill_switch|opencode.|cli.` → `403`
 - **Opencode gateway** (`gateway/opencode-cli-gateway.ts`): extended metachars `; & | $ > < \ ( ) { } [ ] ! % * ? ~`, per-arg `safeArgRe`, `useShell=false` even for `npx` fallback
 - **Kill-switch** (`safety/kill-switch.ts:76`): no `EMERGENCY_OVERRIDE_SECRET_DEFAULT`; live throws if missing
 - **Persistence**: unified `DATA_DIR` + `writeFileAtomic` (`atomic.ts`) across `storage.ts`, `llm/persistence.ts`, `llm/engines.ts`, `order-manager.ts`
@@ -350,7 +353,7 @@ Run via `StrategyLab` (`strategy-lab/service.ts`) or `POST /api/backtest/run`.
 
 ```bash
 pnpm typecheck
-pnpm --filter @finance/server test        # vitest — 27 files, 351 tests
+pnpm --filter @finance/server test        # vitest — 28 files (test counts pending re-run)
 pnpm --filter @finance/core test          # event-bus, registries, runtime
 node scripts/verify-honesty.mjs           # live honesty checks (server must be running)
 ```

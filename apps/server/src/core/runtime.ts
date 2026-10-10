@@ -43,6 +43,7 @@ import type { LlmService } from "../llm/llm-service.js";
 
 import { OpencodeCliGateway } from "../gateway/opencode-cli-gateway.js";
 import { OpencodeDaemonManager } from "../gateway/opencode-daemon.js";
+import { CliManager, getDefaultCliManager } from "../cli/index.js";
 
 import { ProviderRegistry, EngineManager, FinanceToolRegistry, AgentRuntime } from "../llm/index.js";
 import { CliSessionManager, createCliSessionManager } from "../llm/cli-session.js";
@@ -62,6 +63,7 @@ export const SERVICE_IDS = {
   STRATEGY_LAB: "strategy-lab",
   EXECUTION_PIPELINE: "execution-pipeline",
   OPENCODE_GATEWAY: "opencode-gateway",
+  CLI_MANAGER: "cli-manager",
   CHAT: "chat",
   APPROVALS: "approvals",
   LLM: "llm",
@@ -171,13 +173,17 @@ class AgentMemoryService extends BaseServiceWrapper<AgentMemory> {
 }
 
 class OpencodeGatewayService extends BaseServiceWrapper<OpencodeCliGateway> {
+  // Daemon lifecycle is owned by the OpenCode adapter (adapter layer), not by
+  // this service — the gateway only routes permissioned runs.
   private daemon: OpencodeDaemonManager;
   constructor(bus: import("@finance/core").TypedEventBus) {
     super(
       { id: SERVICE_IDS.OPENCODE_GATEWAY, name: "OpenCode CLI Gateway", description: "Permissioned gateway for opencode CLI path + execution (path gateways)" },
       new OpencodeCliGateway(bus)
     );
-    this.daemon = new OpencodeDaemonManager();
+    this.daemon = getCliManager().get("opencode")?.daemon
+      ? (getCliManager().get("opencode")!.daemon as OpencodeDaemonManager)
+      : new OpencodeDaemonManager();
   }
   override async start(): Promise<void> {
     await this.inner.getCliInfo().catch(() => {});
@@ -193,6 +199,36 @@ class OpencodeGatewayService extends BaseServiceWrapper<OpencodeCliGateway> {
     console.log(`[service:${SERVICE_IDS.OPENCODE_GATEWAY}] stopped`);
   }
   getDaemon(): OpencodeDaemonManager { return this.daemon; }
+}
+
+// ---------------------------------------------------------------------------
+// CLI Manager Service Wrapper — generic CLI adapter layer
+// ---------------------------------------------------------------------------
+
+class CliManagerService extends BaseServiceWrapper<CliManager> {
+  constructor(bus: import("@finance/core").TypedEventBus) {
+    const manager = getDefaultCliManager();
+    manager.setBus(bus);
+    super(
+      {
+        id: SERVICE_IDS.CLI_MANAGER,
+        name: "CLI Manager",
+        description: "Generic CLI adapter layer — registration, discovery, validation, sessions, normalized events",
+      },
+      manager,
+    );
+  }
+  override async start(): Promise<void> {
+    const adapters = this.inner.listMetadata();
+    console.log(
+      `[service:${SERVICE_IDS.CLI_MANAGER}] started (adapters: ${adapters.map((a) => a.id).join(", ") || "none"})`,
+    );
+  }
+  override async stop(): Promise<void> {
+    await this.inner.stopAll().catch(() => {});
+    (this as unknown as { info: ServiceInfo }).info.status = "stopped";
+    console.log(`[service:${SERVICE_IDS.CLI_MANAGER}] stopped`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +332,10 @@ const riskAgent = new RiskAgent(bus);
     }
   }
 
+  // CLI Manager (generic CLI adapter layer) — must precede CLI consumers
+  const cliManagerService = new CliManagerService(bus);
+  runtime.registerService(cliManagerService);
+
   // Gateway
   const gatewayService = new GatewayService(bus, executionMode);
   runtime.registerService(gatewayService);
@@ -386,7 +426,36 @@ const riskAgent = new RiskAgent(bus);
   // No live trading — paper-only, LIVE_TRADING_ENABLED guard inside pipeline.
   supervisor.setExecutionPipeline(executionPipelineService.getInstance() as unknown as import("../agents/supervisor/index.js").ExecutionPipelineLike);
 
-  runtime.registerService(new ChatService({ bus, getLlm: () => getLlm(), submitTask: (task, correlationId) => { const sup = getSupervisor(); if (!sup) return Promise.reject(new Error("supervisor not available")); return (sup as unknown as { submitTask: (t: string, c?: string) => Promise<unknown> }).submitTask(task, correlationId); } }));
+  runtime.registerService(
+    new ChatService({
+      bus,
+      getLlm: () => getLlm(),
+      submitTask: (task, correlationId) => {
+        const sup = getSupervisor();
+        if (!sup) return Promise.reject(new Error("supervisor not available"));
+        const isOrchestrationRequest =
+          correlationId === "trading-floor" ||
+          correlationId === "general" ||
+          correlationId === "supervisor" ||
+          task.toLowerCase().startsWith("/plan") ||
+          task.toLowerCase().startsWith("orchestrate:") ||
+          task.toLowerCase().startsWith("pipeline:");
+        if (!isOrchestrationRequest) {
+          const plan = sup.plan(task);
+          return Promise.resolve({
+            planId: plan.id,
+            skipped: true,
+            reason: "Single agent targeted; multi-agent pipeline suppressed",
+          });
+        }
+        return (
+          sup as unknown as {
+            submitTask: (t: string, c?: string) => Promise<unknown>;
+          }
+        ).submitTask(task, correlationId);
+      },
+    })
+  );
 
   return runtime;
 }
@@ -467,6 +536,14 @@ export function getOpencodeGateway(): OpencodeCliGateway | undefined {
   return getService<OpencodeGatewayService>(SERVICE_IDS.OPENCODE_GATEWAY)?.getInstance();
 }
 
+/**
+ * Generic CLI adapter layer. The core runtime only talks to the CLI manager —
+ * never to a concrete adapter implementation.
+ */
+export function getCliManager(): CliManager {
+  return getService<CliManagerService>(SERVICE_IDS.CLI_MANAGER)?.getInstance() ?? getDefaultCliManager();
+}
+
 export function getDialogueEngine(): DialogueEngine | undefined {
   return getService<DialogueEngineService>(SERVICE_IDS.DIALOGUE_ENGINE)?.getInstance();
 }
@@ -481,9 +558,12 @@ let agentRuntimeInstance: AgentRuntime | null = null;
 
 function getCliSessionManager(): CliSessionManager {
   if (!cliSessionManagerInstance) {
-    const daemon = OpencodeDaemonManager.getInstance();
-    const daemonUrl = daemon?.getDaemonUrl() ?? undefined;
-    cliSessionManagerInstance = createCliSessionManager({ daemonUrl });
+    // Daemon URL comes from the adapter that owns server mode (OpenCode).
+    const daemonUrl = getCliManager().get("opencode")?.daemon?.getUrl() ?? undefined;
+    cliSessionManagerInstance = createCliSessionManager({
+      daemonUrl,
+      cliManager: getCliManager(),
+    });
   }
   return cliSessionManagerInstance;
 }
@@ -497,7 +577,11 @@ export function getProviderRegistry(): ProviderRegistry {
 
 export function getEngineManager(): EngineManager {
   if (!engineManagerInstance) {
-    engineManagerInstance = new EngineManager(getProviderRegistry(), getCliSessionManager());
+    engineManagerInstance = new EngineManager(
+      getProviderRegistry(),
+      getCliSessionManager(),
+      getCliManager(),
+    );
   }
   return engineManagerInstance;
 }

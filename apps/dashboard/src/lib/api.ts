@@ -125,6 +125,45 @@ export function fetchOllamaModelsApi(): Promise<{ available: boolean; models: Ar
   return fetchJson<{ available: boolean; models: Array<{ id: string; name: string }>; message?: string }>("/api/ollama/models");
 }
 
+export interface OpencodeModelsResponse {
+  available: boolean;
+  cliPath: string | null;
+  total: number;
+  models: string[];
+  grouped: Record<string, string[]>;
+  projectConfig?: {
+    exists: boolean;
+    path?: string;
+    default_model?: string;
+    default_model_available?: boolean;
+    small_model?: string;
+    small_model_available?: boolean;
+    agents?: Record<string, {
+      model: string;
+      small_model: string;
+      model_available: boolean;
+      small_model_available: boolean;
+    }>;
+  };
+  cachedAt?: number;
+  error?: string;
+}
+
+export function fetchOpencodeModelsApi(refresh = false): Promise<OpencodeModelsResponse> {
+  return fetchJson<OpencodeModelsResponse>(`/api/opencode/models${refresh ? "?refresh=true" : ""}`);
+}
+
+export function updateOpencodeModelApi(opts: {
+  model: string;
+  agentId?: string;
+  applyToAll?: boolean;
+}): Promise<{ ok: boolean; data?: OpencodeModelsResponse }> {
+  return fetchJson<{ ok: boolean; data?: OpencodeModelsResponse }>("/api/opencode/models", {
+    method: "POST",
+    body: JSON.stringify(opts),
+  });
+}
+
 export function saveEngineCliOverride(id: string, command: string): Promise<{ ok: boolean; engine: EngineApiStatus }> {
   return fetchJson<{ ok: boolean; engine: EngineApiStatus }>(`/api/llm/engines/${encodeURIComponent(id)}/cli`, {
     method: "POST",

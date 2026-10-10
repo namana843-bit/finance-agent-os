@@ -36,6 +36,7 @@ import {
 import { createExchangeProvider } from "../providers/index.js";
 import { websearchTool, executeWebsearch } from "./websearch.js";
 import { opencodeTool, executeOpencodeRun } from "./opencode.js";
+import { cliRunTool, executeCliRun } from "./cli.js";
 
 export interface ToolContext {
   bus: TypedEventBus;
@@ -277,6 +278,18 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
     }
   };
 
+  // Generic CLI adapter layer — works with any registered CLI adapter.
+  const getCliManager = () => {
+    try {
+      const svc = (runtime as unknown as { getService?: (id: string) => unknown }).getService?.("cli-manager") as
+        | { getInstance?: () => unknown }
+        | undefined;
+      return svc?.getInstance?.() as never;
+    } catch {
+      return undefined;
+    }
+  };
+
   const tools: Array<[ToolDefinition, (input: Record<string, unknown>) => Promise<unknown> | unknown]> = [
     // Legacy / existing
     [getMarketPriceTool(), (input) => executeGetMarketPrice(ctx, input)],
@@ -305,6 +318,7 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
     [indicatorTool(), (input) => executeIndicator(input)],
     [supertrendTool(), (input) => executeSupertrend(input)],
     [opencodeTool(), (input) => executeOpencodeRun(getOpencodeGateway, input)],
+    [cliRunTool(), (input) => executeCliRun(getCliManager, input)],
   ];
 
   for (const [def, handler] of tools) {

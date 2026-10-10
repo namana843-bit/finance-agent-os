@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { SettingsEngines } from "@/components/chat/EnginesPanel";
+import { CliAdaptersPanel } from "@/components/chat/CliAdaptersPanel";
 import { fetchBots, type Bot } from "@/lib/chat-api";
 import {
   fetchEngineStatuses,
@@ -143,6 +144,8 @@ export default function EnginesPage() {
           Back to dashboard
         </a>
       </div>
+
+      <CliAdaptersPanel />
 
       <SettingsEngines
         bots={bots}

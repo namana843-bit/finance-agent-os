@@ -5,7 +5,9 @@ import { CliProvider } from "./providers/cli-engine.js";
 import { OllamaProvider } from "./providers/ollama.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compat.js";
 import { OpenAIProvider } from "./providers/openai.js";
-import { CliSessionManager } from "./cli-session.js";
+import { CliSessionManager, createCliSessionManager } from "./cli-session.js";
+import type { CliManager } from "../cli/index.js";
+import { getDefaultCliManager } from "../cli/index.js";
 
 export class ProviderRegistry {
   private readonly providers = new Map<string, LLMProvider>();
@@ -18,13 +20,18 @@ export class ProviderRegistry {
     this.register(new OpenAIProvider());
     this.register(new OllamaProvider());
     this.register(new OpenAICompatibleProvider({ baseUrl: "http://127.0.0.1:1234/v1" }));
+    // CLI defaults come from the registered CLI adapters (registration layer),
+    // so adding a new CLI never requires touching the engine registry.
+    const opencode = getDefaultCliManager().get("opencode");
+    const meta = opencode?.getMetadata();
     this.register(
       new CliProvider({
         id: "cli-opencode",
-        name: "OpenCode CLI",
-        command: "opencode",
-        args: ["run", "--auto", "{prompt}"],
+        name: `${meta?.name ?? "OpenCode"} CLI`,
+        command: meta?.executable ?? "opencode",
+        args: meta ? [...meta.defaultArgs] : ["run", "--auto", "{prompt}"],
         timeoutMs: 300000,
+        cliManager: getDefaultCliManager(),
       }),
     );
   }
@@ -86,15 +93,27 @@ export class EngineManager {
   private readonly registry: ProviderRegistry;
   private readonly engineConfigs = new Map<string, EngineConfig>();
   private readonly cliSessionManager: CliSessionManager;
+  private readonly cliManager: CliManager;
 
-  constructor(registry: ProviderRegistry, cliSessionManager?: CliSessionManager) {
+  constructor(
+    registry: ProviderRegistry,
+    cliSessionManager?: CliSessionManager,
+    cliManager?: CliManager,
+  ) {
     this.registry = registry;
-    this.cliSessionManager = cliSessionManager ?? new CliSessionManager();
+    this.cliManager = cliManager ?? getDefaultCliManager();
+    this.cliSessionManager =
+      cliSessionManager ?? createCliSessionManager({ cliManager: this.cliManager });
     this.loadDefaultConfigs();
   }
 
   getCliSessionManager(): CliSessionManager {
     return this.cliSessionManager;
+  }
+
+  /** CLI manager backing every CLI engine resolution in this manager. */
+  getCliManager(): CliManager {
+    return this.cliManager;
   }
 
   private loadDefaultConfigs(): void {
@@ -239,8 +258,20 @@ export class EngineManager {
       return { provider: directProvider };
     }
 
-    // CLI fallback for any engine matching cli or opencode
-    if (engineId.includes("cli") || engineId.includes("opencode")) {
+    // CLI fallback: resolve through the CLI manager's adapters, then fall back to
+    // any registered CLI provider (preserves legacy behaviour for unknown ids).
+    const adapter = this.cliManager.findByEngineId(engineId);
+    if (adapter) {
+      const adapterEngine = `cli-${adapter.getMetadata().id}`;
+      const adapterProvider =
+        this.registry.get(adapterEngine) ??
+        Array.from(this.registry.list()).find((p) => p instanceof CliProvider);
+      if (adapterProvider) {
+        return { provider: adapterProvider };
+      }
+    }
+
+    if (engineId.includes("cli")) {
       const cliProvider = this.registry.get("cli") || Array.from(this.registry.list()).find((p) => p instanceof CliProvider);
       if (cliProvider) {
         return { provider: cliProvider };
@@ -314,6 +345,7 @@ export class EngineManager {
       args,
       timeoutMs: 300000,
       sessionManager: this.cliSessionManager,
+      cliManager: this.cliManager,
     });
     this.registry.register(provider);
     return provider;
