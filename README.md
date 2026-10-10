@@ -17,7 +17,7 @@ An event-driven autonomous financial operating system powered by specialized col
 - **Fastify SSE API** on `:4132` — 70 REST endpoints + event stream
 - **23 registered finance tools** + 4 default strategies (EMA/RSI/MACD/Momentum)
 - **Generic CLI adapter layer** — `Desktop UI → CLI Manager → CLI Adapter` (`apps/server/src/cli/`): OpenCode is one adapter (`opencode`) among future adapters (Claude Code, Codex, Gemini, custom descriptors); backend discovery via `GET /api/cli/adapters`, normalized `cli.*` events (details: `docs/CLI_ADAPTERS.md`)
-- **Opencode CLI Gateway** — permissioned `opencode --version` path allowlist with `useShell=false`, now backed by the OpenCode adapter
+- **Opencode CLI Gateway** — permissioned `opencode run` with free-text prompts (only `&;|`$<>\n\r` blocked in prompt text), bare `command`-string normalization, PATH (`where`/`which`) fallback before `npx`, 24-command allowlist matching `opencode --help`
 
 ## 🏛️ System Architecture
 
@@ -335,7 +335,7 @@ pnpm --filter @finance/server cli add agent my-agent --template quant
 
 - **CORS** (`core/server.ts:34`): `origin:true+credentials:true` → `ALLOWED_ORIGINS` allowlist callback (fixes wildcard CSRF)
 - **/api/publish** (`core/server.ts:392`): denylist `supervisor.|risk.|gateway.|order.|trade.proposal_|audit.kill_switch|opencode.|cli.` → `403`
-- **Opencode gateway** (`gateway/opencode-cli-gateway.ts`): extended metachars `; & | $ > < \ ( ) { } [ ] ! % * ? ~`, per-arg `safeArgRe`, `useShell=false` even for `npx` fallback
+- **Opencode gateway** (`gateway/opencode-cli-gateway.ts`): strict metachars on flags/prefix, relaxed set (`&;|`$<>\n\r`) on free-text `run` prompt; prompt kept as single argv (no whitespace split); `useShell=false` except `.cmd/.ps1` shims + `npx` fallback; PATH fallback via async resolver
 - **Kill-switch** (`safety/kill-switch.ts:76`): no `EMERGENCY_OVERRIDE_SECRET_DEFAULT`; live throws if missing
 - **Persistence**: unified `DATA_DIR` + `writeFileAtomic` (`atomic.ts`) across `storage.ts`, `llm/persistence.ts`, `llm/engines.ts`, `order-manager.ts`
 - **Secrets**: every memory/log payload passes `sanitizeSecrets()` — `/^(api[_-]?key|secret|token|password|credential)/i` → `[REDACTED]`
@@ -353,7 +353,7 @@ Run via `StrategyLab` (`strategy-lab/service.ts`) or `POST /api/backtest/run`.
 
 ```bash
 pnpm typecheck
-pnpm --filter @finance/server test        # vitest — 28 files (test counts pending re-run)
+pnpm --filter @finance/server test        # vitest — 28 files, 380 tests
 pnpm --filter @finance/core test          # event-bus, registries, runtime
 node scripts/verify-honesty.mjs           # live honesty checks (server must be running)
 ```
@@ -366,7 +366,15 @@ Workflows (`.github/workflows/`):
 | `pages.yml` | push → `main` | builds dashboard, deploys to GitHub Pages |
 | `release.yml` | tag `v*` | Electron desktop builds for Windows/macOS/Linux |
 
-Recent work: [#26 Markdown instruction system](https://github.com/namana843-bit/finance-agent-os/pull/26) · [#27 OpenCode orchestrator config](https://github.com/namana843-bit/finance-agent-os/pull/27)
+Recent work: [#26 Markdown instruction system](https://github.com/namana843-bit/finance-agent-os/pull/26) · [#27 OpenCode orchestrator config](https://github.com/namana843-bit/finance-agent-os/pull/27) · [#29 CLI adapter layer + sandbox](https://github.com/namana843-bit/finance-agent-os/pull/29) · [#30 opencode gateway prompt fix](https://github.com/namana843-bit/finance-agent-os/pull/30)
+
+## 🔮 Future (single-user, in-process — no per-bot Docker, no multi-user auth)
+
+- **Policy UI** — `/admin/boundaries` deny-before-allow per-tool rules (2–3 days)
+- **Encrypted credentials** — `/admin/credentials` at rest, never logged (1–2 days)
+- **Audit UI** — `/admin/audit` permitted/refused/failed + rule name (2 days)
+- **Postgres** — replace `.data/*.json` when multi-process needed (3–5 days, optional solo)
+- **AG-UI endpoint** — LangGraph/Mastra/CrewAI as bots (1 week, only if external agents wanted)
 
 ## 🔒 License
 MIT © Finance Agent OS
