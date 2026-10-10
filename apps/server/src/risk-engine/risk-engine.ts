@@ -143,7 +143,7 @@ export class RiskEngine {
     // 6. Max position size (quantity) check
     const existingPosition = portfolio.positions.find((p) => p.symbol.toUpperCase() === sym);
     const currentQty = existingPosition ? existingPosition.quantity : 0;
-    if (request.side === "buy" && (currentQty + approvedQuantity > this.config.maxPositionSize)) {
+    if (currentQty + approvedQuantity > this.config.maxPositionSize) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Projected position ${currentQty + approvedQuantity} > maxPositionSize ${this.config.maxPositionSize}`);
     }
     rulesChecked.push("position_size");
@@ -151,7 +151,7 @@ export class RiskEngine {
     // 7. Margin / Cash check
     rulesChecked.push("margin_check");
     const requiredMargin = this.config.maxLeverage > 1 ? positionValue / this.config.maxLeverage : positionValue;
-    if (request.side === "buy" && requiredMargin > portfolio.cash) {
+    if (requiredMargin > portfolio.cash) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Insufficient cash/margin: required ${requiredMargin.toFixed(2)} > available ${portfolio.cash.toFixed(2)}`);
     }
 
@@ -164,7 +164,7 @@ export class RiskEngine {
 
     // 9. Open positions check
     const openPositions = portfolio.positions.length;
-    if (request.side === "buy" && !existingPosition && openPositions >= this.config.maxOpenPositions) {
+    if (!existingPosition && openPositions >= this.config.maxOpenPositions) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Max open positions ${openPositions} >= ${this.config.maxOpenPositions}`);
     }
     rulesChecked.push("open_positions");

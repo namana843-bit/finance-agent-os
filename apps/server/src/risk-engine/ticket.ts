@@ -213,6 +213,13 @@ export function verifyRiskTicket(
     };
   }
 
+  // All checks passed: redeem atomically so the same ticket cannot verify
+  // twice (unless the caller explicitly opts into allowReplay).
+  if (!opts?.allowReplay) {
+    usedTickets.add(ticket.ticketId);
+    usedTicketTimestamps.set(ticket.ticketId, ticket.expiresAt);
+  }
+
   return { valid: true };
 }
 
