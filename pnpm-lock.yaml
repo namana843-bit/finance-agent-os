@@ -127,6 +127,9 @@ importers:
       '@finance/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@prisma/client':
+        specifier: 5.22.0
+        version: 5.22.0(prisma@5.22.0)
       fastify:
         specifier: ^5.3.2
         version: 5.12.1

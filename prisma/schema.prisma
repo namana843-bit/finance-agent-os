@@ -202,3 +202,99 @@ model Trade {
   @@index([status])
   @@index([symbol, openedAt])
 }
+
+// ---------------------------------------------------------------------------
+// Custom coworker bots (Step 1 — persistent data model)
+// Additive only: applied with `prisma db push` (no migrations dir in repo).
+// Retention policy (enforced by BotStore, see apps/server/src/bots/):
+//   - Default lifecycle is soft: status active -> archived (data retained).
+//   - Hard delete is explicit only via purge (transactional, ordered).
+//   - FKs use Restrict so a bot with sessions/messages can never be
+//     deleted accidentally; purge deletes children first, then the bot.
+// Secrets policy: systemPrompt/settingsJson must NEVER contain API keys,
+// tokens, or credentials (BotStore rejects obvious secret keys).
+// ---------------------------------------------------------------------------
+
+model BotProfile {
+  id           String   @id @default(uuid())
+  name         String
+  description  String?
+  // System instructions that define the bot's job (cf. coworker builder).
+  systemPrompt String
+  // Selected CLI provider id (e.g. "cline", "opencode", "codex").
+  engine       String
+  // Model identifier where the provider supports it.
+  model        String?
+  // Provider-specific settings as JSON. Never secrets (see policy above).
+  settingsJson String   @default("{}")
+  // Tool allowlist as JSON array.
+  toolsJson    String   @default("[]")
+  // active | archived (soft-delete; hard delete only via explicit purge).
+  status       String   @default("active")
+  // Optional owner (User.id). Nullable: single-user deployment has no login.
+  ownerId      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions BotSession[]
+
+  @@index([status])
+  @@index([ownerId])
+  @@index([engine])
+}
+
+model BotSession {
+  id         String    @id @default(uuid())
+  botId      String
+  title      String?
+  // active | closed | archived.
+  status     String    @default("active")
+  // Session-specific configuration as JSON (temperature, cwd, etc.).
+  configJson String    @default("{}")
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  closedAt   DateTime?
+
+  bot      BotProfile              @relation(fields: [botId], references: [id], onDelete: Restrict)
+  messages BotMessage[]
+  providerMappings ProviderSessionMapping[]
+
+  @@index([botId, status])
+  @@index([botId, createdAt])
+}
+
+model BotMessage {
+  id        String   @id @default(uuid())
+  sessionId String
+  // user | assistant | tool | system.
+  role      String
+  content   String
+  // Tool-call ids, token usage, error flags, etc. as JSON.
+  metadataJson String   @default("{}")
+  createdAt DateTime @default(now())
+
+  session BotSession @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+
+  @@index([sessionId, createdAt])
+}
+
+// Tracks EXTERNAL CLI session identifiers separately from our internal
+// BotSession ids, enabling session resumption on providers that support it
+// (e.g. Cline `-T` task resumption). One row per (session, provider).
+// This maps to the in-memory CliSessionManager runtime — it does not
+// replace it: the manager owns live processes, this table owns resumption.
+model ProviderSessionMapping {
+  id                String   @id @default(uuid())
+  sessionId         String
+  // CLI provider id (e.g. "cline").
+  providerId        String
+  // The provider's own session/task identifier.
+  externalSessionId String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  session BotSession @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+
+  @@unique([sessionId, providerId])
+  @@index([providerId, externalSessionId])
+}
