@@ -115,6 +115,7 @@ describe("detectCliEngines", () => {
     };
     const engines = await detectCliEngines(execImpl);
     expect(engines.map((e) => e.command)).toEqual([
+      "cline",
       "claude",
       "codex",
       "gemini",
@@ -147,7 +148,7 @@ describe("detectCliEngines", () => {
       throw new Error("probe exploded");
     };
     const engines = await detectCliEngines(execImpl);
-    expect(engines).toHaveLength(12);
+    expect(engines).toHaveLength(13);
     for (const e of engines) {
       expect(e.found).toBe(false);
     }

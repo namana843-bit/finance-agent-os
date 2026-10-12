@@ -1,7 +1,8 @@
 // ============================================================================
 // Finance Agent OS — CLI Adapter Layer (public entry point)
 //
-//   Desktop UI / Runtime → CliManager → CliAdapter → OpenCodeAdapter | …
+//   Desktop UI / Runtime → CliManager → CliAdapter → ClineAdapter | …
+// (OpenCodeAdapter is retained as a deprecated fallback.)
 //
 // This is the ONLY module allowed to know which concrete adapters exist.
 // Everything else depends on the CliAdapter interface + CliManager API.
@@ -9,6 +10,7 @@
 
 import type { TypedEventBus } from "@finance/core";
 import { CliManager } from "./cli-manager.js";
+import { ClineAdapter, createClineAdapter } from "./adapters/cline-adapter.js";
 import { OpenCodeAdapter, createOpenCodeAdapter } from "./adapters/opencode-adapter.js";
 import { ClaudeAdapter, createClaudeAdapter } from "./adapters/claude-adapter.js";
 import { CodexAdapter, createCodexAdapter } from "./adapters/codex-adapter.js";
@@ -36,6 +38,7 @@ export { CliManager, CliManagedSession } from "./cli-manager.js";
 export type { CliManagerOptions } from "./cli-manager.js";
 export { JsonLineTransport } from "./protocol-transport.js";
 export type { JsonLineTransportStreams } from "./protocol-transport.js";
+export { ClineAdapter, createClineAdapter } from "./adapters/cline-adapter.js";
 export { OpenCodeAdapter, createOpenCodeAdapter } from "./adapters/opencode-adapter.js";
 export { ClaudeAdapter, createClaudeAdapter, createClaudeCodeAdapter } from "./adapters/claude-adapter.js";
 export type { ClaudeCodeAdapter } from "./adapters/claude-adapter.js";
@@ -71,11 +74,24 @@ export {
   resolveOpencodeCliPath,
 } from "./adapters/opencode-paths.js";
 export type { OpencodeCliInfo } from "./adapters/opencode-paths.js";
+export {
+  CLINE_ALLOWED_COMMANDS,
+  CLINE_DEFAULT_RUN_ARGS,
+  clineCandidatePaths,
+  clineEnvCliPath,
+  clineNeedsShell,
+  probeClineVersion,
+  resolveClineCliPath,
+} from "./adapters/cline-paths.js";
+export type { ClineCliInfo } from "./adapters/cline-paths.js";
 
 /** Build a manager with the platform's default adapters registered. */
 export function createDefaultCliManager(opts?: { bus?: TypedEventBus }): CliManager {
   const manager = new CliManager(opts);
   // --- Adapter registration layer (add future CLIs here only) -------------
+  // Cline is the PRIMARY agent CLI; OpenCode stays registered as a
+  // deprecated fallback so existing consumers keep working.
+  manager.register(createClineAdapter());
   manager.register(createOpenCodeAdapter());
   manager.register(createClaudeAdapter());
   manager.register(createCodexAdapter());
@@ -89,8 +105,8 @@ export function createDefaultCliManager(opts?: { bus?: TypedEventBus }): CliMana
 let defaultManager: CliManager | null = null;
 
 /**
- * Shared CLI manager — one instance so that adapter state (e.g. the OpenCode
- * daemon URL) is consistent between the gateway, the LLM layer and the API.
+ * Shared CLI manager — one instance so that adapter state is consistent
+ * between the gateway, the LLM layer and the API.
  */
 export function getDefaultCliManager(): CliManager {
   if (!defaultManager) {

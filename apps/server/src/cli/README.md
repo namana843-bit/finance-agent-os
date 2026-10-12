@@ -7,8 +7,9 @@
 // edits in the core streaming code — the wrong coupling.
 //
 // Now: Desktop UI → CLI Manager → CLI Adapter Interface → implementations.
-// OpenCode is just one adapter. Adding a CLI = one new adapter class +
-// one registration line. Core runtime and desktop UI never change.
+// Cline is the primary adapter; OpenCode is a deprecated fallback. Adding a
+// CLI = one new adapter class + one registration line. Core runtime and
+// desktop UI never change.
 //
 // Files:
 //   apps/server/src/cli/types.ts               metadata · validation · options
@@ -28,16 +29,27 @@
 //                                              start · sendTask · streamEvents
 //                                              · stop · normalized `cli.*` bus
 //   apps/server/src/cli/adapters/
+//     cline-paths.ts                           ALL Cline specifics: path
+//                                              candidates, CLINE_CLI_PATH
+//                                              override (+ OPENCODE_CLI_PATH
+//                                              fallback), version probe,
+//                                              allowlist (per docs.cline.bot)
+//     cline-adapter.ts                         ClineAdapter (PRIMARY): one-shot
+//                                              `cline --json [-m model]
+//                                              <prompt>`; persistent mode NOT
+//                                              advertised (Core gRPC unverified)
 //     opencode-paths.ts                        ALL OpenCode specifics: path
 //                                              candidates, env override,
 //                                              version probe, allowlist,
 //                                              daemon args, attach flags
-//     opencode-adapter.ts                      OpenCodeAdapter (argv, parsing,
+//     opencode-adapter.ts                      OpenCodeAdapter (DEPRECATED
+//                                              fallback: argv, parsing,
 //                                              validation, daemon ownership)
 //     opencode-daemon.ts                       `opencode serve …` lifecycle
 //     custom-adapter.ts                        descriptor-driven CLIs
 //   apps/server/src/cli/index.ts               registration layer — the only
 //                                              place that names adapters
+//                                              (cline FIRST, then opencode…)
 //
 // Events (normalized, published as `cli.<type>` on the platform bus):
 //   session_started · task_started · output(stdout/stderr) · text_delta
@@ -130,7 +142,9 @@
 //   • `shell: true` ONLY when an adapter declares OS wrappers via
 //     `requiresShell()` (.cmd/.bat/.ps1); user task text travels as argv or
 //     stdin data, never in a shell command string
-//   • the OpenCode permissioned gateway keeps its allowlist + metachar
-//     rejection (gateway/opencode-cli-gateway.ts) on top of the adapter
+//   • the permissioned gateways keep their allowlist + metachar rejection
+//     (gateway/agent-cli-gateway.ts base; cline primary, opencode deprecated)
+//     on top of the adapter
 //   • `cli.*` bus events are system events: `/api/publish` rejects them
+//     (as well as `opencode.*` and `cline.*`)
 // ============================================================================

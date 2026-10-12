@@ -42,6 +42,7 @@ import { UsageTracker } from "../llm/usage.js";
 import type { LlmService } from "../llm/llm-service.js";
 
 import { OpencodeCliGateway } from "../gateway/opencode-cli-gateway.js";
+import { ClineCliGateway } from "../gateway/cline-cli-gateway.js";
 import { OpencodeDaemonManager } from "../gateway/opencode-daemon.js";
 import { CliManager, getDefaultCliManager } from "../cli/index.js";
 
@@ -63,6 +64,7 @@ export const SERVICE_IDS = {
   STRATEGY_LAB: "strategy-lab",
   EXECUTION_PIPELINE: "execution-pipeline",
   OPENCODE_GATEWAY: "opencode-gateway",
+  CLINE_GATEWAY: "cline-gateway",
   CLI_MANAGER: "cli-manager",
   CHAT: "chat",
   APPROVALS: "approvals",
@@ -169,6 +171,25 @@ class AgentMemoryService extends BaseServiceWrapper<AgentMemory> {
     await this.inner.flush().catch(() => {});
     (this as unknown as { info: ServiceInfo }).info.status = "stopped";
     console.log(`[service:${SERVICE_IDS.AGENT_MEMORY}] stopped`);
+  }
+}
+
+class ClineGatewayService extends BaseServiceWrapper<ClineCliGateway> {
+  constructor(bus: import("@finance/core").TypedEventBus) {
+    super(
+      { id: SERVICE_IDS.CLINE_GATEWAY, name: "Cline CLI Gateway", description: "Permissioned gateway for cline CLI path + execution (path gateways)" },
+      new ClineCliGateway(bus)
+    );
+  }
+  override async start(): Promise<void> {
+    await this.inner.getCliInfo().catch(() => {});
+    (this as unknown as { info: ServiceInfo }).info.status = "active";
+    const cli = await this.inner.getCliInfo().catch(() => null);
+    console.log(`[service:${SERVICE_IDS.CLINE_GATEWAY}] started cli=${cli?.cliPath ?? "not found"} exists=${cli?.exists ?? false}`);
+  }
+  override async stop(): Promise<void> {
+    (this as unknown as { info: ServiceInfo }).info.status = "stopped";
+    console.log(`[service:${SERVICE_IDS.CLINE_GATEWAY}] stopped`);
   }
 }
 
@@ -368,7 +389,11 @@ const riskAgent = new RiskAgent(bus);
   const agentMemoryService = new AgentMemoryService();
   runtime.registerService(agentMemoryService);
 
-  // OpenCode CLI Path Gateway — permissioned path gateways for opencode binary
+  // Cline CLI Path Gateway (PRIMARY) — permissioned path gateways for cline binary
+  const clineGatewayService = new ClineGatewayService(bus);
+  runtime.registerService(clineGatewayService);
+
+  // OpenCode CLI Path Gateway (deprecated) — kept so existing consumers work
   const opencodeGatewayService = new OpencodeGatewayService(bus);
   runtime.registerService(opencodeGatewayService);
 
@@ -532,6 +557,11 @@ export function getLlm(): LlmService | undefined {
   return getService<LlmServiceWrapper>(SERVICE_IDS.LLM)?.getInstance();
 }
 
+export function getClineGateway(): ClineCliGateway | undefined {
+  return getService<ClineGatewayService>(SERVICE_IDS.CLINE_GATEWAY)?.getInstance();
+}
+
+/** @deprecated Use getClineGateway() instead. */
 export function getOpencodeGateway(): OpencodeCliGateway | undefined {
   return getService<OpencodeGatewayService>(SERVICE_IDS.OPENCODE_GATEWAY)?.getInstance();
 }

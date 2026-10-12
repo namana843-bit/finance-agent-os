@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import { TypedEventBus, type EventBusOptions } from "@finance/core";
 import type { FinanceEvent, HistoryFilter } from "@finance/shared";
-import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory, getCliManager } from "./runtime.js";
+import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker, getClineGateway, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory, getCliManager } from "./runtime.js";
 import { ApprovalError } from "../approvals/types.js";
 import { COWORKER_TEMPLATES, templateSystemPrompt, validateCoworkerInput } from "../coworkers/index.js";
 import type { LlmConfig } from "../llm/types.js";
@@ -390,7 +390,7 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     if (!body.type || typeof body.type !== "string" || body.type.trim() === "") {
       return reply.status(400).send({ error: "field 'type' is required and must be a non-empty string" });
     }
-    const deniedPrefixes = ["supervisor.", "risk.", "gateway.", "order.", "trade.proposal_", "audit.kill_switch", "opencode.", "cli."];
+    const deniedPrefixes = ["supervisor.", "risk.", "gateway.", "order.", "trade.proposal_", "audit.kill_switch", "opencode.", "cline.", "cli."];
     const ttype = body.type.trim();
     if (deniedPrefixes.some((p) => ttype.startsWith(p))) {
       return reply.status(403).send({ error: "event type '" + ttype + "' is not allowed via /api/publish" });
@@ -577,7 +577,53 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   // -------------------------------------------------------------------------
-  // OpenCode CLI Path Gateways — permissioned path gateways for `opencode`
+  // Cline CLI Path Gateways (PRIMARY) — permissioned path gateways for `cline`
+  // -------------------------------------------------------------------------
+  app.get("/api/cline/cli-path", async () => {
+    const gw = getClineGateway();
+    if (!gw) return { cliPath: null, error: "cline gateway not available" };
+    const info = await gw.getCliInfo();
+    return { ...info, gateway: "cline-cli" };
+  });
+
+  app.get("/api/cline/gateway/stats", async () => {
+    const gw = getClineGateway();
+    return { gateway: gw ? gw.getStats() : null };
+  });
+
+  app.get("/api/cline/paths", async () => {
+    const gw = getClineGateway();
+    if (!gw) return { error: "cline gateway not available" };
+    return gw.listPathGateways();
+  });
+
+  app.post<{
+    Body: { command?: string; args?: string[]; agentId?: string; correlationId?: string };
+  }>("/api/cline/run", async (request, reply) => {
+    const cgw = getClineGateway();
+    if (!cgw) return reply.status(503).send({ error: "cline gateway not available" });
+    const body = request.body ?? {};
+    // Keep a bare prompt as ONE arg (do NOT split free text on whitespace).
+    const args = body.args ?? (body.command ? [body.command] : []);
+    if (args.length === 0) {
+      return reply.status(400).send({ error: "command or args required (e.g. {\"args\":[\"--version\"]})" });
+    }
+    try {
+      const result = await cgw.run({
+        command: body.command ?? args.join(" "),
+        args,
+        agentId: body.agentId ?? "api",
+        correlationId: body.correlationId,
+      });
+      const status = result.gated.allowed ? (result.ok ? 200 : 500) : 403;
+      return reply.status(status).send({ result });
+    } catch (err) {
+      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // OpenCode CLI Path Gateways (deprecated — kept for backward compatibility)
   // -------------------------------------------------------------------------
   app.get("/api/opencode/cli-path", async () => {
     const gw = getOpencodeGateway();
@@ -619,12 +665,15 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
 
   app.get("/api/gateways", async () => {
     const gw = getGateway();
+    const cgw = getClineGateway();
     const ogw = getOpencodeGateway();
     return {
       financeGateway: gw ? { stats: gw.getStats(), config: gw.getConfig() } : null,
+      clineGateway: cgw ? cgw.listPathGateways() : null,
       opencodeGateway: ogw ? ogw.listPathGateways() : null,
       paths: {
         finance: ["/api/gateway/trade", "/api/gateway/stats"],
+        cline: ["/api/cline/cli-path", "/api/cline/paths", "/api/cline/run", "/api/cline/gateway/stats"],
         opencode: ["/api/opencode/cli-path", "/api/opencode/paths", "/api/opencode/models", "/api/opencode/run", "/api/opencode/gateway/stats"],
       },
     };

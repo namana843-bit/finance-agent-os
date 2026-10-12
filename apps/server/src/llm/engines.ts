@@ -19,6 +19,7 @@ interface KnownEngine {
 }
 
 const KNOWN_ENGINES: KnownEngine[] = [
+  { name: "cline", command: "cline", suggestedArgs: ["--json", "{prompt}"] },
   {
     name: "claude",
     command: "claude",
@@ -105,6 +106,15 @@ export interface EngineCatalogEntry {
 
 export const ENGINE_CATALOG: EngineCatalogEntry[] = [
   {
+    id: "cline",
+    name: "Cline",
+    group: "cloud",
+    kind: "cli",
+    command: "cline",
+    install: "npm install -g cline, then run `cline auth`",
+    suggestedArgs: ["--json", "{prompt}"],
+  },
+  {
     id: "claude",
     name: "Claude",
     group: "cloud",
@@ -172,7 +182,7 @@ export const ENGINE_CATALOG: EngineCatalogEntry[] = [
   },
   {
     id: "opencode",
-    name: "OpenCode",
+    name: "OpenCode (deprecated — use Cline)",
     group: "cloud",
     kind: "cli",
     command: "opencode",

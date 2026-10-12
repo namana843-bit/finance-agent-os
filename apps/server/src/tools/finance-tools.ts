@@ -36,6 +36,7 @@ import {
 import { createExchangeProvider } from "../providers/index.js";
 import { websearchTool, executeWebsearch } from "./websearch.js";
 import { opencodeTool, executeOpencodeRun } from "./opencode.js";
+import { clineTool, executeClineRun } from "./cline.js";
 import { cliRunTool, executeCliRun } from "./cli.js";
 
 export interface ToolContext {
@@ -267,6 +268,17 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
   // Select via EXCHANGE_PROVIDER env: "memory" (default, deterministic) | "binance" (live).
   const exchangeProvider = createExchangeProvider();
 
+  const getClineGateway = (): { run: (req: { command: string; args?: string[]; agentId?: string }) => Promise<unknown> } | undefined => {
+    try {
+      const svc = (runtime as unknown as { getService?: (id: string) => unknown }).getService?.("cline-gateway") as
+        | { getInstance?: () => { run: (req: { command: string; args?: string[]; agentId?: string }) => Promise<unknown> } }
+        | undefined;
+      return svc?.getInstance?.() as never;
+    } catch {
+      return undefined;
+    }
+  };
+
   const getOpencodeGateway = (): { run: (req: { command: string; args?: string[]; agentId?: string }) => Promise<unknown> } | undefined => {
     try {
       const svc = (runtime as unknown as { getService?: (id: string) => unknown }).getService?.("opencode-gateway") as
@@ -317,6 +329,7 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
     [bollingerBandsTool(), (input) => executeBollingerBands(input)],
     [indicatorTool(), (input) => executeIndicator(input)],
     [supertrendTool(), (input) => executeSupertrend(input)],
+    [clineTool(), (input) => executeClineRun(getClineGateway, input)],
     [opencodeTool(), (input) => executeOpencodeRun(getOpencodeGateway, input)],
     [cliRunTool(), (input) => executeCliRun(getCliManager, input)],
   ];

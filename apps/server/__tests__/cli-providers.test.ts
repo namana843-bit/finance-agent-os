@@ -25,10 +25,11 @@ import { AcpConnection } from "../src/cli/index.js";
 import { createDefaultCliManager } from "../src/cli/index.js";
 
 describe("Provider registration", () => {
-  it("registers all six providers in the default manager", () => {
+  it("registers all seven providers in the default manager", () => {
     const manager = createDefaultCliManager();
     expect(manager.listMetadata().map((m) => m.id).sort()).toEqual([
       "claude",
+      "cline",
       "cline-cli",
       "codex",
       "cursor-cli",
@@ -36,10 +37,11 @@ describe("Provider registration", () => {
       "opencode",
     ]);
     // Engine-alias lookup keeps working for every provider.
+    // "cline" resolves to the primary adapter (first registration wins).
     expect(manager.findByEngineId("codex")?.getMetadata().id).toBe("codex");
     expect(manager.findByEngineId("gemini")?.getMetadata().id).toBe("gemini");
     expect(manager.findByEngineId("cursor")?.getMetadata().id).toBe("cursor-cli");
-    expect(manager.findByEngineId("cline")?.getMetadata().id).toBe("cline-cli");
+    expect(manager.findByEngineId("cline")?.getMetadata().id).toBe("cline");
     expect(manager.findByEngineId("opencode-cli")?.getMetadata().id).toBe("opencode");
   });
 });

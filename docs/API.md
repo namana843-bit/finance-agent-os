@@ -102,11 +102,42 @@ Base URL: `http://localhost:4132`
 | POST | `/api/cli/sessions/:id/tasks` | Send a task (`{task, model?, agentId?, timeoutMs?}`) |
 | DELETE | `/api/cli/sessions/:id` | Stop a session |
 
+## Agent CLI Gateway (Cline — primary)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/cline/cli-path` | Resolved `cline` binary info (`CLINE_CLI_PATH` override + candidates) |
+| GET | `/api/cline/paths` | Path gateways (candidates + existence + allowlist) |
+| GET | `/api/cline/gateway/stats` | Gateway run/reject stats |
+| POST | `/api/cline/run` | Permissioned run (`{command?, args?, agentId?}` — bare prompt stays one arg) |
+
+Example — one-shot prompt (no shell, prompt is a single argv element):
+
+```bash
+curl -X POST http://localhost:4132/api/cline/run \
+  -H 'Content-Type: application/json' \
+  -d '{"command":"summarize the portfolio risk","agentId":"api"}'
+# → {"result":{"ok":true,"exitCode":0,"stdout":"…","cliPath":"…","command":"…","gated":{"allowed":true}}}
+```
+
+Example — allowlisted subcommand:
+
+```bash
+curl -X POST http://localhost:4132/api/cline/run \
+  -H 'Content-Type: application/json' \
+  -d '{"args":["--version"],"agentId":"api"}'
+```
+
+Status codes: `200` ok · `400` missing command/args · `403` rejected by the
+allowlist/metachar policy · `500` ran but the process failed · `503` gateway
+not registered. Auth is the local CLI's own (`cline auth`); no credentials
+are accepted or logged by these endpoints.
+
 Legacy OpenCode endpoints (`/api/opencode/*`) remain for backward compatibility — they are
-now backed by the OpenCode adapter. Normalized CLI events stream as `cli.*` over SSE.
+now backed by the deprecated OpenCode adapter/gateway subclass. Normalized CLI events stream as `cli.*` over SSE.
 These events are server-owned: `POST /api/publish` rejects the `cli.` prefix (along with
 `supervisor.`, `risk.`, `gateway.`, `order.`, `trade.proposal_`, `audit.kill_switch`,
-`opencode.`) with `403` — see `core/server.ts` `deniedPrefixes`.
+`opencode.`, `cline.`) with `403` — see `core/server.ts` `deniedPrefixes`.
 
 ### CLI conventions
 

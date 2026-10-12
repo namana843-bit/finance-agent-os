@@ -15,8 +15,8 @@ An event-driven autonomous financial operating system powered by specialized col
 - **Desktop OS** — Vite + React 18 + Electron trading desk (alpha lab, risk, telemetry, orderbook, PnL)
 - **Fastify SSE API** on `:4132` — 70 REST endpoints + event stream
 - **23 registered finance tools** + 4 default strategies (EMA/RSI/MACD/Momentum)
-- **Generic CLI adapter layer** — `Desktop UI → CLI Manager → CLI Adapter` (`apps/server/src/cli/`): OpenCode is one adapter (`opencode`) among future adapters (Claude Code, Codex, Gemini, custom descriptors); backend discovery via `GET /api/cli/adapters`, normalized `cli.*` events (details: `docs/CLI_ADAPTERS.md`)
-- **Opencode CLI Gateway** — permissioned `opencode run` with free-text prompts (only `&;|`$<>\n\r` blocked in prompt text), bare `command`-string normalization, PATH (`where`/`which`) fallback before `npx`, 24-command allowlist matching `opencode --help`
+- **Generic CLI adapter layer** — `Desktop UI → CLI Manager → CLI Adapter` (`apps/server/src/cli/`): Cline is the primary adapter (`cline`); OpenCode is a deprecated fallback adapter (`opencode`), alongside Claude Code, Codex, Gemini, custom descriptors; backend discovery via `GET /api/cli/adapters`, normalized `cli.*` events (details: `docs/CLI_ADAPTERS.md`)
+- **Cline CLI Gateway** — permissioned `cline` one-shot runs with bare-prompt support (only `&;|`$<>\n\r` blocked in prompt text), prompt kept as a single argv element, PATH (`where`/`which`) fallback before `npx`, 18-command allowlist matching `cline --help`; legacy `/api/opencode/*` endpoints kept as deprecated aliases
 
 ## 🏛️ System Architecture
 
@@ -176,7 +176,7 @@ finance-agent-os/
 │           ├── core/               # LoopGuard, server, runtime, storage(DATA_DIR), service-wrapper
 │           ├── environment/        # market/portfolio/paper adapters
 │           ├── execution-pipeline/ # 7-stage gated pipeline
-│           ├── gateway/            # FinanceGateway + OpencodeCliGateway (hardened) + OpencodeDaemon
+│           ├── gateway/            # FinanceGateway + ClineCliGateway (primary, hardened) + OpencodeCliGateway (deprecated) + OpencodeDaemon
 │           ├── llm/                # AgentRuntime, providers, engines, registry, persistence(DATA_DIR)
 │           ├── market/             # binance-rest/ws, normalizer, market-state
 │           ├── memory/             # AgentMemory (file-persisted, sanitized)
@@ -256,8 +256,10 @@ pnpm test                   # vitest run (server suite counts pending re-run; se
 | `DATABASE_URL` | `file:./dev.db` | no quotes, no `?connection_limit` — `prisma/schema.prisma` |
 | `BINANCE_API_KEY/SECRET` | — | read-only market data |
 | `BINANCE_WS_ENABLED` | `true` | live WS toggle |
-| `OPENCODE_CLI_PATH` | — | opencode binary (auto-resolve via PATH + `PNPM_HOME` + `~/.opencode`) |
-| `OPENCODE_GATEWAY_ENABLED` | `true` | opencode gateway toggle |
+| `CLINE_CLI_PATH` | — | cline binary (auto-resolve via PATH + `PNPM_HOME` + npm globals; `OPENCODE_CLI_PATH` is a deprecated fallback) |
+| `CLINE_GATEWAY_ENABLED` | `true` | cline gateway toggle (falls back to `OPENCODE_GATEWAY_ENABLED` when unset) |
+| `OPENCODE_CLI_PATH` | — | deprecated fallback for the OpenCode binary |
+| `OPENCODE_GATEWAY_ENABLED` | `true` | deprecated fallback for the OpenCode gateway toggle |
 
 ---
 
@@ -281,7 +283,7 @@ Base: `http://localhost:4132` — 70 REST routes + SSE.
 | `GET` | `/api/market/state` + `/api/market/candles` `/orderbook` `/ticks` | market |
 | `POST` | `/api/trading/signal` · `/api/backtest/run` · `GET /api/backtest/strategies` | signals & backtests |
 | `GET`/`POST` | `/api/threads` · `/api/threads/:id/messages` · `/api/bots` · `/api/bots/:id/engine` `/model` | chat rooms & bots |
-| `POST` | `/api/publish` | publish bus event (**denylist**: `supervisor.`, `risk.`, `gateway.`, `order.`, `trade.proposal_`, `audit.kill_switch`, `opencode.`, `cli.`) → `403` — `core/server.ts:392` |
+| `POST` | `/api/publish` | publish bus event (**denylist**: `supervisor.`, `risk.`, `gateway.`, `order.`, `trade.proposal_`, `audit.kill_switch`, `opencode.`, `cline.`, `cli.`) → `403` — `core/server.ts:392` |
 | `POST` | `/api/chat` + `GET /api/chat/history` | chat/dialogue |
 | `GET` | `/api/audit` · `/api/execution/status` · `/api/state` | audit trail, pipeline status, state |
 | `GET` | `/api/memory/stats` `traces` `entries` · `DELETE /api/memory` | AgentMemory (file-persisted) |
@@ -289,7 +291,8 @@ Base: `http://localhost:4132` — 70 REST routes + SSE.
 | `POST` | `/api/llm/engines/:id/cli` | engine CLI override |
 | `GET`/`POST` | `/api/agent-runtime/agents` + `/:id` `export` `import` · `POST /api/agent-runtime/chat/stream` | agent CRUD + streaming chat |
 | `GET` | `/api/gateway/stats` · `/api/gateways` · `POST /api/gateway/trade` | FinanceGateway |
-| `GET` | `/api/opencode/cli-path` `/paths` `/gateway/stats` · `POST /api/opencode/run` | opencode gateway |
+| `GET` | `/api/cline/cli-path` `/paths` `/gateway/stats` · `POST /api/cline/run` | cline gateway (primary) |
+| `GET` | `/api/opencode/cli-path` `/paths` `/gateway/stats` · `POST /api/opencode/run` | opencode gateway (deprecated alias) |
 | `GET`/`POST`/`DELETE` | `/api/cli/adapters*` · `/api/cli/sessions*` (`/:id/tasks` to send a task) | generic CLI adapter layer (see `docs/API.md`) |
 | `GET` | `/api/ollama/models` · `/.well-known/finance-agent/environment` | Ollama + environment discovery |
 | `SSE` | `/api/events` (via `TypedEventBus`, filterable by `channelId`/`threadId`/`agentId`/`type`/`runId`) | real-time event stream |
@@ -323,8 +326,8 @@ pnpm --filter @finance/server cli add agent my-agent --template quant
 ## 🔐 Security Hardening (Audit 2026-09)
 
 - **CORS** (`core/server.ts:34`): `origin:true+credentials:true` → `ALLOWED_ORIGINS` allowlist callback (fixes wildcard CSRF)
-- **/api/publish** (`core/server.ts:392`): denylist `supervisor.|risk.|gateway.|order.|trade.proposal_|audit.kill_switch|opencode.|cli.` → `403`
-- **Opencode gateway** (`gateway/opencode-cli-gateway.ts`): strict metachars on flags/prefix, relaxed set (`&;|`$<>\n\r`) on free-text `run` prompt; prompt kept as single argv (no whitespace split); `useShell=false` except `.cmd/.ps1` shims + `npx` fallback; PATH fallback via async resolver
+- **/api/publish** (`core/server.ts:392`): denylist `supervisor.|risk.|gateway.|order.|trade.proposal_|audit.kill_switch|opencode.|cline.|cli.` → `403`
+- **Cline gateway** (`gateway/cline-cli-gateway.ts`, shared base `gateway/agent-cli-gateway.ts`): strict metachars on flags/prefix, relaxed set (`&;|`$<>\n\r`) on bare one-shot prompt; prompt kept as single argv (no whitespace split); `useShell=false` except `.cmd/.ps1` shims + `npx` fallback; PATH fallback via async resolver; OpenCode gateway kept as deprecated subclass with identical legacy behavior
 - **Kill-switch** (`safety/kill-switch.ts:76`): no `EMERGENCY_OVERRIDE_SECRET_DEFAULT`; live throws if missing
 - **Persistence**: unified `DATA_DIR` + `writeFileAtomic` (`atomic.ts`) across `storage.ts`, `llm/persistence.ts`, `llm/engines.ts`, `order-manager.ts`
 - **Secrets**: every memory/log payload passes `sanitizeSecrets()` — `/^(api[_-]?key|secret|token|password|credential)/i` → `[REDACTED]`
