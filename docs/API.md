@@ -181,6 +181,62 @@ curl "http://localhost:4132/api/events?type=cli.output&replay=false"
 curl -X DELETE http://localhost:4132/api/cli/sessions/<id>
 ```
 
+## Custom Bots (agent-runtime)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/agent-runtime/agents?includeArchived=1` | List bots (archived hidden by default) |
+| POST | `/api/agent-runtime/agents` | Create a bot (`{name, engine, systemPrompt\|responsibilities, …}`) |
+| GET | `/api/agent-runtime/agents/:id` | Fetch one bot |
+| PUT | `/api/agent-runtime/agents/:id` | Full update (path id wins; archived flag preserved) |
+| POST | `/api/agent-runtime/agents/:id/archive` | Soft-delete (cancels in-flight run) |
+| POST | `/api/agent-runtime/agents/:id/unarchive` | Restore an archived bot |
+| DELETE | `/api/agent-runtime/agents/:id` | Hard delete |
+| GET | `/api/agent-runtime/templates` | Curated starter templates (safety rails included) |
+| GET | `/api/agent-runtime/providers` | Providers with capabilities + backing-adapter status |
+
+Conventions:
+
+- **Validation:** create/update/import run Step-1 `validateCoworkerInput`
+  (name, engine, tools, prompt length, permission coherence). Engine ids must
+  resolve through the real `EngineManager` (backed by registered CLI
+  adapters); tools must exist in the tool registry. Failures return `400`
+  with `{ error, details: string[] }`; duplicate ids return `409`.
+- **No executable config:** `command`, `args`, `cwd`, `executablePath`,
+  `env`, `shell`, etc. are rejected with `400` — bots carry only
+  `{engine, model, systemPrompt, tools, permissions, riskPermissions}`.
+  Ids are slug-shaped (`[a-z0-9-]`), so path traversal via ids is impossible.
+- **Authorization:** single-user localhost app, no per-route auth (same trust
+  model as every other route). Built-in system agents
+  (`btc-quant-agent`, `risk-guardian-agent`, `cline-cli-agent`,
+  `market-research-agent`) return `403` on archive/delete; they can still be
+  updated.
+- **Status codes:** `200` ok · `400` invalid input or id mismatch ·
+  `403` built-in protected · `404` unknown bot · `409` duplicate id,
+  already-archived, or not-archived.
+- **Persistence:** bots live in `agents.json` under `FINANCE_DATA_DIR`
+  with `createdAt`/`updatedAt`; archiving only flips a flag.
+
+```bash
+# Create a bot
+curl -X POST http://localhost:4132/api/agent-runtime/agents \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"ETH Scout","engine":"cline-cli","responsibilities":["Watch ETH funding rates"],"tools":["get_market_price"]}'
+
+# Update it (full replacement; archived/createdAt preserved)
+curl -X PUT http://localhost:4132/api/agent-runtime/agents/coworker-eth-scout \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"ETH Scout v2","engine":"cline-cli","systemPrompt":"You analyze ETH funding ... (40+ chars)"}'
+
+# Archive / restore / delete
+curl -X POST http://localhost:4132/api/agent-runtime/agents/coworker-eth-scout/archive
+curl -X POST http://localhost:4132/api/agent-runtime/agents/coworker-eth-scout/unarchive
+curl -X DELETE http://localhost:4132/api/agent-runtime/agents/coworker-eth-scout
+
+# Providers with capabilities (adapter executable, install status, engines, health)
+curl http://localhost:4132/api/agent-runtime/providers
+```
+
 ## Events (SSE)
 
 | Method | Endpoint | Description |
