@@ -4,6 +4,7 @@ import { TypedEventBus, type EventBusOptions } from "@finance/core";
 import type { FinanceEvent, HistoryFilter } from "@finance/shared";
 import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory, getCliManager } from "./runtime.js";
 import { ApprovalError } from "../approvals/types.js";
+import { COWORKER_TEMPLATES, templateSystemPrompt, validateCoworkerInput } from "../coworkers/index.js";
 import type { LlmConfig } from "../llm/types.js";
 import { CustomBotAgent } from "../agents/custom-bot-agent.js";
 
@@ -1663,25 +1664,49 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     return { agents: runtime.listAgents() };
   });
 
+  app.get("/api/agent-runtime/templates", async () => {
+    return {
+      templates: COWORKER_TEMPLATES.map((t) => ({
+        key: t.key,
+        name: t.name,
+        role: t.role,
+        description: t.description,
+        engine: t.engine,
+        tools: t.tools,
+        permissions: t.permissions,
+        riskPermissions: t.riskPermissions,
+        responsibilities: t.responsibilities,
+        constraints: t.constraints,
+        systemPrompt: templateSystemPrompt(t),
+      })),
+    };
+  });
+
   app.post<{
-    Body: { id?: string; name?: string; engine?: string; model?: string; systemPrompt?: string; tools?: string[]; permissions?: any; riskPermissions?: any };
+    Body: { id?: string; name?: string; engine?: string; model?: string; systemPrompt?: string; tools?: string[]; permissions?: any; riskPermissions?: any; description?: string; role?: string; responsibilities?: string[]; constraints?: string[] };
   }>("/api/agent-runtime/agents", async (request, reply) => {
     const body = request.body || {};
-    if (!body.id || !body.name || !body.engine) {
-      return reply.status(400).send({ error: "id, name, and engine are required" });
-    }
     const runtime = getAgentRuntime();
-    runtime.registerAgent({
-      id: body.id,
-      name: body.name,
-      engine: body.engine,
-      model: body.model,
-      systemPrompt: body.systemPrompt,
-      tools: body.tools,
-      permissions: body.permissions,
-      riskPermissions: body.riskPermissions,
+    const engineManager = getEngineManager();
+    const toolRegistry = getFinanceToolRegistry();
+    const result = await validateCoworkerInput(body, {
+      engineExists: async (engineId: string) => {
+        try {
+          await engineManager.getProviderForEngine(engineId);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      validTools: toolRegistry.getDefinitions().map((d) => d.name),
+      idTaken: (id: string) => runtime.getAgent(id) !== undefined,
     });
-    return { ok: true, agent: runtime.getAgent(body.id) };
+    if (!result.ok || !result.normalized) {
+      const taken = result.errors.some((e) => e.includes("already taken"));
+      return reply.status(taken ? 409 : 400).send({ error: "invalid coworker config", details: result.errors });
+    }
+    runtime.registerAgent(result.normalized);
+    return { ok: true, agent: runtime.getAgent(result.normalized.id) };
   });
 
   app.get<{ Params: { id: string } }>("/api/agent-runtime/agents/:id", async (request, reply) => {
@@ -1724,20 +1749,37 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     if (!agentData || !agentData.name || !agentData.engine) {
       return reply.status(400).send({ error: "Invalid agent JSON. 'name' and 'engine' are required." });
     }
-    const id = agentData.id || `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    // Imported ids must not collide with existing agents; always mint a fresh id
+    // unless the provided one is both valid and free.
     const runtime = getAgentRuntime();
-    const newAgent = {
-      id,
-      name: String(agentData.name),
-      description: agentData.description ? String(agentData.description) : undefined,
-      role: agentData.role ? String(agentData.role) : undefined,
-      engine: String(agentData.engine),
-      model: agentData.model ? String(agentData.model) : undefined,
-      systemPrompt: agentData.systemPrompt ? String(agentData.systemPrompt) : undefined,
-      tools: Array.isArray(agentData.tools) ? agentData.tools : undefined,
-      permissions: agentData.permissions,
-      riskPermissions: agentData.riskPermissions,
+    const engineManager = getEngineManager();
+    const toolRegistry = getFinanceToolRegistry();
+    const candidate = {
+      ...agentData,
+      id: undefined as string | undefined,
     };
+    const proposedId = typeof agentData.id === "string" ? agentData.id.trim().toLowerCase() : "";
+    const idFree = proposedId && runtime.getAgent(proposedId) === undefined;
+    if (idFree) candidate.id = proposedId;
+    const result = await validateCoworkerInput(candidate, {
+      engineExists: async (engineId: string) => {
+        try {
+          await engineManager.getProviderForEngine(engineId);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      validTools: toolRegistry.getDefinitions().map((d) => d.name),
+    });
+    if (!result.ok || !result.normalized) {
+      return reply.status(400).send({ error: "invalid agent JSON", details: result.errors });
+    }
+    const newAgent = { ...result.normalized };
+    // Guarantee a fresh unique id on import even if validation derived one.
+    if (!idFree || runtime.getAgent(newAgent.id) !== undefined) {
+      newAgent.id = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    }
     runtime.registerAgent(newAgent);
     return { ok: true, agent: newAgent };
   });
