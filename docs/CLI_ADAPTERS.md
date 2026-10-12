@@ -6,6 +6,32 @@
 
 ---
 
+## 0. Cline migration (primary agent CLI)
+
+Cline (`cline`, `npm install -g cline`, auth via `cline auth`) is now the
+**primary** agent CLI; OpenCode is a deprecated, behavior-identical fallback:
+
+- **Adapter:** `cli/adapters/cline-adapter.ts` + `cli/adapters/cline-paths.ts`
+  (one-shot `cline --json [--model <id>] <prompt>`; flags verified against
+  https://docs.cline.bot/cli). Registered **first** in `cli/index.ts`;
+  `opencode` stays registered as a deprecated alias. Persistent mode is
+  deliberately not advertised (Cline Core gRPC unverified).
+- **Gateway:** shared `gateway/agent-cli-gateway.ts` base (allowlist +
+  metachar policy + no-shell spawning, ported 1:1 from the OpenCode gateway).
+  `gateway/cline-cli-gateway.ts` is primary (accepts bare one-shot prompts);
+  `gateway/opencode-cli-gateway.ts` is a deprecated subclass with identical
+  legacy behavior (bare prompts still rejected). `CLINE_CLI_PATH` /
+  `CLINE_GATEWAY_ENABLED` are primary; `OPENCODE_*` are fallbacks.
+- **Runtime/API:** `cline-gateway` service + `getClineGateway()`; `/api/cline/*`
+  routes; `/api/opencode/*` kept; `cline.` added to the `/api/publish` denylist.
+- **Engines/registry:** `cline`/`cline-cli` catalog entries + `cli-cline`
+  provider first; generic `cli` engine now runs `cline`; `opencode*` kept.
+- **Tools:** new `cline_run` tool; `opencode_run` kept.
+- **Dashboard:** default engines/models point at `cline-cli`/`cline`; the
+  OpenCode-models settings panel still works via compat endpoints.
+
+---
+
 ## 1. Pre-refactor assessment (current-state snapshot)
 
 **Repo layout:** pnpm monorepo — `apps/server` (Fastify :4132, TypeScript ESM strict, vitest),

@@ -180,10 +180,10 @@ const DEFAULT_AGENTS: TradingAgent[] = [
     id: "btc-quant-agent",
     name: "BTC Quant",
     role: "Quantitative Analyst",
-    model: "opencode",
-    engine: "opencode-cli",
+    model: "cline",
+    engine: "cline-cli",
     systemPrompt:
-      "You are an expert BTC quantitative analyst agent running via OpenCode CLI. Analyze prices, compute technical indicators (RSI/MACD/Supertrend), inspect portfolio state, and create structured trade proposals when high-probability opportunities exist.",
+      "You are an expert BTC quantitative analyst agent running via Cline CLI. Analyze prices, compute technical indicators (RSI/MACD/Supertrend), inspect portfolio state, and create structured trade proposals when high-probability opportunities exist.",
     tools: [
       "get_market_price",
       "get_ohlcv",
@@ -194,7 +194,7 @@ const DEFAULT_AGENTS: TradingAgent[] = [
       "create_trade_proposal",
     ],
     permissions: { execution: true },
-    lastMessage: "OpenCode CLI engine initialized. Ready for analysis.",
+    lastMessage: "Cline CLI engine initialized. Ready for analysis.",
     lastTime: "just now",
     unread: 1,
     status: "working",
@@ -206,13 +206,13 @@ const DEFAULT_AGENTS: TradingAgent[] = [
     id: "risk-guardian-agent",
     name: "Risk Guardian",
     role: "Risk & Compliance Guardian",
-    model: "opencode",
-    engine: "opencode-cli",
+    model: "cline",
+    engine: "cline-cli",
     systemPrompt:
       "You are an automated risk guardian agent for Finance Agent OS. Monitor portfolio exposure, calculate risk metrics, and verify all trade proposals against hard risk parameters.",
     tools: ["get_portfolio", "get_market_price"],
     permissions: { execution: false },
-    lastMessage: "OpenCode CLI engine initialized. Risk monitoring active.",
+    lastMessage: "Cline CLI engine initialized. Risk monitoring active.",
     lastTime: "just now",
     status: "working",
     pinned: true,
@@ -220,13 +220,13 @@ const DEFAULT_AGENTS: TradingAgent[] = [
     badge: "RISK",
   },
   {
-    id: "opencode-cli-agent",
-    name: "OpenCode CLI Agent",
+    id: "cline-cli-agent",
+    name: "Cline CLI Agent",
     role: "Local CLI Execution Engine",
-    model: "opencode",
-    engine: "opencode-cli",
+    model: "cline",
+    engine: "cline-cli",
     systemPrompt:
-      "You are a local CLI agent driver running via OpenCode CLI execution.",
+      "You are a local CLI agent driver running via Cline CLI execution.",
     tools: ["get_market_price", "get_portfolio"],
     permissions: { execution: false },
     lastMessage: "Local executable CLI driver active.",
@@ -247,7 +247,7 @@ const INITIAL_CONVERSATIONS: Record<string, MultiAgentMessage[]> = {
       agentColor: "bg-blue-600",
       role: "assistant",
       content:
-        "👋 Welcome to **Finance Agent OS** with **shadcn/ui** interface.\n\nI am connected to the **OpenCode CLI** engine and live market stream. Ask me to:\n- 📈 Analyze BTC/USDT technical indicators (`RSI`, `MACD`, `Supertrend`)\n- 🛡️ Run safety checks against the **Risk Engine**\n- ⚡ Generate structured trade proposals with automated paper broker execution",
+        "👋 Welcome to **Finance Agent OS** with **shadcn/ui** interface.\n\nI am connected to the **Cline CLI** engine and live market stream. Ask me to:\n- 📈 Analyze BTC/USDT technical indicators (`RSI`, `MACD`, `Supertrend`)\n- 🛡️ Run safety checks against the **Risk Engine**\n- ⚡ Generate structured trade proposals with automated paper broker execution",
       timestamp: "10:30 AM",
     },
   ],
@@ -264,16 +264,16 @@ const INITIAL_CONVERSATIONS: Record<string, MultiAgentMessage[]> = {
       timestamp: "10:31 AM",
     },
   ],
-  "opencode-cli-agent": [
+  "cline-cli-agent": [
     {
       id: "cli-1",
-      agentId: "opencode-cli-agent",
-      agentName: "OpenCode CLI Agent",
+      agentId: "cline-cli-agent",
+      agentName: "Cline CLI Agent",
       agentBadge: "CLI",
       agentColor: "bg-emerald-600",
       role: "assistant",
       content:
-        "🖥️ **CLI Engine Online.** I connect directly to user-configured local binaries and OpenCode executables via process IPC.",
+        "🖥️ **CLI Engine Online.** I connect directly to user-configured local binaries and Cline executables via process IPC.",
       timestamp: "10:32 AM",
     },
   ],
@@ -320,8 +320,8 @@ export function App() {
   // Create Agent Form State
   const [newAgentName, setNewAgentName] = useState("");
   const [newAgentRole, setNewAgentRole] = useState("BTC Quant Analyst");
-  const [newAgentEngine, setNewAgentEngine] = useState("opencode-cli");
-  const [newAgentModel, setNewAgentModel] = useState("opencode/space-bunny-free");
+  const [newAgentEngine, setNewAgentEngine] = useState("cline-cli");
+  const [newAgentModel, setNewAgentModel] = useState("default");
   const [newAgentPrompt, setNewAgentPrompt] = useState(
     "You are an expert quantitative trading agent. Analyze market data and construct high-sharpe trade proposals."
   );
@@ -475,7 +475,7 @@ export function App() {
     const updatedAgent = {
       ...target,
       engine: newEngine,
-      model: newEngine.includes("opencode") ? "opencode" : target.model,
+      model: newEngine.includes("cline") ? "cline" : newEngine.includes("opencode") ? "opencode" : target.model,
     };
     try {
       await createAgent({
@@ -811,7 +811,7 @@ export function App() {
   );
 
   const btcTick = ticks.find((t) => t.symbol.includes("BTC")) || ticks[0];
-  const activeOpencodeEng = enginesList.find((e) => e.id === "opencode-cli");
+  const activeOpencodeEng = enginesList.find((e) => e.id === "cline-cli") ?? enginesList.find((e) => e.id === "opencode-cli");
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -882,15 +882,32 @@ export function App() {
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={() =>
-                    void handleSwitchAgentEngine(activeAgent.id, "opencode-cli")
+                    void handleSwitchAgentEngine(activeAgent.id, "cline-cli")
                   }
                   className="gap-2 text-xs cursor-pointer"
                 >
                   <Terminal className="h-3.5 w-3.5 text-emerald-400" />
                   <div className="flex-1">
-                    <div className="font-medium">OpenCode CLI (Local)</div>
+                    <div className="font-medium">Cline CLI (Local)</div>
                     <div className="text-[10px] text-muted-foreground">
                       IPC / Executable driver
+                    </div>
+                  </div>
+                  {activeAgent.engine === "cline-cli" && (
+                    <Check className="h-3.5 w-3.5 text-emerald-400" />
+                  )}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() =>
+                    void handleSwitchAgentEngine(activeAgent.id, "opencode-cli")
+                  }
+                  className="gap-2 text-xs cursor-pointer"
+                >
+                  <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
+                  <div className="flex-1">
+                    <div className="font-medium">OpenCode CLI (Deprecated)</div>
+                    <div className="text-[10px] text-muted-foreground">
+                      Legacy executable driver
                     </div>
                   </div>
                   {activeAgent.engine === "opencode-cli" && (
@@ -1244,7 +1261,7 @@ export function App() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span className="text-xs font-medium">OpenCode CLI</span>
+                  <span className="text-xs font-medium">Cline CLI</span>
                 </div>
                 <Button
                   variant="ghost"
@@ -1743,7 +1760,8 @@ export function App() {
                     onChange={(e) => setNewAgentEngine(e.target.value)}
                     className="w-full h-9 rounded-md border border-input bg-transparent px-3 py-1 text-xs shadow-sm mt-1 outline-none"
                   >
-                    <option value="opencode-cli">OpenCode (CLI)</option>
+                    <option value="cline-cli">Cline (CLI)</option>
+                    <option value="opencode-cli">OpenCode (CLI, Deprecated)</option>
                     <option value="kilocode">Kilo Code (CLI)</option>
                     <option value="gencode">GenCode (CLI)</option>
                     <option value="ollama-local">Ollama (Local)</option>
@@ -1779,7 +1797,7 @@ export function App() {
                     <Input
                       value={newAgentModel}
                       onChange={(e) => setNewAgentModel(e.target.value)}
-                      placeholder="e.g. opencode/space-bunny-free"
+                      placeholder="e.g. default (no model override)"
                       className="mt-1 h-9 text-xs"
                     />
                   )}
@@ -1906,7 +1924,7 @@ export function App() {
                                     [eng.id]: e.target.value,
                                   }))
                                 }
-                                placeholder="e.g. opencode or C:\path\to\opencode.exe"
+                                placeholder="e.g. cline or C:\path\to\cline.exe"
                                 className="h-8 text-xs font-mono"
                               />
                               <Button

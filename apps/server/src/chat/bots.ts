@@ -17,8 +17,8 @@ export const DEFAULT_BOTS: BotConfig[] = [
     account: "paper",
     llm: {
       provider: "cli",
-      command: "opencode",
-      args: ["run", "--auto", "{prompt}"],
+      command: "cline",
+      args: ["--json", "{prompt}"],
     },
   },
   {

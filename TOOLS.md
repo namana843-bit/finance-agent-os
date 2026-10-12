@@ -49,7 +49,8 @@ Tools are registered in `apps/server/src/tools/finance-tools.ts` and made availa
 | :--- | :--- | :--- | :--- | :--- |
 | `format_money` | Format Money | `{ amount: number, currency?: string }` | `{ formatted: string }` | ✅ Active (locale-aware currency formatter) |
 | `event_log` | Log Event | `{ message: string, level?: string, data?: object }` | `{ logged: boolean, timestamp }` | ✅ Active (publishes to `TypedEventBus`) |
-| `opencode_run` | OpenCode CLI Runner | `{ command: string, args?: string[] }` | `{ stdout, stderr, exitCode }` | ✅ Active (gated CLI engine execution) |
+| `cline_run` | Cline CLI Runner (primary) | `{ command: string, args?: string[] }` | `{ stdout, stderr, exitCode }` | ✅ Active (gated CLI engine execution) |
+| `opencode_run` | OpenCode CLI Runner (deprecated — use `cline_run`) | `{ command: string, args?: string[] }` | `{ stdout, stderr, exitCode }` | ✅ Active (compat alias) |
 | `websearch` | Web Search | `{ query: string, numResults?: number }` | `{ results: Array<{ title, url, snippet }> }` | ✅ Active (macro news/research) |
 
 ---

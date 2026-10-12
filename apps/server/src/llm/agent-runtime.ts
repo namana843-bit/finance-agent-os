@@ -1,4 +1,4 @@
-﻿import type { TypedEventBus } from "@finance/core";
+import type { TypedEventBus } from "@finance/core";
 import type {
   LLMEvent,
   LLMMessage,
@@ -67,8 +67,8 @@ export class AgentRuntime {
         name: "BTC Quant Agent",
         description: "Specialized BTC technical analyst and momentum trading strategy generator",
         role: "Quantitative Analyst",
-        engine: "opencode-cli",
-        systemPrompt: "You are an expert BTC quantitative analyst agent for Finance Agent OS running via OpenCode CLI. Analyze prices, compute technical indicators (RSI, MACD, Supertrend), inspect portfolio state, and create structured trade proposals when high-probability setups exist.",
+        engine: "cline-cli",
+        systemPrompt: "You are an expert BTC quantitative analyst agent for Finance Agent OS running via Cline CLI. Analyze prices, compute technical indicators (RSI, MACD, Supertrend), inspect portfolio state, and create structured trade proposals when high-probability setups exist.",
         tools: [
           "get_market_price",
           "get_ohlcv",
@@ -86,19 +86,19 @@ export class AgentRuntime {
         name: "Risk Guardian Agent",
         description: "Monitors portfolio leverage, drawdown, and validates trade candidates against risk policies",
         role: "Risk & Compliance Guardian",
-        engine: "opencode-cli",
-        systemPrompt: "You are an automated risk guardian agent for Finance Agent OS running via OpenCode CLI. Monitor portfolio exposure, calculate risk metrics, and verify all trade proposals against hard risk parameters.",
+        engine: "cline-cli",
+        systemPrompt: "You are an automated risk guardian agent for Finance Agent OS running via Cline CLI. Monitor portfolio exposure, calculate risk metrics, and verify all trade proposals against hard risk parameters.",
         tools: ["get_portfolio", "get_market_price"],
         permissions: { execution: false },
         riskPermissions: { allowTradeProposals: false },
       },
       {
-        id: "opencode-cli-agent",
-        name: "OpenCode CLI Agent",
+        id: "cline-cli-agent",
+        name: "Cline CLI Agent",
         description: "Local CLI execution engine driver",
         role: "Local CLI Execution Engine",
-        engine: "opencode-cli",
-        systemPrompt: "You are a local CLI agent driver running via OpenCode CLI execution.",
+        engine: "cline-cli",
+        systemPrompt: "You are a local CLI agent driver running via Cline CLI execution.",
         tools: ["get_market_price", "get_portfolio"],
         permissions: { execution: false },
       },
@@ -107,8 +107,8 @@ export class AgentRuntime {
         name: "Market Researcher",
         description: "Macro crypto market orderbook depth and sentiment scanner",
         role: "Market Researcher",
-        engine: "opencode-cli",
-        systemPrompt: "You are a macro crypto market researcher running via OpenCode CLI. Inspect price history, volume trends, and market orderbook depth to deliver clear insights.",
+        engine: "cline-cli",
+        systemPrompt: "You are a macro crypto market researcher running via Cline CLI. Inspect price history, volume trends, and market orderbook depth to deliver clear insights.",
         tools: ["get_market_price", "get_ohlcv"],
         permissions: { execution: false },
       },
@@ -203,7 +203,7 @@ export class AgentRuntime {
       if (existing) {
         config = existing;
       } else {
-        let fallbackEngine = "opencode-cli";
+        let fallbackEngine = "cline-cli";
         if (agentIdOrConfig.includes("ollama")) fallbackEngine = "ollama-local";
         else if (agentIdOrConfig.includes("gpt") || agentIdOrConfig.includes("openai")) fallbackEngine = "openai-gpt4";
         else if (agentIdOrConfig.includes("claude") || agentIdOrConfig.includes("openrouter")) fallbackEngine = "openrouter-claude";

@@ -22,6 +22,19 @@ export class ProviderRegistry {
     this.register(new OpenAICompatibleProvider({ baseUrl: "http://127.0.0.1:1234/v1" }));
     // CLI defaults come from the registered CLI adapters (registration layer),
     // so adding a new CLI never requires touching the engine registry.
+    // Cline is the primary agent CLI; OpenCode stays as a deprecated fallback.
+    const cline = getDefaultCliManager().get("cline");
+    const clineMeta = cline?.getMetadata();
+    this.register(
+      new CliProvider({
+        id: "cli-cline",
+        name: `${clineMeta?.name ?? "Cline"} CLI`,
+        command: clineMeta?.executable ?? "cline",
+        args: clineMeta ? [...clineMeta.defaultArgs] : ["--json", "{prompt}"],
+        timeoutMs: 300000,
+        cliManager: getDefaultCliManager(),
+      }),
+    );
     const opencode = getDefaultCliManager().get("opencode");
     const meta = opencode?.getMetadata();
     this.register(
@@ -133,17 +146,31 @@ export class EngineManager {
       baseUrl: "http://127.0.0.1:11434",
       model: "qwen2.5-coder",
     });
+    this.engineConfigs.set("cline-cli", {
+      type: "cli",
+      provider: "cli",
+      name: "Cline CLI",
+      command: "cline",
+      args: ["--json", "{prompt}"],
+    });
+    this.engineConfigs.set("cline", {
+      type: "cli",
+      provider: "cli",
+      name: "Cline",
+      command: "cline",
+      args: ["--json", "{prompt}"],
+    });
     this.engineConfigs.set("opencode-cli", {
       type: "cli",
       provider: "cli",
-      name: "OpenCode CLI",
+      name: "OpenCode CLI (deprecated — use Cline)",
       command: "opencode",
       args: ["run", "--auto", "{prompt}"],
     });
     this.engineConfigs.set("opencode", {
       type: "cli",
       provider: "cli",
-      name: "OpenCode",
+      name: "OpenCode (deprecated — use Cline)",
       command: "opencode",
       args: ["run", "--auto", "{prompt}"],
     });
@@ -151,13 +178,14 @@ export class EngineManager {
       type: "cli",
       provider: "cli",
       name: "CLI Engine",
-      command: "opencode",
-      args: ["run", "--auto", "{prompt}"],
+      command: "cline",
+      args: ["--json", "{prompt}"],
     });
 
     // Register default CLI providers with shared session manager
-    this.registerCliProvider("cli-opencode", "OpenCode CLI", "opencode", ["run", "--auto", "{prompt}"], 300000);
-    this.registerCliProvider("cli", "CLI Engine", "opencode", ["run", "--auto", "{prompt}"], 300000);
+    this.registerCliProvider("cli-cline", "Cline CLI", "cline", ["--json", "{prompt}"], 300000);
+    this.registerCliProvider("cli", "CLI Engine", "cline", ["--json", "{prompt}"], 300000);
+    this.registerCliProvider("cli-opencode", "OpenCode CLI (deprecated)", "opencode", ["run", "--auto", "{prompt}"], 300000);
   }
 
   private registerCliProvider(id: string, name: string, command: string, args: string[], timeoutMs: number): void {
