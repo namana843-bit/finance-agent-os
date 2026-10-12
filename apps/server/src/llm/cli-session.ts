@@ -13,6 +13,8 @@ import type { CliManager } from "../cli/cli-manager.js";
 import { getDefaultCliManager } from "../cli/index.js";
 import { parseJsonLineChunk } from "../cli/parsing.js";
 import { defaultOneShotArgs } from "../cli/adapter-base.js";
+import { requiresShellForExecutable } from "../cli/adapter-base.js";
+import { runCliProcess } from "../cli/process-runner.js";
 
 export interface CliSessionOptions {
   command: string;
@@ -183,12 +185,7 @@ class PersistentCliSession extends EventEmitter implements CliSession {
         ? this.hooks.decorateDaemonArgs([...this.args], this.daemonUrl)
         : [...this.args];
 
-    const useShell =
-      process.platform === "win32" &&
-      (resolved.endsWith(".cmd") ||
-        resolved.endsWith(".bat") ||
-        resolved.endsWith(".ps1") ||
-        !resolved.toLowerCase().endsWith(".exe"));
+    const useShell = requiresShellForExecutable(resolved);
 
     return new Promise((resolve, reject) => {
       const child = spawn(resolved, finalArgs, {
@@ -250,12 +247,7 @@ class PersistentCliSession extends EventEmitter implements CliSession {
     this.metrics.spawnTime = startTime;
 
     const resolved = (await autoResolveCliPath(this.command)) || this.command;
-    const useShell =
-      process.platform === "win32" &&
-      (resolved.endsWith(".cmd") ||
-        resolved.endsWith(".bat") ||
-        resolved.endsWith(".ps1") ||
-        !resolved.toLowerCase().endsWith(".exe"));
+    const useShell = requiresShellForExecutable(resolved);
 
     return new Promise((resolve, reject) => {
       const child = spawn(resolved, this.args, {
@@ -529,6 +521,9 @@ class PersistentCliSession extends EventEmitter implements CliSession {
     const finalArgs: string[] = this.hooks
       ? this.hooks.buildOneShotArgs(this.args, prompt, { daemonUrl: this.daemonUrl ?? null })
       : defaultOneShotArgs(this.args, prompt);
+    // `stdin` adapters read the task from stdin, not argv — pass it through
+    // explicitly instead of silently dropping it.
+    const delivery = this.hooks?.getTaskDelivery?.() ?? "argv";
 
     // Support custom / mock spawnImpl if provided
     if (this.spawnImpl && this.spawnImpl !== defaultSpawnImpl) {
@@ -549,24 +544,17 @@ class PersistentCliSession extends EventEmitter implements CliSession {
       return;
     }
 
-    const useShell =
-      process.platform === "win32" &&
-      (resolved.endsWith(".cmd") ||
-        resolved.endsWith(".bat") ||
-        resolved.endsWith(".ps1") ||
-        !resolved.toLowerCase().endsWith(".exe"));
-
-    const child = spawn(resolved, finalArgs, {
-      cwd: this.cwd,
-      env: { ...process.env, ...this.env },
-      shell: useShell,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    // Default path runs through the shared CLI process runner (the sole
+    // spawner) and streams stdout lines through the adapter protocol parser.
+    const abort = new AbortController();
+    if (signal) {
+      if (signal.aborted) abort.abort();
+      else signal.addEventListener("abort", () => abort.abort(), { once: true });
+    }
 
     let lineBuffer = "";
+    let stderrBuffer = "";
     let done = false;
-
-    child.stdin?.end();
 
     const queue: StreamingChunk[] = [];
     let waiter: ((val: IteratorResult<StreamingChunk>) => void) | null = null;
@@ -589,86 +577,88 @@ class PersistentCliSession extends EventEmitter implements CliSession {
       if (waiter) {
         const w = waiter;
         waiter = null;
-        w({ value: undefined as any, done: true });
+        w({ value: undefined as never, done: true });
       }
     };
 
-    child.stdout?.on("data", (chunk: Buffer) => {
-      if (done) return;
-      const text = chunk.toString("utf-8");
-      lineBuffer += text;
-
-      const lines = lineBuffer.split(/\r?\n/);
-      lineBuffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-
-        const protocolChunk = this.parseProtocolLine(trimmed);
-        if (protocolChunk && protocolChunk.type === "tool_call") {
-          push({ type: "tool_call", content: trimmed, toolCall: { name: protocolChunk.name, arguments: protocolChunk.arguments } });
-          continue;
-        }
-        if (protocolChunk && protocolChunk.type === "delta") {
-          push({ type: "delta", content: protocolChunk.content });
-          continue;
-        }
-        push({ type: "delta", content: line + "\n" });
+    const handleLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      const protocolChunk = this.parseProtocolLine(trimmed);
+      if (protocolChunk && protocolChunk.type === "tool_call") {
+        push({ type: "tool_call", content: trimmed, toolCall: { name: protocolChunk.name, arguments: protocolChunk.arguments } });
+        return;
       }
-    });
-
-    let stderrBuffer = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderrBuffer += chunk.toString("utf-8");
-    });
-
-    const onError = (err: Error) => {
-      end(err);
+      if (protocolChunk && protocolChunk.type === "delta") {
+        push({ type: "delta", content: protocolChunk.content });
+        return;
+      }
+      push({ type: "delta", content: line + "\n" });
     };
 
-    const onClose = (code: number) => {
-      if (lineBuffer.trim()) {
-        const trimmed = lineBuffer.trim();
-        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-          try {
-            const parsed = JSON.parse(trimmed);
-            if (parsed.tool_call?.name) {
-              push({ type: "tool_call", content: trimmed, toolCall: { name: parsed.tool_call.name, arguments: parsed.tool_call.arguments || {} } });
-            } else {
-              const delta = parsed.delta ?? parsed.content ?? parsed.text;
-              if (typeof delta === "string") {
-                push({ type: "delta", content: delta });
-              }
+    const result = await runCliProcess(
+      {
+        command: resolved,
+        args: finalArgs,
+        cwd: this.cwd,
+        env: this.env,
+        shell: requiresShellForExecutable(resolved),
+        timeoutMs: this.timeoutMs,
+        signal: abort.signal,
+        stdinPayload: delivery === "stdin" ? prompt : undefined,
+      },
+      {
+        onStdoutChunk: (text) => {
+          if (done) return;
+          lineBuffer += text;
+          const lines = lineBuffer.split(/\r?\n/);
+          lineBuffer = lines.pop() ?? "";
+          for (const line of lines) handleLine(line);
+        },
+        onStderrChunk: (text) => {
+          stderrBuffer += text;
+        },
+      },
+    );
+
+    if (lineBuffer.trim()) {
+      const trimmed = lineBuffer.trim();
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed.tool_call?.name) {
+            push({ type: "tool_call", content: trimmed, toolCall: { name: parsed.tool_call.name, arguments: parsed.tool_call.arguments || {} } });
+          } else {
+            const delta = parsed.delta ?? parsed.content ?? parsed.text;
+            if (typeof delta === "string") {
+              push({ type: "delta", content: delta });
             }
-          } catch {
-            push({ type: "delta", content: lineBuffer });
           }
-        } else {
+        } catch {
           push({ type: "delta", content: lineBuffer });
         }
-      }
-      const cleanStderr = stderrBuffer.trim().replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
-      if (code !== 0) {
-        end(new Error(cleanStderr || `CLI process exited with code ${code}`));
-      } else if (cleanStderr && queue.length === 0 && !lineBuffer.trim()) {
-        end(new Error(cleanStderr));
       } else {
-        end();
+        push({ type: "delta", content: lineBuffer });
       }
-    };
-
-    child.on("error", onError);
-    child.on("close", onClose);
-
-    if (signal) {
-      signal.addEventListener("abort", () => {
-        end(new Error("Aborted"));
-      }, { once: true });
+    }
+    const cleanStderr = stderrBuffer.trim().replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+    if (result.cancelled) {
+      end(new Error("Aborted"));
+    } else if (result.timedOut) {
+      end(new Error(`CLI task timed out after ${this.timeoutMs}ms`));
+    } else if (result.spawnError !== undefined) {
+      end(new Error(result.spawnError));
+    } else if ((result.exitCode ?? 0) !== 0) {
+      end(new Error(cleanStderr || `CLI process exited with code ${result.exitCode}`));
+    } else if (cleanStderr && queue.length === 0 && !lineBuffer.trim()) {
+      end(new Error(cleanStderr));
+    } else {
+      end();
     }
 
     try {
-      while (!done) {
+      // The process has already completed above; drain buffered chunks.
+      while (!done || queue.length > 0) {
         if (queue.length > 0) {
           yield queue.shift()!;
         } else {
@@ -678,8 +668,7 @@ class PersistentCliSession extends EventEmitter implements CliSession {
         }
       }
     } finally {
-      child.off("error", onError);
-      child.off("close", onClose);
+      // runCliProcess already reaped the child; nothing to detach.
     }
   }
 

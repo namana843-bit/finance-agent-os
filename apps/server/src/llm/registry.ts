@@ -23,30 +23,24 @@ export class ProviderRegistry {
     // CLI defaults come from the registered CLI adapters (registration layer),
     // so adding a new CLI never requires touching the engine registry.
     // Cline is the primary agent CLI; OpenCode stays as a deprecated fallback.
-    const cline = getDefaultCliManager().get("cline");
-    const clineMeta = cline?.getMetadata();
-    this.register(
-      new CliProvider({
-        id: "cli-cline",
-        name: `${clineMeta?.name ?? "Cline"} CLI`,
-        command: clineMeta?.executable ?? "cline",
-        args: clineMeta ? [...clineMeta.defaultArgs] : ["--json", "{prompt}"],
-        timeoutMs: 300000,
-        cliManager: getDefaultCliManager(),
-      }),
-    );
-    const opencode = getDefaultCliManager().get("opencode");
-    const meta = opencode?.getMetadata();
-    this.register(
-      new CliProvider({
-        id: "cli-opencode",
-        name: `${meta?.name ?? "OpenCode"} CLI`,
-        command: meta?.executable ?? "opencode",
-        args: meta ? [...meta.defaultArgs] : ["run", "--auto", "{prompt}"],
-        timeoutMs: 300000,
-        cliManager: getDefaultCliManager(),
-      }),
-    );
+    // Authoritative engine→provider→adapter mapping: provider `cli-<adapter>`
+    // always invokes that adapter (`CliManager.findByExecutable`).
+    const manager = getDefaultCliManager();
+    for (const adapterId of ["cline", "opencode", "claude", "codex", "gemini"]) {
+      const adapter = manager.get(adapterId);
+      const meta = adapter?.getMetadata();
+      if (!adapter || !meta) continue;
+      this.register(
+        new CliProvider({
+          id: `cli-${meta.id}`,
+          name: `${meta.name} CLI`,
+          command: meta.executable,
+          args: [...meta.defaultArgs],
+          timeoutMs: 300000,
+          cliManager: manager,
+        }),
+      );
+    }
   }
 
   register(provider: LLMProvider): void {
@@ -167,6 +161,10 @@ export class EngineManager {
       command: "opencode",
       args: ["run", "--auto", "{prompt}"],
     });
+    // NB: no per-CLI engine configs here — catalog CLI ids (claude, codex,
+    // gemini, …) resolve through `resolveCliEngine`, which registers a
+    // provider named exactly like the engine id with argv from the owning
+    // adapter. Engine-id-named providers therefore always carry adapter argv.
     this.engineConfigs.set("opencode", {
       type: "cli",
       provider: "cli",
@@ -258,6 +256,24 @@ export class EngineManager {
       // Honor a user-pasted executable path for CLI engines (e.g. opencode-cli
       // → catalog "opencode" override) while keeping the engine's own args.
       if (config.type === "cli") {
+        // An explicitly named provider (anything but the generic "cli")
+        // always wins — e.g. tests registering a mock provider id.
+        // (Read through `string` — the declared type is literally "cli".)
+        const providerId: string = config.provider;
+        if (providerId !== "cli") {
+          const explicit =
+            this.registry.get(providerId) ?? this.registry.get(engineId);
+          if (explicit) {
+            return { provider: explicit, model: (config as any).model };
+          }
+        } else {
+          // Authoritative mapping: engine `claude` → provider `cli-claude`
+          // (the registered adapter's provider), not the legacy `cli` fallback.
+          const mapped = this.registry.get(`cli-${engineId}`) ?? this.registry.get(engineId);
+          if (mapped) {
+            return { provider: mapped, model: (config as any).model };
+          }
+        }
         const overridden = await this.resolveOverriddenCliProvider(
           engineId,
           config.args,
@@ -270,6 +286,14 @@ export class EngineManager {
       const provider = this.registry.get(config.provider) || this.registry.get(engineId);
       if (provider) {
         return { provider, model: (config as any).model };
+      }
+      if (config.type === "api") {
+        // An API-typed engine whose provider is not registered is
+        // misconfigured — throw explicitly instead of falling through to CLI
+        // substring matching and silently running the wrong backend.
+        throw new Error(
+          `No provider registered for engine '${engineId}' (needs API provider '${config.provider}')`,
+        );
       }
     }
 
@@ -286,17 +310,17 @@ export class EngineManager {
       return { provider: directProvider };
     }
 
-    // CLI fallback: resolve through the CLI manager's adapters, then fall back to
-    // any registered CLI provider (preserves legacy behaviour for unknown ids).
+    // CLI fallback: resolve through the CLI manager's adapters and bind the
+    // found adapter's own executable + argv. Never fall back to an unrelated
+    // registered CLI provider (that silently ran the wrong binary).
     const adapter = this.cliManager.findByEngineId(engineId);
     if (adapter) {
-      const adapterEngine = `cli-${adapter.getMetadata().id}`;
+      const meta = adapter.getMetadata();
+      const adapterEngine = `cli-${meta.id}`;
       const adapterProvider =
         this.registry.get(adapterEngine) ??
-        Array.from(this.registry.list()).find((p) => p instanceof CliProvider);
-      if (adapterProvider) {
-        return { provider: adapterProvider };
-      }
+        this.registerCliEngineProvider(adapterEngine, meta.name, meta.executable, [...meta.defaultArgs]);
+      return { provider: adapterProvider };
     }
 
     if (engineId.includes("cli")) {
@@ -327,7 +351,16 @@ export class EngineManager {
       const overrides = await loadEngineOverrides();
       const command = resolveEngineCommand(entry, overrides);
       if (!command || command.trim() === "") return undefined;
-      return this.registerCliEngineProvider(engineId, entry.name, command.trim(), entry.suggestedArgs);
+      // Authoritative argv comes from the registered adapter that owns this
+      // command; the catalog entry only supplies display metadata otherwise.
+      const adapter = this.cliManager.findByExecutable(command.trim());
+      const meta = adapter?.getMetadata();
+      return this.registerCliEngineProvider(
+        engineId,
+        meta?.name ?? entry.name,
+        command.trim(),
+        meta ? [...meta.defaultArgs] : entry.suggestedArgs,
+      );
     } catch {
       return undefined;
     }

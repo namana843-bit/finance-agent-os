@@ -90,7 +90,10 @@ describe("cline adapter (primary)", () => {
 });
 
 describe("cline gateway (primary)", () => {
-  it("accepts a bare one-shot prompt and rejects shell metachars", async () => {
+  // These spawn real executable-resolution subprocesses (`where`, `--version`
+  // probes), which take 4-15s on Windows under parallel-suite load — well
+  // above vitest's 15s default timeout. Explicit 30s budget, no behavior change.
+  it("accepts a bare one-shot prompt and rejects shell metachars", { timeout: 30000 }, async () => {
     const { bus, published } = stubBus();
     const gw = new ClineCliGateway(bus, {
       enabled: true,
@@ -109,7 +112,7 @@ describe("cline gateway (primary)", () => {
     expect(published.map((p) => p.type)).toContain("cline.cli_rejected");
   });
 
-  it("opencode gateway keeps legacy behavior (bare prompts rejected)", async () => {
+  it("opencode gateway keeps legacy behavior (bare prompts rejected)", { timeout: 30000 }, async () => {
     const { bus } = stubBus();
     const gw = new OpencodeCliGateway(bus, {
       enabled: true,

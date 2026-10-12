@@ -12,6 +12,7 @@ import type {
   CliMetadata,
   CliSessionMode,
   CliStreamChunk,
+  CliTaskDelivery,
   CliValidationResult,
   ProtocolTransport,
 } from "./types.js";
@@ -32,6 +33,15 @@ export function defaultOneShotArgs(templates: string[], task: string): string[] 
     out.push(template.split("{prompt}").join(task));
   }
   return out;
+}
+
+/**
+ * Shared shell policy: Windows OS wrappers (.cmd/.bat/.ps1) require a shell;
+ * everything else spawns directly. Single source of truth — process runners
+ * and session managers must call this instead of re-implementing the check.
+ */
+export function requiresShellForExecutable(executable: string): boolean {
+  return process.platform === "win32" && /\.(cmd|bat|ps1)$/i.test(executable);
 }
 
 export abstract class CliAdapterBase implements CliAdapter {
@@ -96,6 +106,10 @@ export abstract class CliAdapterBase implements CliAdapter {
     return parseJsonLineChunk(line);
   }
 
+  getTaskDelivery(): CliTaskDelivery {
+    return this.metadata.taskDelivery;
+  }
+
   /** Only daemon-owned adapters can run persistent sessions. */
   supportsDaemonMode(daemonUrl: string | null): boolean {
     return daemonUrl !== null && daemonUrl.length > 0 && this.daemon !== undefined;
@@ -117,7 +131,7 @@ export abstract class CliAdapterBase implements CliAdapter {
 
   /** Windows OS wrappers need a shell; everything else spawns directly. */
   requiresShell(executable: string): boolean {
-    return process.platform === "win32" && /\.(cmd|bat|ps1)$/i.test(executable);
+    return requiresShellForExecutable(executable);
   }
 
   async resolveExecutable(command?: string): Promise<string | null> {

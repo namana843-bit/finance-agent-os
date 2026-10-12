@@ -2,6 +2,8 @@ import { execFile, spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { autoResolveCliPath } from "../cli-resolver.js";
+import { runCliProcess } from "../../cli/process-runner.js";
+import { requiresShellForExecutable } from "../../cli/adapter-base.js";
 import type {
   ChatRequest,
   LLMEvent,
@@ -83,53 +85,60 @@ function defaultStreamingSpawnImpl(
   opts: { cwd?: string; env?: Record<string, string>; timeoutMs: number },
   onChunk: StreamingChunkCallback,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
-  return new Promise((resolve, reject) => {
-    const env = { ...process.env, ...opts.env };
-    const useShell =
-      process.platform === "win32" &&
-      (cmd.endsWith(".cmd") || cmd.endsWith(".bat") || cmd.endsWith(".ps1") || !cmd.toLowerCase().endsWith(".exe"));
-    let fullStdout = "";
-    let fullStderr = "";
-    let lineBuffer = "";
-    const child = spawn(cmd, args, { cwd: opts.cwd, env, shell: useShell, stdio: ["pipe", "pipe", "pipe"] });
-    const timer = setTimeout(() => {
-      try { child.kill(); } catch {}
-      reject(new Error(`CLI process killed (timeout ${opts.timeoutMs}ms)`));
-    }, opts.timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => {
-      const text = chunk.toString("utf-8");
-      fullStdout += text;
-      lineBuffer += text;
-      const lines = lineBuffer.split(/\r?\n/);
-      lineBuffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-          try {
-            const parsed = JSON.parse(trimmed);
-            if (parsed.tool_call?.name) {
-              onChunk({ type: "tool_call", content: trimmed, toolCall: { name: parsed.tool_call.name, arguments: parsed.tool_call.arguments || {} } });
-              continue;
-            }
-            const delta = parsed.delta ?? parsed.content ?? parsed.text;
-            if (typeof delta === "string") {
-              onChunk({ type: "delta", content: delta });
-              continue;
-            }
-          } catch {}
-        }
-        onChunk({ type: "delta", content: line + "\n" });
+  // Delegates to the shared CLI process runner (sole spawner): streaming
+  // chunks are buffered into lines and parsed into tool_call/delta exactly
+  // as the legacy inline spawn did.
+  let lineBuffer = "";
+  const flush = (text: string, final: boolean) => {
+    lineBuffer += text;
+    const lines = lineBuffer.split(/\r?\n/);
+    // Keep the trailing partial line buffered until more arrives (or flush
+    // everything when the process closes).
+    lineBuffer = final ? "" : (lines.pop() ?? "");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed.tool_call?.name) {
+            onChunk({ type: "tool_call", content: trimmed, toolCall: { name: parsed.tool_call.name, arguments: parsed.tool_call.arguments || {} } });
+            continue;
+          }
+          const delta = parsed.delta ?? parsed.content ?? parsed.text;
+          if (typeof delta === "string") {
+            onChunk({ type: "delta", content: delta });
+            continue;
+          }
+        } catch {}
       }
-    });
-    child.stderr.on("data", (chunk: Buffer) => { fullStderr += chunk.toString("utf-8"); });
-    child.on("error", (err: Error) => { clearTimeout(timer); reject(err); });
-    child.on("close", (code: number) => {
-      clearTimeout(timer);
-      if (lineBuffer.trim()) onChunk({ type: "delta", content: lineBuffer });
-      resolve({ stdout: fullStdout, stderr: fullStderr, code: code ?? 0 });
-    });
-    child.stdin?.end();
+      onChunk({ type: "delta", content: line + "\n" });
+    }
+  };
+  return runCliProcess(
+    {
+      command: cmd,
+      args,
+      cwd: opts.cwd,
+      env: opts.env,
+      shell: requiresShellForExecutable(cmd),
+      timeoutMs: opts.timeoutMs,
+    },
+    {
+      onStdoutChunk: (text) => flush(text, false),
+    },
+  ).then((result) => {
+    if (lineBuffer.trim()) flush("", true);
+    if (result.spawnError !== undefined) {
+      throw new Error(result.spawnError);
+    }
+    if (result.timedOut) {
+      throw new Error(`CLI process killed (timeout ${opts.timeoutMs}ms)`);
+    }
+    if (result.cancelled) {
+      throw new Error("CLI process cancelled");
+    }
+    return { stdout: result.stdout, stderr: result.stderr, code: result.exitCode ?? 0 };
   });
 }
 
@@ -219,24 +228,35 @@ export class CliProvider implements LLMProvider {
     yield { type: "message_start", messageId, model, timestamp: Date.now() };
 
     // Injected spawners are test doubles and should not require a real executable.
+    const prompt = this.buildPrompt(request.messages, request.tools, botId);
+    const adapter = this.adapter;
+    // Fail explicitly for transports this provider cannot speak instead of
+    // silently running the task as argv and dropping it. Checked before
+    // executable resolution so the error names the transport, not PATH.
+    if (adapter?.getTaskDelivery?.() === "rpc") {
+      yield { type: "error", messageId, error: `Engine '${this.id}' requires an RPC transport which is not implemented for CLI '${adapter.getMetadata().id}'.`, timestamp: Date.now() };
+      return;
+    }
     const resolved = this.isDefaultSpawn ? await this.resolvePath(this.command) : this.command;
     if (!resolved) {
       yield { type: "error", messageId, error: `CLI executable '${this.command}' not found. Please verify executable path or installation.`, timestamp: Date.now() };
       return;
     }
 
-    const prompt = this.buildPrompt(request.messages, request.tools, botId);
     // Legacy `{model}` template substitution first, then adapter-specific task
     // flags (the OpenCode adapter inserts `--agent`/`--model` after `run`).
     const templatedArgs = this.defaultArgs.map((arg) => arg.split("{model}").join(model));
-    const adapter = this.adapter;
     const sessionArgs = adapter
       ? adapter.decorateTaskArgs(templatedArgs, { model, agentId: botId })
       : templatedArgs;
 
     let session: CliSession;
     try {
-      session = await this.sessionManager.getOrCreateSession(botId ?? this.botId, resolved, sessionArgs, { cwd: this.cwd, env: this.env, timeoutMs: this.timeoutMs, spawnImpl: this.spawnImpl });
+      // Only forward an explicitly injected spawner (test double). The
+      // built-in default must stay `undefined` so the session takes its
+      // shared-runner path — forwarding the engine-local default would
+      // misroute into the custom-spawner branch and drop the abort signal.
+      session = await this.sessionManager.getOrCreateSession(botId ?? this.botId, resolved, sessionArgs, { cwd: this.cwd, env: this.env, timeoutMs: this.timeoutMs, spawnImpl: this.isDefaultSpawn ? undefined : this.spawnImpl });
     } catch (err) {
       yield { type: "error", messageId, error: `Failed to create CLI session: ${err instanceof Error ? err.message : String(err)}`, timestamp: Date.now() };
       return;

@@ -17,19 +17,24 @@ describe("phase-a adapters", () => {
       executable: "claude",
       taskDelivery: "argv",
     });
-    expect(createCodexAdapter().getMetadata().defaultArgs).toEqual(["exec", "{prompt}"]);
-    expect(createGeminiAdapter().getMetadata().defaultArgs).toEqual(["-p", "{prompt}"]);
+    expect(createCodexAdapter().getMetadata().defaultArgs).toEqual(["exec", "--json", "{prompt}"]);
+    expect(createGeminiAdapter().getMetadata().defaultArgs).toEqual([
+      "-p",
+      "{prompt}",
+      "--output-format",
+      "stream-json",
+    ]);
   });
 
   it("builds one-shot argv with prompt substitution", () => {
     const claude = createClaudeAdapter();
     expect(claude.buildOneShotArgs(["-p", "{prompt}"], "hi", { daemonUrl: null })).toEqual(["-p", "hi"]);
-    // claude appends --model only when set
+    // claude inserts --model after -p only when set (verified: claude -p --model)
     expect(claude.decorateTaskArgs(["-p", "{prompt}"], { model: "sonnet" })).toEqual([
       "-p",
-      "{prompt}",
       "--model",
       "sonnet",
+      "{prompt}",
     ]);
     expect(claude.decorateTaskArgs(["-p", "{prompt}"], {})).toEqual(["-p", "{prompt}"]);
   });
@@ -49,5 +54,24 @@ describe("phase-a adapters", () => {
     expect(res.adapterId).toBe("codex");
     expect(typeof res.ok).toBe("boolean");
     expect(res.checkedAt).toBeGreaterThan(0);
+  });
+
+  it("one-shot session streams via the shared runner (real node spawn)", async () => {
+    const { CliSessionManager } = await import("../src/llm/cli-session.js");
+    const manager = new CliSessionManager({ cliManager: createDefaultCliManager() });
+    try {
+      const session = await manager.getOrCreateSession("test-bot", "node", [
+        "-e",
+        "process.stdout.write('out-{prompt}')",
+      ]);
+      let text = "";
+      for await (const chunk of session.sendPrompt("X")) {
+        if (chunk.type === "delta" && chunk.content) text += chunk.content;
+        if (chunk.type === "error") throw new Error(chunk.error);
+      }
+      expect(text).toContain("out-X");
+    } finally {
+      await manager.terminateAll();
+    }
   });
 });
