@@ -4,7 +4,8 @@ import { TypedEventBus, type EventBusOptions } from "@finance/core";
 import type { FinanceEvent, HistoryFilter } from "@finance/shared";
 import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker, getClineGateway, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory, getCliManager } from "./runtime.js";
 import { ApprovalError } from "../approvals/types.js";
-import { COWORKER_TEMPLATES, templateSystemPrompt, validateCoworkerInput } from "../coworkers/index.js";
+import { COWORKER_TEMPLATES, buildCoworkerValidationDeps, sanitizeBotInput, templateSystemPrompt, validateCoworkerInput } from "../coworkers/index.js";
+import { isBuiltInAgent } from "../llm/agent-runtime.js";
 import type { LlmConfig } from "../llm/types.js";
 import { CustomBotAgent } from "../agents/custom-bot-agent.js";
 
@@ -1708,9 +1709,10 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     return { tools: toolRegistry.getDefinitions() };
   });
 
-  app.get("/api/agent-runtime/agents", async () => {
+  app.get<{ Querystring: { includeArchived?: string } }>("/api/agent-runtime/agents", async (request) => {
     const runtime = getAgentRuntime();
-    return { agents: runtime.listAgents() };
+    const includeArchived = request.query?.includeArchived === "true" || request.query?.includeArchived === "1";
+    return { agents: runtime.listAgents({ includeArchived }) };
   });
 
   app.get("/api/agent-runtime/templates", async () => {
@@ -1731,25 +1733,85 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     };
   });
 
+  app.get("/api/agent-runtime/providers", async () => {
+    const providerRegistry = getProviderRegistry();
+    const engineManager = getEngineManager();
+    const cliManager = getCliManager();
+    const { CliProvider } = await import("../llm/providers/cli-engine.js");
+    const engineConfigs = engineManager.listEngineConfigs();
+    const providers = [];
+    for (const provider of providerRegistry.list()) {
+      const isCli = provider instanceof CliProvider;
+      // Provider ids follow `cli-<adapterId>`; resolve the backing adapter
+      // through the live CLI manager so stale/uninstalled CLIs are visible.
+      let adapter: ReturnType<typeof cliManager.get> = undefined;
+      if (isCli && provider.id.startsWith("cli-")) {
+        adapter = cliManager.get(provider.id.slice(4));
+      }
+      const meta = adapter?.getMetadata();
+      let resolvedPath: string | null = null;
+      if (adapter) {
+        try {
+          resolvedPath = await adapter.resolveExecutable();
+        } catch {
+          resolvedPath = null;
+        }
+      }
+      const engines = engineConfigs
+        .filter(
+          (e) =>
+            e.config.provider === provider.id ||
+            e.id === provider.id ||
+            (meta && (e.id === meta.id || e.id === `${meta.id}-cli`)),
+        )
+        .map((e) => e.id);
+      let health: { status: string; message?: string };
+      try {
+        const h = await provider.healthCheck();
+        health = { status: h.status, message: h.message };
+      } catch (err) {
+        health = { status: "error", message: err instanceof Error ? err.message : String(err) };
+      }
+      providers.push({
+        id: provider.id,
+        name: provider.name,
+        kind: isCli ? "cli" : "api",
+        // No secrets here: metadata, resolution and health carry names/paths only.
+        adapter: meta
+          ? {
+              id: meta.id,
+              executable: meta.executable,
+              installed: resolvedPath !== null,
+              resolvedPath,
+              taskDelivery: meta.taskDelivery,
+              sessionModes: [...meta.sessionModes ?? []],
+              supportsStreaming: meta.supportsStreaming,
+              supportsCancellation: meta.supportsCancellation,
+              installHint: meta.installHint,
+            }
+          : null,
+        engines,
+        health,
+      });
+    }
+    return { providers };
+  });
+
   app.post<{
     Body: { id?: string; name?: string; engine?: string; model?: string; systemPrompt?: string; tools?: string[]; permissions?: any; riskPermissions?: any; description?: string; role?: string; responsibilities?: string[]; constraints?: string[] };
   }>("/api/agent-runtime/agents", async (request, reply) => {
     const body = request.body || {};
+    const clean = sanitizeBotInput(body);
+    if (!clean.ok) {
+      return reply.status(400).send({ error: "invalid coworker config", details: clean.errors });
+    }
     const runtime = getAgentRuntime();
     const engineManager = getEngineManager();
     const toolRegistry = getFinanceToolRegistry();
-    const result = await validateCoworkerInput(body, {
-      engineExists: async (engineId: string) => {
-        try {
-          await engineManager.getProviderForEngine(engineId);
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      validTools: toolRegistry.getDefinitions().map((d) => d.name),
-      idTaken: (id: string) => runtime.getAgent(id) !== undefined,
-    });
+    const result = await validateCoworkerInput(
+      body,
+      buildCoworkerValidationDeps(runtime, engineManager, toolRegistry),
+    );
     if (!result.ok || !result.normalized) {
       const taken = result.errors.some((e) => e.includes("already taken"));
       return reply.status(taken ? 409 : 400).send({ error: "invalid coworker config", details: result.errors });
@@ -1765,8 +1827,66 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     return { agent };
   });
 
+  app.put<{
+    Params: { id: string };
+    Body: { id?: string; name?: string; engine?: string; model?: string; systemPrompt?: string; tools?: string[]; permissions?: any; riskPermissions?: any; description?: string; role?: string; responsibilities?: string[]; constraints?: string[] };
+  }>("/api/agent-runtime/agents/:id", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const id = request.params.id;
+    if (!runtime.getAgent(id)) {
+      return reply.status(404).send({ error: `Agent '${id}' not found` });
+    }
+    const body = request.body || {};
+    if (typeof body.id === "string" && body.id.trim() && body.id.trim().toLowerCase() !== id.toLowerCase()) {
+      return reply.status(400).send({ error: `body id '${body.id}' does not match path id '${id}'` });
+    }
+    const clean = sanitizeBotInput(body);
+    if (!clean.ok) {
+      return reply.status(400).send({ error: "invalid coworker config", details: clean.errors });
+    }
+    const engineManager = getEngineManager();
+    const toolRegistry = getFinanceToolRegistry();
+    const result = await validateCoworkerInput(
+      { ...body, id },
+      buildCoworkerValidationDeps(runtime, engineManager, toolRegistry, id),
+    );
+    if (!result.ok || !result.normalized) {
+      return reply.status(400).send({ error: "invalid coworker config", details: result.errors });
+    }
+    runtime.updateAgent(id, result.normalized);
+    return { ok: true, agent: runtime.getAgent(id) };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/agent-runtime/agents/:id/archive", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const id = request.params.id;
+    const agent = runtime.getAgent(id);
+    if (!agent) return reply.status(404).send({ error: `Agent '${id}' not found` });
+    if (isBuiltInAgent(id)) {
+      return reply.status(403).send({ error: `Agent '${id}' is a built-in system agent and cannot be archived` });
+    }
+    if (agent.archived) {
+      return reply.status(409).send({ error: `Agent '${id}' is already archived` });
+    }
+    return { ok: true, agent: runtime.setArchived(id, true) };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/agent-runtime/agents/:id/unarchive", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const id = request.params.id;
+    const agent = runtime.getAgent(id);
+    if (!agent) return reply.status(404).send({ error: `Agent '${id}' not found` });
+    if (!agent.archived) {
+      return reply.status(409).send({ error: `Agent '${id}' is not archived` });
+    }
+    return { ok: true, agent: runtime.setArchived(id, false) };
+  });
+
   app.delete<{ Params: { id: string } }>("/api/agent-runtime/agents/:id", async (request, reply) => {
     const runtime = getAgentRuntime();
+    if (isBuiltInAgent(request.params.id) && runtime.getAgent(request.params.id)) {
+      return reply.status(403).send({ error: `Agent '${request.params.id}' is a built-in system agent and cannot be deleted (archive a custom bot instead)` });
+    }
     const deleted = runtime.deleteAgent(request.params.id);
     if (!deleted) return reply.status(404).send({ error: `Agent '${request.params.id}' not found` });
     return { ok: true, id: request.params.id };
@@ -1807,20 +1927,17 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       ...agentData,
       id: undefined as string | undefined,
     };
+    const clean = sanitizeBotInput(candidate);
+    if (!clean.ok) {
+      return reply.status(400).send({ error: "invalid agent JSON", details: clean.errors });
+    }
     const proposedId = typeof agentData.id === "string" ? agentData.id.trim().toLowerCase() : "";
     const idFree = proposedId && runtime.getAgent(proposedId) === undefined;
     if (idFree) candidate.id = proposedId;
-    const result = await validateCoworkerInput(candidate, {
-      engineExists: async (engineId: string) => {
-        try {
-          await engineManager.getProviderForEngine(engineId);
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      validTools: toolRegistry.getDefinitions().map((d) => d.name),
-    });
+    const result = await validateCoworkerInput(
+      candidate,
+      buildCoworkerValidationDeps(runtime, engineManager, toolRegistry),
+    );
     if (!result.ok || !result.normalized) {
       return reply.status(400).send({ error: "invalid agent JSON", details: result.errors });
     }

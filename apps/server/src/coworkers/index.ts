@@ -13,6 +13,12 @@ export {
 } from "./coworker-templates.js";
 export type { CoworkerTemplate, PromptSpec } from "./coworker-templates.js";
 export { validateCoworkerInput } from "./coworker-validation.js";
+export {
+  ALLOWED_BOT_FIELDS,
+  FORBIDDEN_BOT_FIELDS,
+  buildCoworkerValidationDeps,
+  sanitizeBotInput,
+} from "./coworker-service.js";
 export type {
   CoworkerInput,
   CoworkerValidationDeps,

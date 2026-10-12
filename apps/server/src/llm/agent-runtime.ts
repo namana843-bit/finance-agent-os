@@ -23,6 +23,22 @@ export interface AgentConfig {
     allowTradeProposals?: boolean;
     maxOrderSize?: number;
   };
+  /** Soft-delete flag. Archived bots are hidden from default listings. */
+  archived?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** Built-in system agents. They can be updated but never archived or deleted. */
+export const BUILT_IN_AGENT_IDS = [
+  "btc-quant-agent",
+  "risk-guardian-agent",
+  "cline-cli-agent",
+  "market-research-agent",
+];
+
+export function isBuiltInAgent(id: string): boolean {
+  return BUILT_IN_AGENT_IDS.includes(id);
 }
 
 export interface AgentRuntimeOptions {
@@ -127,15 +143,75 @@ export class AgentRuntime {
   }
 
   registerAgent(config: AgentConfig): void {
-    this.agentConfigs.set(config.id, config);
+    const now = new Date().toISOString();
+    const stored: AgentConfig = {
+      ...config,
+      createdAt: config.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.agentConfigs.set(stored.id, stored);
     void this.persistence.saveAgents(Array.from(this.agentConfigs.values()));
     if (this.bus) {
       this.bus.publish({
         type: "agent.created",
-        data: { agentId: config.id, name: config.name, engine: config.engine },
+        data: { agentId: stored.id, name: stored.name, engine: stored.engine },
         source: "agent-runtime",
       });
     }
+  }
+
+  /**
+   * Full replacement update. Returns false when the agent does not exist.
+   * `archived`/`createdAt` are always preserved from the stored record —
+   * use setArchived() to (un)archive.
+   */
+  updateAgent(id: string, config: AgentConfig): boolean {
+    const existing = this.agentConfigs.get(id);
+    if (!existing) return false;
+    const stored: AgentConfig = {
+      ...config,
+      id,
+      archived: existing.archived,
+      createdAt: existing.createdAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    this.agentConfigs.set(id, stored);
+    void this.persistence.saveAgents(Array.from(this.agentConfigs.values()));
+    if (this.bus) {
+      this.bus.publish({
+        type: "agent.updated",
+        data: { agentId: id, name: stored.name, engine: stored.engine },
+        source: "agent-runtime",
+      });
+    }
+    return true;
+  }
+
+  /**
+   * Soft-delete (archive) or restore a bot. Archiving cancels any in-flight
+   * run first so no orphaned execution survives. Returns the stored record,
+   * or undefined when the agent does not exist.
+   */
+  setArchived(id: string, archived: boolean): AgentConfig | undefined {
+    const existing = this.agentConfigs.get(id);
+    if (!existing) return undefined;
+    if (archived) this.cancelAgent(id);
+    const stored: AgentConfig = {
+      ...existing,
+      archived: archived ? true : undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    if (!archived) delete stored.archived;
+    this.agentConfigs.set(id, stored);
+    void this.persistence.saveAgents(Array.from(this.agentConfigs.values()));
+    if (this.bus) {
+      this.bus.publish({
+        type: archived ? "agent.archived" : "agent.unarchived",
+        data: { agentId: id, name: stored.name },
+        source: "agent-runtime",
+      });
+    }
+    return stored;
   }
 
   deleteAgent(id: string): boolean {
@@ -179,8 +255,10 @@ export class AgentRuntime {
     return this.activeRuns.has(id);
   }
 
-  listAgents(): AgentConfig[] {
-    return Array.from(this.agentConfigs.values());
+  listAgents(opts?: { includeArchived?: boolean }): AgentConfig[] {
+    const all = Array.from(this.agentConfigs.values());
+    if (opts?.includeArchived) return all;
+    return all.filter((a) => !a.archived);
   }
 
   async loadConversationHistory(agentId: string): Promise<LLMMessage[]> {
