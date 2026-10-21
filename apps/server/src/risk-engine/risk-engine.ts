@@ -133,12 +133,23 @@ export class RiskEngine {
     }
 
     // 5. Position size check
-    const positionValue = request.quantity * request.price;
-    if (positionValue > this.config.maxOrderSize) {
-      approvedQuantity = Math.floor(this.config.maxOrderSize / request.price);
-      reasons.push(`Order size ${positionValue.toFixed(2)} > max ${this.config.maxOrderSize}`);
+    //    When the order exceeds maxOrderSize it is trimmed down to the largest
+    //    whole unit that fits. Every check below MUST use the *approved*
+    //    notional (approvedQuantity * price), not the requested one — otherwise
+    //    a trimmed order is judged against a size it will never trade.
+    const requestedValue = request.quantity * request.price;
+    if (requestedValue > this.config.maxOrderSize) {
+      const maxUnits = Math.floor(this.config.maxOrderSize / request.price);
+      if (maxUnits <= 0) {
+        return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Order size ${requestedValue.toFixed(2)} > max ${this.config.maxOrderSize} and price ${request.price} is too large to fit a single unit`);
+      }
+      approvedQuantity = maxUnits;
+      reasons.push(`Order size ${requestedValue.toFixed(2)} > max ${this.config.maxOrderSize}, trimmed to ${approvedQuantity} unit(s)`);
     }
     rulesChecked.push("order_size");
+
+    // Notional that will actually be traded after trimming.
+    const approvedValue = approvedQuantity * request.price;
 
     // 6. Max position size (quantity) check
     const existingPosition = portfolio.positions.find((p) => p.symbol.toUpperCase() === sym);
@@ -150,7 +161,7 @@ export class RiskEngine {
 
     // 7. Margin / Cash check
     rulesChecked.push("margin_check");
-    const requiredMargin = this.config.maxLeverage > 1 ? positionValue / this.config.maxLeverage : positionValue;
+    const requiredMargin = this.config.maxLeverage > 1 ? approvedValue / this.config.maxLeverage : approvedValue;
     if (requiredMargin > portfolio.cash) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Insufficient cash/margin: required ${requiredMargin.toFixed(2)} > available ${portfolio.cash.toFixed(2)}`);
     }
@@ -172,14 +183,14 @@ export class RiskEngine {
     // 10. Symbol exposure check
     const existingValue = existingPosition ? existingPosition.quantity * existingPosition.currentPrice : 0;
     const totalValue = portfolio.equity > 0 ? portfolio.equity : portfolio.cash;
-    const symbolExposure = totalValue > 0 ? ((existingValue + positionValue) / totalValue) * 100 : 100;
+    const symbolExposure = totalValue > 0 ? ((existingValue + approvedValue) / totalValue) * 100 : 100;
     if (symbolExposure > this.config.maxSymbolExposure) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Symbol exposure ${symbolExposure.toFixed(1)}% > ${this.config.maxSymbolExposure}%`);
     }
     rulesChecked.push("symbol_exposure");
 
     // 11. Portfolio exposure check
-    const totalPositionValue = portfolio.positions.reduce((sum, p) => sum + p.quantity * p.currentPrice, 0) + positionValue;
+    const totalPositionValue = portfolio.positions.reduce((sum, p) => sum + p.quantity * p.currentPrice, 0) + approvedValue;
     const portfolioExposure = totalValue > 0 ? (totalPositionValue / totalValue) * 100 : 0;
     if (portfolioExposure > this.config.maxPortfolioExposure) {
       return this.makeDecision("REJECTED", request, reasons, rulesChecked, 0, portfolio, `Portfolio exposure ${portfolioExposure.toFixed(1)}% > ${this.config.maxPortfolioExposure}%`);

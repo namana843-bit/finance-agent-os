@@ -93,7 +93,9 @@ describe("RiskEngine", () => {
   it("should reject when symbol exposure exceeds limit", () => {
     const bus = new TypedEventBus();
     const engine = new RiskEngine(bus, { maxSymbolExposure: 10 });
-    const request = makeRequest({ symbol: "BTCUSDT", quantity: 0.5, price: 68000 }); // 34000 = 34%
+    // notional 6800 (< default maxOrderSize 10000) so the order-size rule
+    // does not pre-empt the exposure rule this test targets.
+    const request = makeRequest({ symbol: "BTCUSDT", quantity: 0.1, price: 68000 }); // 6800
     const portfolio = makePortfolio({
       equity: 100_000,
       positions: [{ symbol: "BTCUSDT", quantity: 0.1, entryPrice: 68000, currentPrice: 68000, side: "long" }],
@@ -107,13 +109,15 @@ describe("RiskEngine", () => {
   it("should reject when portfolio exposure exceeds limit", () => {
     const bus = new TypedEventBus();
     const engine = new RiskEngine(bus, { maxPortfolioExposure: 30, maxSymbolExposure: 50 });
-    const request = makeRequest({ quantity: 0.5, price: 68000 }); // 34000 = 34%
+    // notional 6800 (< default maxOrderSize 10000) so the order-size rule
+    // does not pre-empt the exposure rule this test targets.
+    const request = makeRequest({ quantity: 0.1, price: 68000 }); // 6800
     const portfolio = makePortfolio({
       equity: 100_000,
       positions: [
         { symbol: "ETHUSDT", quantity: 10, entryPrice: 3000, currentPrice: 3000, side: "long" },
         { symbol: "SOLUSDT", quantity: 50, entryPrice: 200, currentPrice: 200, side: "long" },
-      ], // total existing: 30000 + 10000 = 40000, + 34000 = 74000 = 74%
+      ], // total existing: 30000 + 10000 = 40000, + 6800 = 46800 = 46.8%
     });
 
     const decision = engine.evaluate(request, portfolio);
@@ -137,5 +141,51 @@ describe("RiskEngine", () => {
     bus.subscribeTo("risk.approved", () => { received = true; });
     engine.evaluate(makeRequest(), makePortfolio());
     expect(received).toBe(true);
+  });
+
+  // --- regression: approved-quantity consistency -------------------------
+
+  it("should reject an order that cannot fit a single unit instead of approving 0", () => {
+    const bus = new TypedEventBus();
+    const engine = new RiskEngine(bus, { maxOrderSize: 500 });
+    const request = makeRequest({ quantity: 0.1, price: 68000 }); // 6800 notional, 1 unit = 68000 > 500
+
+    const decision = engine.evaluate(request, makePortfolio());
+    expect(decision.decision).toBe("REJECTED");
+    expect(decision.approvedQuantity).toBe(0);
+    expect(decision.ticket).toBeUndefined();
+  });
+
+  it("should judge the margin check against the trimmed notional, not the requested one", () => {
+    const bus = new TypedEventBus();
+    const engine = new RiskEngine(bus, { maxOrderSize: 500, maxLeverage: 1 });
+    // requested notional 1000 -> trimmed to 500 (5 units @ 100); cash 600 covers it
+    const request = makeRequest({ quantity: 10, price: 100 });
+
+    const decision = engine.evaluate(request, makePortfolio({ cash: 600, equity: 2500, peakEquity: 2500 }));
+    expect(decision.decision).toBe("APPROVED");
+    expect(decision.approvedQuantity).toBe(5);
+  });
+
+  it("should judge the exposure checks against the trimmed notional, not the requested one", () => {
+    const bus = new TypedEventBus();
+    const engine = new RiskEngine(bus, { maxOrderSize: 500, maxSymbolExposure: 60 });
+    // requested 1000 -> trimmed to 500; 500/1000 equity = 50% < 60%
+    const request = makeRequest({ quantity: 10, price: 100 });
+
+    const decision = engine.evaluate(request, makePortfolio({ cash: 600, equity: 1000, peakEquity: 1000 }));
+    expect(decision.decision).toBe("APPROVED");
+    expect(decision.approvedQuantity).toBe(5);
+  });
+
+  it("should trim the order and approve the trimmed quantity", () => {
+    const bus = new TypedEventBus();
+    const engine = new RiskEngine(bus, { maxOrderSize: 500 });
+    const request = makeRequest({ quantity: 10, price: 100 }); // 1000 -> 500
+
+    const decision = engine.evaluate(request, makePortfolio());
+    expect(decision.decision).toBe("APPROVED");
+    expect(decision.approvedQuantity).toBe(5);
+    expect(decision.ticket?.maxQuantity).toBe(5);
   });
 });
