@@ -1,11 +1,24 @@
 #!/usr/bin/env python3
 """
-list_opencode_models.py
+list_opencode_models.py — Cline edition (backward-compatible entry point).
 
-Invokes the OpenCode CLI using Python's subprocess module to discover,
-list, and inspect all available AI models for the Finance Agent OS project.
-Supports both human-readable console output and machine-readable JSON output (--json).
-Includes caching to ensure rapid response times for backend/frontend consumption.
+Keeps the original filename and `--json` contract consumed by
+`apps/server/src/llm/opencode-models.ts`, but sources model data from the
+Cline CLI stack, which is the repo's primary agent engine:
+
+  • Cline CLI (`cline`) has NO `models` list subcommand — `cline --help` is
+    authoritative. Model selection happens via `cline auth -m <model-id>` and
+    `cline -m <model-id>`.
+  • The configured per-provider models therefore live in Cline's own state
+    file: `<config-dir>/data/settings/providers.json`
+    (default `~/.cline/data/settings/providers.json`).
+  • This script reads that state, reports the last-used provider, every
+    provider's configured model, and never prints any auth material
+    (access/refresh tokens are read but strictly redacted from output).
+
+Output JSON shape (unchanged, so the server keeps working):
+  { available, cliPath, total, models, grouped, projectConfig,
+    source: "cline", lastUsedProvider, providers: [...] }
 """
 
 import sys
@@ -19,213 +32,255 @@ from pathlib import Path
 
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
-def find_opencode_path() -> str:
+# Redacted fields: anything under these keys must never reach stdout.
+REDACTED_KEYS = {"auth", "accessToken", "refreshToken", "apiKey", "key", "sap"}
+
+
+def find_cline_path() -> str:
     """
-    Locates the OpenCode CLI executable path on the system.
-    Checks PATH via shutil.which, common Windows npm global paths,
-    and fallback commands.
+    Locates the Cline CLI executable (same strategy as the repo's
+    ClineAdapter: CLINE_CLI_PATH env var, then PATH, then common Windows
+    npm global paths).
     """
-    cli_path = shutil.which("opencode")
+    env_path = os.environ.get("CLINE_CLI_PATH")
+    if env_path and os.path.exists(env_path):
+        return env_path
+
+    cli_path = shutil.which("cline")
     if cli_path:
         return cli_path
 
     appdata = os.environ.get("APPDATA", "")
     if appdata:
         candidates = [
-            os.path.join(appdata, "npm", "opencode.cmd"),
-            os.path.join(appdata, "npm", "opencode.CMD"),
-            os.path.join(appdata, "npm", "opencode.ps1"),
-            os.path.join(appdata, "npm", "opencode"),
+            os.path.join(appdata, "npm", "cline.cmd"),
+            os.path.join(appdata, "npm", "cline.CMD"),
+            os.path.join(appdata, "npm", "cline.ps1"),
+            os.path.join(appdata, "npm", "cline"),
         ]
         for candidate in candidates:
             if os.path.exists(candidate):
                 return candidate
 
-    return "opencode"
+    return "cline"
+
+
+def probe_cline_version(cline_bin: str) -> str | None:
+    """`cline version` — best-effort, never raises."""
+    try:
+        result = subprocess.run(
+            [cline_bin, "version"],
+            capture_output=True,
+            text=True,
+            shell=(sys.platform == "win32"),
+            timeout=15,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip().splitlines()[-1] if result.stdout.strip() else None
+    except Exception:
+        pass
+    return None
+
 
 def get_cache_path(project_dir: Path) -> Path:
     cache_dir = project_dir / ".data"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / "opencode-models-cache.json"
+    return cache_dir / "cline-models-cache.json"
+
 
 def read_cache(cache_file: Path) -> dict | None:
     if not cache_file.exists():
         return None
     try:
         data = json.loads(cache_file.read_text(encoding="utf-8"))
-        cached_time = data.get("cached_at", 0)
-        if time.time() - cached_time < CACHE_TTL_SECONDS:
+        if time.time() - data.get("cached_at", 0) < CACHE_TTL_SECONDS:
             return data
     except Exception:
         pass
     return None
 
-def write_cache(cache_file: Path, data: dict):
+
+def write_cache(cache_file: Path, data: dict) -> None:
     try:
         data["cached_at"] = time.time()
         cache_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception:
         pass
 
-def get_opencode_models(opencode_bin: str, verbose: bool = True) -> list[str]:
+
+def sanitize(settings: dict) -> dict:
+    """Drop every key that could carry secrets (auth, tokens, api keys)."""
+    return {k: v for k, v in settings.items() if k.lower() not in REDACTED_KEYS}
+
+
+def get_cline_models(cline_bin: str, data_dir: str | None) -> dict:
     """
-    Invokes the OpenCode CLI using subprocess to fetch available models.
+    Reads Cline's provider state. `providers.json` is the single source of
+    truth the CLI itself writes via `cline auth`; there is deliberately no
+    fabricated model catalog — only models actually configured.
     """
-    use_shell = sys.platform == "win32"
-    cmd = [opencode_bin, "models"]
+    base = Path(data_dir).expanduser() if data_dir else Path.home() / ".cline"
+    providers_file = base / "data" / "settings" / "providers.json"
 
-    if verbose:
-        print(f"[+] Invoking OpenCode CLI via subprocess: {' '.join(cmd)}")
-        print(f"[+] CLI Binary Path: {opencode_bin}")
+    payload: dict = {
+        "available": False,
+        "cliPath": cline_bin,
+        "providersFile": str(providers_file),
+        "total": 0,
+        "models": [],
+        "grouped": {},
+        "lastUsedProvider": None,
+        "providers": [],
+        "error": None,
+    }
 
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        shell=use_shell,
-        timeout=60,
-    )
+    if not providers_file.exists():
+        payload["error"] = (
+            f"Cline provider state not found at {providers_file}. "
+            "Run `cline auth` once to configure a provider and model."
+        )
+        return payload
 
-    if result.returncode != 0:
-        err_msg = result.stderr.strip() or f"Process exited with code {result.returncode}"
-        raise RuntimeError(f"OpenCode CLI execution failed: {err_msg}")
+    try:
+        state = json.loads(providers_file.read_text(encoding="utf-8"))
+    except Exception as err:
+        payload["error"] = f"Failed to parse {providers_file}: {err}"
+        return payload
 
-    raw_lines = result.stdout.strip().splitlines()
-    models = []
-    for line in raw_lines:
-        line_clean = line.strip()
-        if line_clean and not line_clean.startswith("["):
-            models.append(line_clean)
+    payload["lastUsedProvider"] = state.get("lastUsedProvider")
 
-    return sorted(list(dict.fromkeys(models)))
+    models: list[str] = []
+    provider_rows: list[dict] = []
+    for provider_id, entry in (state.get("providers") or {}).items():
+        raw_settings = (entry or {}).get("settings") or {}
+        settings = sanitize(raw_settings)
+        model = settings.get("model")
+        row = {
+            "id": provider_id,
+            "model": model,
+            "tokenSource": (entry or {}).get("tokenSource"),
+            "updatedAt": (entry or {}).get("updatedAt"),
+            "reasoning": settings.get("reasoning"),
+            "authConfigured": "auth" in raw_settings,
+            "isLastUsed": provider_id == state.get("lastUsedProvider"),
+        }
+        provider_rows.append(row)
+        if isinstance(model, str) and model and model not in models:
+            models.append(model)
+
+    payload["available"] = True
+    payload["providers"] = provider_rows
+    payload["models"] = sorted(models)
+    payload["total"] = len(models)
+    grouped: dict[str, list[str]] = {}
+    for model in payload["models"]:
+        grouped.setdefault(model.split("/")[0] if "/" in model else "other", []).append(model)
+    payload["grouped"] = grouped
+    return payload
+
 
 def parse_project_config(project_dir: Path, available_models: list[str]) -> dict:
+    """
+    Kept for JSON-contract compatibility: the repo no longer ships an
+    opencode.json (removed with the OpenCode topology), so this normally
+    reports exists:false. If one is ever reintroduced, it is still parsed.
+    """
     config_path = project_dir / "opencode.json"
     if not config_path.exists():
         return {"exists": False}
-
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-
+        config = json.loads(config_path.read_text(encoding="utf-8"))
         default_model = config.get("model", "N/A")
-        small_model = config.get("small_model", "N/A")
-        agents_dict = {}
-
-        agents_section = config.get("agent", None)
-        if agents_section is None:
-            agents_section = config.get("agents", {})
-        for agent_name, agent_cfg in (agents_section or {}).items():
-            m = agent_cfg.get("model", "N/A")
-            sm = agent_cfg.get("small_model", "N/A")
-            agents_dict[agent_name] = {
-                "model": m,
-                "small_model": sm,
-                "model_available": m in available_models,
-                "small_model_available": sm in available_models,
-            }
-
         return {
             "exists": True,
             "path": str(config_path),
             "default_model": default_model,
             "default_model_available": default_model in available_models,
-            "small_model": small_model,
-            "small_model_available": small_model in available_models,
-            "agents": agents_dict,
         }
-    except Exception as e:
-        return {"exists": True, "error": str(e)}
+    except Exception as err:
+        return {"exists": True, "error": str(err)}
 
-def main():
-    parser = argparse.ArgumentParser(description="List and verify OpenCode models via subprocess")
-    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-    parser.add_argument("--refresh", action="store_true", help="Bypass cache and force refresh")
-    parser.add_argument("--provider", type=str, default=None, help="Filter by provider prefix (e.g. opencode, google)")
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="List the models configured for the Cline CLI (Finance Agent OS)"
+    )
+    parser.add_argument("--json", action="store_true", help="Machine-readable JSON output")
+    parser.add_argument("--refresh", action="store_true", help="Bypass the 5-minute cache")
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Cline data dir override (mirrors `cline --data-dir`, default ~/.cline)",
+    )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default=None,
+        help="Only show providers with this id (e.g. cline, cline-pass)",
+    )
     args = parser.parse_args()
 
     project_dir = Path(__file__).resolve().parent
     cache_file = get_cache_path(project_dir)
 
-    cli_path = find_opencode_path()
+    cline_bin = find_cline_path()
     cached = None if args.refresh else read_cache(cache_file)
 
     if cached and "models" in cached:
-        models = cached["models"]
-        cli_path = cached.get("cliPath", cli_path)
+        payload = cached
+        cline_bin = payload.get("cliPath", cline_bin)
     else:
-        try:
-            models = get_opencode_models(cli_path, verbose=not args.json)
-        except Exception as err:
-            if args.json:
-                print(json.dumps({"available": False, "error": str(err), "cliPath": cli_path}))
-                sys.exit(1)
-            else:
-                print(f"[!] Error fetching models: {err}", file=sys.stderr)
-                sys.exit(1)
+        payload = get_cline_models(cline_bin, args.data_dir)
+        payload["cliVersion"] = probe_cline_version(cline_bin) if payload["available"] else None
+        if payload["available"]:
+            write_cache(cache_file, payload)
 
-    # Group models
-    grouped: dict[str, list[str]] = {}
-    for model in models:
-        provider = model.split("/")[0] if "/" in model else "other"
-        grouped.setdefault(provider, []).append(model)
+    # Contract fields the TS consumer expects.
+    payload["source"] = "cline"
+    payload["projectConfig"] = parse_project_config(project_dir, payload.get("models", []))
 
-    proj_config = parse_project_config(project_dir, models)
-
-    payload = {
-        "available": True,
-        "cliPath": cli_path,
-        "total": len(models),
-        "models": models,
-        "grouped": grouped,
-        "projectConfig": proj_config,
-    }
-
-    # Save to cache
-    write_cache(cache_file, payload)
-
-    # Filter if provider requested
     if args.provider:
-        prov = args.provider.lower()
-        filtered = [m for m in models if m.lower().startswith(f"{prov}/")]
-        payload["models"] = filtered
-        payload["total"] = len(filtered)
+        filtered_rows = [r for r in payload.get("providers", []) if r.get("id") == args.provider]
+        payload["providers"] = filtered_rows
+        payload["models"] = [r["model"] for r in filtered_rows if r.get("model")]
+        payload["total"] = len(payload["models"])
 
     if args.json:
         print(json.dumps(payload, indent=2))
         return
 
-    # Human-readable console output
     print("=" * 60)
-    print("OpenCode CLI Model Explorer (Python Subprocess)")
+    print("Cline Model Explorer (Python Subprocess)")
     print("=" * 60)
-    print(f"[+] CLI Binary Path: {cli_path}")
-    print(f"[✓] Successfully retrieved {len(models)} models from OpenCode CLI.\n")
+    print(f"[+] CLI Binary Path : {cline_bin}")
+    if payload.get("cliVersion"):
+        print(f"[+] CLI Version     : {payload['cliVersion']}")
+    if not payload.get("available"):
+        print(f"[!] {payload.get('error')}")
+        sys.exit(1)
 
-    for provider, provider_models in sorted(grouped.items()):
-        print(f"Provider: [{provider.upper()}] ({len(provider_models)} models)")
-        for m in provider_models:
-            print(f"   • {m}")
+    last_used = payload.get("lastUsedProvider")
+    print(f"[✓] Last used provider: {last_used or 'unknown'}")
+    print(f"[✓] {payload['total']} model(s) configured across "
+          f"{len(payload['providers'])} provider(s). "
+          "Cline has no `models` list command — these are the models actually "
+          "configured via `cline auth`.\n")
+
+    for row in payload["providers"]:
+        marker = " (last used)" if row.get("isLastUsed") else ""
+        print(f"Provider: [{row['id'].upper()}]{marker}")
+        print(f"   • model    : {row.get('model') or '(not set)'}")
+        if row.get("reasoning"):
+            eff = row["reasoning"].get("effort")
+            print(f"   • reasoning: enabled={row['reasoning'].get('enabled')}, effort={eff}")
+        print(f"   • auth     : {'configured' if row.get('authConfigured') else row.get('tokenSource') or 'unknown'}")
+        print(f"   • updated  : {row.get('updatedAt')}")
         print()
 
-    if proj_config.get("exists"):
-        print("=" * 60)
-        print("Project Configuration Check (opencode.json)")
-        print("=" * 60)
-        dm = proj_config.get("default_model", "N/A")
-        sm = proj_config.get("small_model", "N/A")
-        print(f"  • Default Model : {dm} [{'AVAILABLE' if proj_config.get('default_model_available') else 'UNVERIFIED'}]")
-        print(f"  • Small Model   : {sm} [{'AVAILABLE' if proj_config.get('small_model_available') else 'UNVERIFIED'}]")
+    print("[i] Run a task with a specific model:")
+    print("    cline --json -m <model-id> \"<prompt>\"")
 
-        agents = proj_config.get("agents", {})
-        if agents:
-            print(f"\n  Configured Agents ({len(agents)}):")
-            for agent_name, agent_cfg in agents.items():
-                m = agent_cfg["model"]
-                sm = agent_cfg["small_model"]
-                status_m = "✓" if agent_cfg["model_available"] else "?"
-                status_sm = "✓" if agent_cfg["small_model_available"] else "?"
-                print(f"    - {agent_name:<22} | Primary: {m} [{status_m}] | Small: {sm} [{status_sm}]")
 
 if __name__ == "__main__":
     main()
