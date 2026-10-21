@@ -19,6 +19,7 @@ import { registerAllTools } from "../tools/finance-tools.js";
 import { BinanceMarketPlugin } from "../plugins/binance-plugin.js";
 import { FinanceGateway } from "../gateway/finance-gateway.js";
 import { StateRecovery } from "../state/state-recovery.js";
+import { PortfolioHistory } from "../state/portfolio-history.js";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { MarketStateService } from "../market/market-state.js";
 import {
@@ -56,6 +57,7 @@ export const SERVICE_IDS = {
   MARKET_STATE: "market-state",
   PAPER_BROKER: "paper-broker",
   STATE_RECOVERY: "state-recovery",
+  PORTFOLIO_HISTORY: "portfolio-history",
   ORDER_MANAGER: "order-manager",
   TRADE_ENGINE: "trade-engine",
   AGENT_MEMORY: "agent-memory",
@@ -124,6 +126,17 @@ class StateRecoveryService extends BaseServiceWrapper<StateRecovery> {
       { id: SERVICE_IDS.STATE_RECOVERY, name: "State Recovery", description: "Application persistence and restart recovery" },
       rec,
       { onStart: (r) => r.start(), onStop: (r) => r.stop() }
+    );
+  }
+}
+
+class PortfolioHistoryService extends BaseServiceWrapper<PortfolioHistory> {
+  constructor(bus: import("@finance/core").TypedEventBus) {
+    const history = new PortfolioHistory(bus);
+    super(
+      { id: SERVICE_IDS.PORTFOLIO_HISTORY, name: "Portfolio History", description: "Persisted equity snapshot history for portfolio charts" },
+      history,
+      { onStart: (h) => h.start(), onStop: (h) => h.stop() }
     );
   }
 }
@@ -377,6 +390,10 @@ const riskAgent = new RiskAgent(bus);
   const stateRecoveryService = new StateRecoveryService(bus);
   runtime.registerService(stateRecoveryService);
 
+  // Portfolio History — persisted equity snapshots (portfolio.updated -> history)
+  const portfolioHistoryService = new PortfolioHistoryService(bus);
+  runtime.registerService(portfolioHistoryService);
+
   // Order Manager
   const orderManagerService = new OrderManagerService(bus);
   runtime.registerService(orderManagerService);
@@ -511,6 +528,10 @@ export function getAuditLogger(): AuditLogger | undefined {
 
 export function getMarketState(): MarketStateService | undefined {
   return getService<MarketStateServiceWrapper>(SERVICE_IDS.MARKET_STATE)?.getInstance();
+}
+
+export function getPortfolioHistory(): PortfolioHistory | undefined {
+  return getService<PortfolioHistoryService>(SERVICE_IDS.PORTFOLIO_HISTORY)?.getInstance();
 }
 
 export function getStrategyRegistry(): StrategyRegistry | undefined {

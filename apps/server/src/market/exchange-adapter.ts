@@ -31,7 +31,7 @@ export interface ExchangeAdapter {
 // Binance Adapter Implementation
 // ---------------------------------------------------------------------------
 
-import { generateSyntheticTick, fetchBinancePrice } from "../agents/market/service.js";
+import { fetchBinancePrice } from "../agents/market/service.js";
 import { BinanceRestClient } from "./binance-rest.js";
 import { BinanceMarketWebSocket } from "./binance-ws.js";
 
@@ -78,73 +78,62 @@ export class BinanceAdapter implements ExchangeAdapter {
         timestamp: ticker.timestamp,
       };
     } catch {
-      const price = await fetchBinancePrice(symbol) ?? generateSyntheticTick(symbol).price;
+      // BUG FIX: the previous fallback invented a random volume. Only the
+      // last price is knowable here, so volume is reported as unknown (0)
+      // instead of a fabricated number.
+      const price = await fetchBinancePrice(symbol);
+      if (price === null) {
+        throw new Error(`No ticker data available for ${symbol.toUpperCase()} (Binance REST unavailable)`);
+      }
       return {
         symbol,
         bid: price * 0.999,
         ask: price * 1.001,
         last: price,
-        volume: Math.random() * 1000,
+        volume: 0,
         timestamp: Date.now(),
       };
     }
   }
 
   async getCandles(symbol: string, timeframe: string, limit: number): Promise<Array<{ open: number; high: number; low: number; close: number; volume: number; timestamp: number }>> {
-    try {
-      const klines = await this.restClient.getKlines(symbol, timeframe || "1m", limit);
-      if (klines && klines.length > 0) {
-        return klines.map((k) => ({
-          open: k.open,
-          high: k.high,
-          low: k.low,
-          close: k.close,
-          volume: k.volume,
-          timestamp: k.timestamp,
-        }));
-      }
-    } catch {}
-
-    // Fallback synthetic candles
-    const now = Date.now();
-    let price = 68000;
-    return Array.from({ length: limit }, (_, i) => {
-      const open = price + (Math.random() - 0.5) * 200;
-      const high = open + Math.random() * 300;
-      const low = open - Math.random() * 300;
-      const close = low + Math.random() * (high - low);
-      price = close;
-      return { open, high, low, close, volume: Math.random() * 500, timestamp: now - (limit - i) * 60000 };
-    });
+    // BUG FIX: this used to fall back to RANDOM candles around a hard-coded
+    // price of 68000. Fabricated market data is worse than no data, so the
+    // adapter now fails loudly when the exchange is unreachable.
+    const klines = await this.restClient.getKlines(symbol, timeframe || "1m", limit);
+    if (!klines || klines.length === 0) {
+      throw new Error(`No candle data available for ${symbol.toUpperCase()} (Binance REST returned no klines)`);
+    }
+    return klines.map((k) => ({
+      open: k.open,
+      high: k.high,
+      low: k.low,
+      close: k.close,
+      volume: k.volume,
+      timestamp: k.timestamp,
+    }));
   }
 
   async getOrderBook(symbol: string, depth: number): Promise<{ bids: Array<{ price: number; quantity: number }>; asks: Array<{ price: number; quantity: number }>; timestamp: number }> {
-    try {
-      const book = await this.restClient.getDepth(symbol, depth);
-      if (book && (book.bids.length > 0 || book.asks.length > 0)) {
-        return {
-          bids: book.bids,
-          asks: book.asks,
-          timestamp: book.timestamp,
-        };
-      }
-    } catch {}
-
-    const ticker = await this.getTicker(symbol);
-    const mid = ticker.last;
-    const bids = Array.from({ length: depth }, (_, i) => ({ price: mid * (1 - (i + 1) * 0.0001), quantity: Math.random() * 10 }));
-    const asks = Array.from({ length: depth }, (_, i) => ({ price: mid * (1 + (i + 1) * 0.0001), quantity: Math.random() * 10 }));
-    return { bids, asks, timestamp: Date.now() };
+    // BUG FIX: this used to fall back to RANDOM bids/asks around the last
+    // price. The order book is now either real or an explicit error.
+    const book = await this.restClient.getDepth(symbol, depth);
+    if (!book || (book.bids.length === 0 && book.asks.length === 0)) {
+      throw new Error(`No order book data available for ${symbol.toUpperCase()} (Binance REST returned an empty book)`);
+    }
+    return {
+      bids: book.bids,
+      asks: book.asks,
+      timestamp: book.timestamp,
+    };
   }
 
   async getTrades(symbol: string, limit: number): Promise<Array<{ price: number; quantity: number; side: "buy" | "sell"; timestamp: number }>> {
-    const ticker = await this.getTicker(symbol);
-    return Array.from({ length: limit }, () => ({
-      price: ticker.last * (1 + (Math.random() - 0.5) * 0.001),
-      quantity: Math.random() * 5,
-      side: Math.random() > 0.5 ? "buy" as const : "sell" as const,
-      timestamp: Date.now() - Math.random() * 60000,
-    }));
+    // BUG FIX: this used to invent random trades. Real trades come from the
+    // WebSocket stream; the REST adapter does not expose a trade history.
+    void symbol;
+    void limit;
+    throw new Error("Trade history is not available from the REST adapter — use the Binance WebSocket trade stream");
   }
 
   subscribeTicker(symbol: string, callback: (ticker: { symbol: string; price: number; timestamp: number }) => void): () => void {

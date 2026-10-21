@@ -356,7 +356,30 @@ export class PaperBroker {
       });
 
       // Execute trade fill — with idempotency guard
-      this.executeTradeFill(order, fillPrice, fee, currentPrice);
+      const filled = this.executeTradeFill(order, order.quantity, fillPrice, fee, currentPrice);
+      if (filled) {
+        this.applyFillAccounting(order, order.quantity, fillPrice, fee);
+      } else {
+        order.status = "rejected";
+        order.reason = "Insufficient cash or margin at fill time";
+        order.version = (order.version ?? 1) + 1;
+        this.bus.publish({
+          type: "order.rejected",
+          data: {
+            orderId: order.id,
+            clientOrderId: order.clientOrderId,
+            correlationId: order.correlationId,
+            symbol: order.symbol,
+            side: order.side,
+            reason: order.reason,
+            timestamp: Date.now(),
+            version: order.version,
+          },
+          source: "paper-broker",
+          agentId: "execution",
+          correlationId: order.correlationId,
+        });
+      }
       return { ...order };
     }
 
@@ -563,65 +586,111 @@ export class PaperBroker {
     const price = fillPrice ?? order.price;
     const fee = price * fillQty * this.config.fee;
     const currentPrice = this.priceCache.get(order.symbol) ?? price;
-    // Reuse trade fill logic for partial qty
-    const filled = this.executePartialTradeFill(order, fillQty, price, fee, currentPrice);
+    // Apply the portfolio side-effect for exactly fillQty units
+    const filled = this.executeTradeFill(order, fillQty, price, fee, currentPrice);
     if (!filled) return null;
-    // update filledQuantity and versioned status
-    order.filledQuantity = (order.filledQuantity ?? 0) + fillQty;
-    order.filledPrice = price;
-    order.fee = (order.fee ?? 0) + fee;
-    order.averageFillPrice = order.averageFillPrice ?? price;
-    // average handled inside executePartial...
-    if ((order.filledQuantity ?? 0) >= order.quantity - 1e-9) {
-      order.status = "filled";
-      order.filledAt = Date.now();
-      order.version = (order.version ?? 1) + 1;
-      this.bus.publish({
-        type: "order.filled",
-        data: { orderId: order.id, clientOrderId: order.clientOrderId, correlationId: order.correlationId ?? opts?.correlationId, symbol: order.symbol, side: order.side, quantity: fillQty, price, fee, timestamp: order.filledAt, version: order.version, filledQuantity: order.filledQuantity },
-        source: "paper-broker",
-        agentId: "execution",
-        correlationId: order.correlationId ?? opts?.correlationId,
-      });
-    } else {
-      order.status = "partially_filled";
-      order.version = (order.version ?? 1) + 1;
-      this.bus.publish({
-        type: "order.partially_filled",
-        data: { orderId: order.id, clientOrderId: order.clientOrderId, correlationId: order.correlationId ?? opts?.correlationId, symbol: order.symbol, side: order.side, quantity: fillQty, price, fee, timestamp: Date.now(), version: order.version, filledQuantity: order.filledQuantity, remaining: order.quantity - (order.filledQuantity ?? 0) },
-        source: "paper-broker",
-        agentId: "execution",
-        correlationId: order.correlationId ?? opts?.correlationId,
-      });
-    }
+    // Account for the fill (accumulate qty/fee, weighted avg price, status + events)
+    this.applyFillAccounting(order, fillQty, price, fee, opts?.correlationId);
     return { ...order };
   }
 
-  private executePartialTradeFill(order: PaperOrder, qty: number, fillPrice: number, fee: number, currentMarketPrice: number): boolean {
-    // Delegate to existing logic but with qty override — temporarily patch quantity
-    const origQty = order.quantity;
-    (order as unknown as { quantity: number }).quantity = qty;
-    const ok = this.executeTradeFill(order, fillPrice, fee, currentMarketPrice);
-    (order as unknown as { quantity: number }).quantity = origQty;
-    // revert status set by executeTradeFill (it sets filled); we manage status ourselves, so undo its side-effects that assume full fill
-    // executeTradeFill sets order.status=filled — caller will override; for partial we already set partially_filled
-    // but for full close logic to remain correct we keep the position changes already applied
-    if (!ok) {
-      // restore
-      (order as unknown as { quantity: number }).quantity = origQty;
+  /**
+   * Account for a fill on the order itself (no portfolio side-effects).
+   * Accumulates filled quantity + fees, maintains a weighted average fill price,
+   * and publishes either order.partially_filled or order.filled.
+   */
+  private applyFillAccounting(order: PaperOrder, qty: number, fillPrice: number, fee: number, correlationId?: string): void {
+    const priorQty = order.filledQuantity ?? 0;
+    const priorNotional = (order.averageFillPrice ?? 0) * priorQty;
+    const newQty = priorQty + qty;
+
+    order.filledQuantity = newQty;
+    order.filledPrice = fillPrice;
+    order.fee = (order.fee ?? 0) + fee;
+    order.averageFillPrice = (priorNotional + fillPrice * qty) / newQty;
+    order.version = (order.version ?? 1) + 1;
+
+    const corr = order.correlationId ?? correlationId;
+    const isComplete = newQty >= order.quantity - 1e-9;
+
+    if (isComplete) {
+      order.status = "filled";
+      order.filledAt = Date.now();
+      this.bus.publish({
+        type: "order.filled",
+        data: {
+          orderId: order.id,
+          clientOrderId: order.clientOrderId,
+          correlationId: corr,
+          symbol: order.symbol,
+          side: order.side,
+          quantity: qty,
+          filledQuantity: order.filledQuantity,
+          price: fillPrice,
+          averageFillPrice: order.averageFillPrice,
+          fee,
+          totalFee: order.fee,
+          timestamp: order.filledAt,
+          version: order.version,
+        },
+        source: "paper-broker",
+        agentId: "execution",
+        correlationId: corr,
+      });
+      this.bus.publish({
+        type: "audit.order_filled",
+        data: {
+          orderId: order.id,
+          clientOrderId: order.clientOrderId,
+          correlationId: corr,
+          symbol: order.symbol,
+          side: order.side,
+          quantity: order.filledQuantity,
+          price: order.averageFillPrice,
+          fee: order.fee,
+          version: order.version,
+          timestamp: order.filledAt,
+        },
+        source: "paper-broker",
+        agentId: "execution",
+        correlationId: corr,
+      });
+    } else {
+      order.status = "partially_filled";
+      this.bus.publish({
+        type: "order.partially_filled",
+        data: {
+          orderId: order.id,
+          clientOrderId: order.clientOrderId,
+          correlationId: corr,
+          symbol: order.symbol,
+          side: order.side,
+          quantity: qty,
+          filledQuantity: order.filledQuantity,
+          remaining: order.quantity - order.filledQuantity,
+          price: fillPrice,
+          averageFillPrice: order.averageFillPrice,
+          fee,
+          totalFee: order.fee,
+          timestamp: Date.now(),
+          version: order.version,
+        },
+        source: "paper-broker",
+        agentId: "execution",
+        correlationId: corr,
+      });
     }
-    return ok;
   }
 
   private executeTradeFill(
     order: PaperOrder,
+    qty: number,
     fillPrice: number,
     fee: number,
     currentMarketPrice: number,
   ): boolean {
     const sym = order.symbol;
     const side = order.side;
-    const qty = order.quantity;
     const pos = this.positions.get(sym);
     const EPSILON = 1e-7;
 
@@ -769,40 +838,6 @@ export class PaperBroker {
       }
     }
 
-    order.status = "filled";
-    order.filledAt = Date.now();
-    order.filledPrice = fillPrice;
-    order.fee = fee;
-    order.filledQuantity = order.quantity;
-    order.version = (order.version ?? 1) + 1;
-
-    this.bus.publish({
-      type: "order.filled",
-      data: {
-        orderId: order.id,
-        clientOrderId: order.clientOrderId,
-        correlationId: order.correlationId,
-        symbol: order.symbol,
-        side: order.side,
-        quantity: order.quantity,
-        price: fillPrice,
-        fee,
-        timestamp: order.filledAt,
-        version: order.version,
-      },
-      source: "paper-broker",
-      agentId: "execution",
-      correlationId: order.correlationId,
-    });
-    // audit event
-    this.bus.publish({
-      type: "audit.order_filled",
-      data: { orderId: order.id, clientOrderId: order.clientOrderId, correlationId: order.correlationId, symbol: order.symbol, side: order.side, price: fillPrice, fee, version: order.version, timestamp: order.filledAt },
-      source: "paper-broker",
-      agentId: "execution",
-      correlationId: order.correlationId,
-    });
-
     return true;
   }
 
@@ -815,9 +850,10 @@ export class PaperBroker {
       if (order.side === "buy" && currentPrice <= order.price) {
         const fillPrice = order.price;
         const fee = fillPrice * order.quantity * this.config.fee;
-        const filled = this.executeTradeFill(order, fillPrice, fee, currentPrice);
-
-        if (!filled) {
+        const filled = this.executeTradeFill(order, order.quantity, fillPrice, fee, currentPrice);
+        if (filled) {
+          this.applyFillAccounting(order, order.quantity, fillPrice, fee);
+        } else {
           order.status = "rejected";
           order.reason = "Insufficient cash or margin at fill time";
           order.version = (order.version ?? 1) + 1;
@@ -841,9 +877,10 @@ export class PaperBroker {
       } else if (order.side === "sell" && currentPrice >= order.price) {
         const fillPrice = order.price;
         const fee = fillPrice * order.quantity * this.config.fee;
-        const filled = this.executeTradeFill(order, fillPrice, fee, currentPrice);
-
-        if (!filled) {
+        const filled = this.executeTradeFill(order, order.quantity, fillPrice, fee, currentPrice);
+        if (filled) {
+          this.applyFillAccounting(order, order.quantity, fillPrice, fee);
+        } else {
           order.status = "rejected";
           order.reason = "Insufficient position or margin at fill time";
           order.version = (order.version ?? 1) + 1;

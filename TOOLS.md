@@ -16,7 +16,7 @@ Tools are registered in `apps/server/src/tools/finance-tools.ts` and made availa
 | `get_price` | Get Exchange Price | `{ symbol: string }` | `{ symbol, price, timestamp, provider }` | ✅ Active (via `MarketDataProvider`) |
 | `get_ohlcv` | Get OHLCV Candles | `{ symbol: string, timeframe?: string, limit?: number }` | `{ symbol, candles: OHLCV[] }` | ✅ Active (via `MarketDataProvider`) |
 | `get_order_book` | Get Order Book | `{ symbol: string, depth?: number }` | `{ symbol, bids: [p, q][], asks: [p, q][] }` | ✅ Active (via `MarketDataProvider`) |
-| `get_candles` | Get Historical Candles | `{ symbol: string, timeframe?: string, limit?: number }` | `{ candles: [] }` | ⚠️ Stub (returns TODO note for storage) |
+| `get_candles` | Get Historical Candles | `{ symbol: string, timeframe?: string, limit?: number }` | `{ symbol, timeframe, candles: [] }` | ✅ Active (exchange-agnostic OHLCV via MarketDataProvider) |
 | `validate_symbol` | Validate Symbol | `{ symbol: string }` | `{ valid: boolean, normalized: string }` | ✅ Active (checks supported tickers) |
 
 ### Technical Analysis & Quantitative Indicators
@@ -25,7 +25,7 @@ Tools are registered in `apps/server/src/tools/finance-tools.ts` and made availa
 | :--- | :--- | :--- | :--- | :--- |
 | `calculate_rsi` | Calculate RSI | `{ prices: number[], period?: number }` | `{ rsi: number \| null, period: number }` | ✅ Active (pure Wilder RSI) |
 | `calculate_rsi_indicator` | RSI Indicator (Extended) | `{ prices: number[], period?: number }` | `{ rsi: number, overbought: boolean, oversold: boolean }` | ✅ Active |
-| `calculate_macd` | Calculate MACD | `{ prices: number[], fast?: number, slow?: number, signal?: number }` | `{ note: string }` | ⚠️ Stub (returns TODO note for strategy wrapper) |
+| `calculate_macd` | Calculate MACD | `{ prices: number[], fast?: number, slow?: number, signal?: number }` | `{ macd, signal, histogram, fast, slow, signalPeriod, note? }` | ✅ Active (canonical EMA-based MACD, `agents/quant/strategies.ts`) |
 | `calculate_macd_indicator` | MACD Indicator (Extended) | `{ prices: number[], fast?: number, slow?: number, signal?: number }` | `{ macd, signal, histogram, trend }` | ✅ Active (exponential moving averages) |
 | `calculate_sma` | Simple Moving Average | `{ prices: number[], period: number }` | `{ sma: number, period: number }` | ✅ Active |
 | `calculate_ema` | Exponential Moving Avg | `{ prices: number[], period: number }` | `{ ema: number, period: number }` | ✅ Active |
