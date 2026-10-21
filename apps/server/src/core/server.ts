@@ -2,12 +2,50 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import { TypedEventBus, type EventBusOptions } from "@finance/core";
 import type { FinanceEvent, HistoryFilter } from "@finance/shared";
-import { getRuntime, getGateway, getAuditLogger, getMarketState, getStrategyRegistry, getPaperBroker, getClineGateway, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory, getCliManager } from "./runtime.js";
+import { getRuntime, getGateway, getAuditLogger, getMarketState, getPortfolioHistory, getStrategyRegistry, getPaperBroker, getClineGateway, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory, getCliManager } from "./runtime.js";
 import { ApprovalError } from "../approvals/types.js";
 import { COWORKER_TEMPLATES, buildCoworkerValidationDeps, sanitizeBotInput, templateSystemPrompt, validateCoworkerInput } from "../coworkers/index.js";
 import { isBuiltInAgent } from "../llm/agent-runtime.js";
 import type { LlmConfig } from "../llm/types.js";
 import { CustomBotAgent } from "../agents/custom-bot-agent.js";
+import { resolveCandles, resolveOrderBook } from "../market/market-data-resolver.js";
+import { BinanceRestClient } from "../market/binance-rest.js";
+import { createMarketProvider } from "../providers/index.js";
+import type { MarketDataProvider } from "../providers/types.js";
+
+// ---------------------------------------------------------------------------
+// Market data dependencies (lazy singletons)
+//
+// The HTTP layer resolves market data through market-data-resolver.ts, which
+// prefers real sources: live WebSocket state -> Binance REST -> mock provider.
+// A short TTL cache keeps dashboard polling from hammering the exchange REST
+// API (and from being rate limited).
+// ---------------------------------------------------------------------------
+
+const MARKET_DATA_CACHE_TTL_MS = 5_000;
+const marketDataCache = new Map<string, { at: number; value: unknown }>();
+
+function cached<T>(key: string, ttlMs: number, factory: () => T): T {
+  const hit = marketDataCache.get(key);
+  const now = Date.now();
+  if (hit && now - hit.at < ttlMs) return hit.value as T;
+  const value = factory();
+  marketDataCache.set(key, { at: now, value });
+  return value;
+}
+
+let binanceRestClient: BinanceRestClient | null = null;
+function getBinanceRestClient(): BinanceRestClient | null {
+  if (process.env.BINANCE_REST_ENABLED === "false") return null;
+  binanceRestClient ??= new BinanceRestClient({ timeoutMs: 3_000 });
+  return binanceRestClient;
+}
+
+let marketDataProvider: MarketDataProvider | null = null;
+function getMarketDataProvider(): MarketDataProvider {
+  marketDataProvider ??= createMarketProvider();
+  return marketDataProvider;
+}
 
 // Union-tolerant view: works with the current single-provider LlmConfig and
 // with the parallel agent's discriminated union
@@ -937,36 +975,32 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     Querystring: { symbol?: string; timeframe?: string; limit?: string };
   }>("/api/market/candles", async (request) => {
     const symbol = (request.query.symbol ?? "BTCUSDT").toUpperCase();
-    const limit = Math.min(parseInt(request.query.limit ?? "100", 10), 500);
-    const ms = getMarketState();
-    const price = ms?.getPrice(symbol);
+    const timeframe = request.query.timeframe ?? "1m";
+    const limit = request.query.limit ? parseInt(request.query.limit, 10) : 100;
 
-    if (!price) {
-      // TODO: fetch real candle data from exchange adapter when market state has no price yet
-      return { candles: [], symbol, timeframe: request.query.timeframe ?? "1m", timestamp: Date.now(), note: "No price data available for this symbol" };
-    }
+    // BUG FIX: this route used to fabricate RANDOM candles inline. It now
+    // resolves real data (live WS -> exchange REST -> mock provider) and
+    // always reports the source + whether the data is synthetic.
+    const resolved = await cached(
+      `candles:${symbol}:${timeframe}:${limit}`,
+      MARKET_DATA_CACHE_TTL_MS,
+      () =>
+        resolveCandles(symbol, timeframe, limit, {
+          liveState: getMarketState(),
+          exchange: getBinanceRestClient(),
+          provider: getMarketDataProvider(),
+        }),
+    );
 
-    // TODO: replace synthetic candles with real historical data from BinanceAdapter
-    const now = Date.now();
-    const candles = Array.from({ length: limit }, (_, i) => {
-      const change = (Math.random() - 0.5) * price * 0.02;
-      const open = price + change;
-      const high = open + Math.abs(change) * 0.5;
-      const low = open - Math.abs(change) * 0.5;
-      const close = low + Math.random() * (high - low);
-      return {
-        symbol,
-        timeframe: request.query.timeframe ?? "1m",
-        open: Math.round(open * 100) / 100,
-        high: Math.round(high * 100) / 100,
-        low: Math.round(low * 100) / 100,
-        close: Math.round(close * 100) / 100,
-        volume: Math.round(Math.random() * 1000 * 100) / 100,
-        timestamp: now - (limit - i) * 60_000,
-      };
-    });
-    // TODO: candles are synthetic — real historical candle storage needed (Phase 6/7)
-    return { candles, symbol, timeframe: request.query.timeframe ?? "1m", timestamp: Date.now(), synthetic: true };
+    return {
+      symbol: resolved.symbol,
+      timeframe: resolved.timeframe,
+      candles: resolved.candles,
+      source: resolved.source,
+      synthetic: resolved.synthetic,
+      timestamp: resolved.timestamp,
+      ...(resolved.note ? { note: resolved.note } : {}),
+    };
   });
 
   // -------------------------------------------------------------------------
@@ -976,24 +1010,31 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     Querystring: { symbol?: string; depth?: string };
   }>("/api/market/orderbook", async (request) => {
     const symbol = (request.query.symbol ?? "BTCUSDT").toUpperCase();
-    const depth = parseInt(request.query.depth ?? "10", 10);
-    const ms = getMarketState();
-    const mid = ms?.getPrice(symbol);
+    const depth = request.query.depth ? parseInt(request.query.depth, 10) : 10;
 
-    if (!mid) {
-      return { symbol, bids: [], asks: [], timestamp: Date.now(), note: "No price data available" };
-    }
+    // BUG FIX: this route used to fabricate RANDOM bids/asks inline. It now
+    // resolves real data (live WS -> exchange REST -> mock provider) and
+    // always reports the source + whether the data is synthetic.
+    const resolved = await cached(
+      `orderbook:${symbol}:${depth}`,
+      MARKET_DATA_CACHE_TTL_MS,
+      () =>
+        resolveOrderBook(symbol, depth, {
+          liveState: getMarketState(),
+          exchange: getBinanceRestClient(),
+          provider: getMarketDataProvider(),
+        }),
+    );
 
-    // TODO: replace with real orderbook data from BinanceAdapter WebSocket
-    const bids = Array.from({ length: depth }, (_, i) => ({
-      price: Math.round(mid * (1 - (i + 1) * 0.0001) * 100) / 100,
-      quantity: Math.round(Math.random() * 10 * 1000) / 1000,
-    }));
-    const asks = Array.from({ length: depth }, (_, i) => ({
-      price: Math.round(mid * (1 + (i + 1) * 0.0001) * 100) / 100,
-      quantity: Math.round(Math.random() * 10 * 1000) / 1000,
-    }));
-    return { symbol, bids, asks, timestamp: Date.now(), synthetic: true };
+    return {
+      symbol: resolved.symbol,
+      bids: resolved.bids,
+      asks: resolved.asks,
+      timestamp: resolved.timestamp,
+      source: resolved.source,
+      synthetic: resolved.synthetic,
+      ...(resolved.note ? { note: resolved.note } : {}),
+    };
   });
 
   // -------------------------------------------------------------------------
@@ -1081,11 +1122,14 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   // -------------------------------------------------------------------------
   // GET /api/portfolio/history
   // -------------------------------------------------------------------------
-  app.get("/api/portfolio/history", async () => {
-    const runtime = getRuntime();
-    if (!runtime) return { snapshots: [] };
-    // TODO: fetch from state recovery or database
-    return { snapshots: [], note: "TODO: implement portfolio history persistence" };
+  app.get<{ Querystring: { limit?: string } }>("/api/portfolio/history", async (request) => {
+    // BUG FIX: this route returned a hard-coded empty array with a TODO note.
+    // It now serves the persisted equity snapshot history.
+    const history = getPortfolioHistory();
+    if (!history) return { snapshots: [], note: "Portfolio history service is not running" };
+    const limit = request.query.limit ? parseInt(request.query.limit, 10) : 100;
+    const snapshots = history.getSnapshots(limit);
+    return { snapshots, count: snapshots.length, source: "portfolio-history" };
   });
 
   // -------------------------------------------------------------------------

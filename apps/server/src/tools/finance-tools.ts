@@ -34,6 +34,8 @@ import {
   executeIndicator,
 } from "./indicators.js";
 import { createExchangeProvider } from "../providers/index.js";
+import type { MarketDataProvider } from "../providers/types.js";
+import { macd } from "../agents/quant/strategies.js";
 import { websearchTool, executeWebsearch } from "./websearch.js";
 import { opencodeTool, executeOpencodeRun } from "./opencode.js";
 import { clineTool, executeClineRun } from "./cline.js";
@@ -68,16 +70,79 @@ export function executeGetMarketPrice(ctx: ToolContext, input: Record<string, un
   return { symbol, price: state.price, timestamp: state.timestamp };
 }
 
+// ============================================================================
+// Finance Agent OS — Candles Tool
+// BUG FIX: the `get_candles` tool was a stub that always returned
+// `{ candles: [], note: "TODO: implement candle storage" }`.
+//
+// It now serves real OHLCV data through the exchange-agnostic
+// MarketDataProvider interface (same boundary as get_ohlcv / get_price).
+// ============================================================================
+
 export function getCandlesTool(): ToolDefinition {
   return {
     id: "get_candles",
     name: "Get Candles",
-    description: "Get historical candles for a symbol (TODO: implement candle storage)",
-    inputSchema: { type: "object", properties: { symbol: { type: "string" }, timeframe: { type: "string" }, limit: { type: "number" } }, required: ["symbol"] },
-    outputSchema: { type: "object", properties: { candles: { type: "array" } } },
+    description: "Get historical OHLCV candles for a symbol (exchange-agnostic)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string" },
+        timeframe: { type: "string", description: "1m, 5m, 15m, 1h, 4h, 1d", default: "1m" },
+        limit: { type: "number", description: "Number of candles (1-500)", minimum: 1, maximum: 500, default: 20 },
+      },
+      required: ["symbol"],
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string" },
+        timeframe: { type: "string" },
+        candles: { type: "array" },
+      },
+    },
     permissions: { required: false },
   };
 }
+
+export async function executeGetCandles(
+  provider: MarketDataProvider,
+  input: Record<string, unknown>,
+): Promise<{
+  symbol: string;
+  timeframe: string;
+  candles: Array<{
+    symbol: string;
+    timeframe: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+    timestamp: number;
+  }>;
+}> {
+  const symbol = String(input.symbol ?? "").trim();
+  if (!symbol) throw new Error("symbol is required");
+  const timeframe = String(input.timeframe ?? "1m").trim() || "1m";
+  const limit = Math.min(Math.max(Math.trunc(Number(input.limit ?? 20)) || 20, 1), 500);
+  const ohlcv = await provider.getOHLCV(symbol, timeframe, limit);
+  return {
+    symbol: symbol.toUpperCase(),
+    timeframe,
+    candles: ohlcv.map((b) => ({
+      symbol: b.symbol,
+      timeframe: b.timeframe,
+      open: b.open,
+      high: b.high,
+      low: b.low,
+      close: b.close,
+      volume: b.volume,
+      timestamp: b.timestamp,
+    })),
+  };
+}
+
 
 // ---------------------------------------------------------------------------
 // Quantitative Tools
@@ -121,6 +186,57 @@ export function calculateMACDTool(): ToolDefinition {
     inputSchema: { type: "object", properties: { prices: { type: "array" }, fast: { type: "number" }, slow: { type: "number" }, signal: { type: "number" } }, required: ["prices"] },
     outputSchema: { type: "object", properties: { macd: { type: "number" }, signal: { type: "number" }, histogram: { type: "number" } } },
     permissions: { required: false },
+  };
+}
+
+/**
+ * BUG FIX: `calculate_macd` was a stub returning
+ * `{ note: "TODO: wrap strategies.ts macd()" }`.
+ * It now delegates to the canonical `macd()` implementation in
+ * agents/quant/strategies.ts (EMA based, no look-ahead).
+ */
+export function executeCalculateMACD(input: Record<string, unknown>): {
+  macd: number | null;
+  signal: number | null;
+  histogram: number | null;
+  fast: number;
+  slow: number;
+  signalPeriod: number;
+  note?: string;
+} {
+  const raw = input.prices;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error("prices (number[]) is required");
+  }
+  const prices = raw.map((v) => Number(v));
+  if (prices.some((n) => !Number.isFinite(n))) {
+    throw new Error("prices must be finite numbers");
+  }
+
+  const fast = Math.trunc(Number(input.fast ?? 12)) || 12;
+  const slow = Math.trunc(Number(input.slow ?? 26)) || 26;
+  const signalPeriod = Math.trunc(Number(input.signal ?? 9)) || 9;
+
+  const result = macd(prices, fast, slow, signalPeriod);
+  if (!result) {
+    return {
+      macd: null,
+      signal: null,
+      histogram: null,
+      fast,
+      slow,
+      signalPeriod,
+      note: `Insufficient data: MACD(${fast},${slow},${signalPeriod}) needs at least ${slow + signalPeriod} prices, got ${prices.length}`,
+    };
+  }
+
+  return {
+    macd: result.macd,
+    signal: result.signal,
+    histogram: result.histogram,
+    fast,
+    slow,
+    signalPeriod,
   };
 }
 
@@ -305,9 +421,9 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
   const tools: Array<[ToolDefinition, (input: Record<string, unknown>) => Promise<unknown> | unknown]> = [
     // Legacy / existing
     [getMarketPriceTool(), (input) => executeGetMarketPrice(ctx, input)],
-    [getCandlesTool(), async () => ({ candles: [], note: "TODO: implement candle storage" })],
+    [getCandlesTool(), (input) => executeGetCandles(exchangeProvider, input)],
     [calculateRSITool(), (input) => executeCalculateRSI(input)],
-    [calculateMACDTool(), async () => ({ note: "TODO: wrap strategies.ts macd()" })],
+    [calculateMACDTool(), (input) => executeCalculateMACD(input)],
     [getPortfolioTool(), () => executeGetPortfolio(ctx)],
     [calculatePositionSizeTool(), (input) => executeCalculatePositionSize(input)],
     [validateSymbolTool(), (input) => executeValidateSymbol(input)],
