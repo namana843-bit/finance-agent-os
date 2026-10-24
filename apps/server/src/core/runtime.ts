@@ -46,6 +46,7 @@ import { OpencodeCliGateway } from "../gateway/opencode-cli-gateway.js";
 import { ClineCliGateway } from "../gateway/cline-cli-gateway.js";
 import { OpencodeDaemonManager } from "../gateway/opencode-daemon.js";
 import { CliManager, getDefaultCliManager } from "../cli/index.js";
+import { TradeWorkflowService, type AgentRunner, type MarketFreshness, type PortfolioReader, type PipelineRunner } from "../orchestrator/orchestrator.js";
 
 import { ProviderRegistry, EngineManager, FinanceToolRegistry, AgentRuntime } from "../llm/index.js";
 import { CliSessionManager, createCliSessionManager } from "../llm/cli-session.js";
@@ -73,6 +74,7 @@ export const SERVICE_IDS = {
   LLM: "llm",
   DIALOGUE_ENGINE: "dialogue-engine",
   ENGINE_LAYER: "engine-layer",
+  TRADE_WORKFLOW: "trade-workflow-orchestrator",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -456,6 +458,47 @@ const riskAgent = new RiskAgent(bus);
   });
   runtime.registerService(approvalService);
 
+  // Trade Workflow Orchestrator — Research -> Proposal -> Risk -> User Approval
+  // -> Paper Execution (via the existing ExecutionPipeline) -> Portfolio ->
+  // Audit. Uses built-in agent IDs; LLM output is only a source of proposal
+  // text — the binding gates (risk/permission/paper) stay in the pipeline.
+  const tradeWorkflowService = new TradeWorkflowService({
+    bus,
+    agentRunner: {
+      runAgent: async (agentId, prompt, history) => {
+        const rt = getAgentRuntime();
+        let text = "";
+        for await (const ev of rt.runAgentStream(agentId, prompt, (history ?? []) as never)) {
+          if (ev.type === "text_delta") text += ev.delta;
+          if (ev.type === "error") throw new Error(String(ev.error ?? "agent stream error"));
+        }
+        return text;
+      },
+    } satisfies AgentRunner,
+    pipeline: {
+      execute: (signal: unknown) => getExecutionPipeline()!.execute(signal as never),
+    } as unknown as PipelineRunner,
+    freshness: {
+      getLastUpdate: (symbol) => getMarketState()?.getEntry(symbol)?.lastUpdate,
+    } satisfies MarketFreshness,
+    portfolio: {
+      snapshot: () => {
+        const broker = getPaperBroker();
+        if (!broker) return undefined;
+        const pf = broker.getPortfolio();
+        return {
+          timestamp: Date.now(),
+          equity: pf.equity,
+          cash: pf.cash,
+          realizedPnl: pf.realizedPnl,
+          unrealizedPnl: pf.unrealizedPnl,
+          positions: pf.positions.map((pos) => ({ symbol: pos.symbol, side: pos.side, quantity: pos.quantity, entryPrice: pos.entryPrice, currentPrice: pos.currentPrice })),
+        };
+      },
+    } satisfies PortfolioReader,
+  });
+  runtime.registerService(tradeWorkflowService);
+
   const llmService = new LlmServiceWrapper({ tracker: new UsageTracker() });
   runtime.registerService(llmService);
 
@@ -560,6 +603,10 @@ export function getFinanceEnvironment(): import("../environment/types.js").Finan
 
 export function getSupervisor(): SupervisorAgent | undefined {
   return runtime?.getAgentRegistry().get("supervisor") as SupervisorAgent | undefined;
+}
+
+export function getTradeWorkflow(): import("../orchestrator/orchestrator.js").TradeWorkflowOrchestrator | undefined {
+  return getService<import("../orchestrator/orchestrator.js").TradeWorkflowService>(SERVICE_IDS.TRADE_WORKFLOW)?.getInstance();
 }
 
 export function getStrategyLab(): import("../strategy-lab/strategy-lab.js").StrategyLab | undefined {

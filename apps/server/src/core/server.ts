@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import { TypedEventBus, type EventBusOptions } from "@finance/core";
 import type { FinanceEvent, HistoryFilter } from "@finance/shared";
-import { getRuntime, getGateway, getAuditLogger, getMarketState, getPortfolioHistory, getStrategyRegistry, getPaperBroker, getClineGateway, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory, getCliManager } from "./runtime.js";
+import { getRuntime, getGateway, getAuditLogger, getMarketState, getPortfolioHistory, getStrategyRegistry, getPaperBroker, getClineGateway, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory, getCliManager, getTradeWorkflow } from "./runtime.js";
 import { ApprovalError } from "../approvals/types.js";
 import { COWORKER_TEMPLATES, buildCoworkerValidationDeps, sanitizeBotInput, templateSystemPrompt, validateCoworkerInput } from "../coworkers/index.js";
 import { isBuiltInAgent } from "../llm/agent-runtime.js";
@@ -2047,6 +2047,71 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     } finally {
       reply.raw.end();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Trade Workflow Orchestrator — Research -> Proposal -> Risk -> Approval ->
+  // Paper Execution -> Portfolio -> Audit
+  // -------------------------------------------------------------------------
+  app.get("/api/workflows", async () => {
+    const orchestrator = getTradeWorkflow();
+    if (!orchestrator) return { runs: [] };
+    return { runs: orchestrator.list() };
+  });
+
+  app.get<{ Params: { id: string } }>("/api/workflows/:id", async (request, reply) => {
+    const run = getTradeWorkflow()?.get(request.params.id);
+    if (!run) return reply.status(404).send({ error: `workflow '${request.params.id}' not found` });
+    return { run };
+  });
+
+  app.post<{
+    Body: { symbol?: string; context?: string };
+  }>("/api/workflows", async (request, reply) => {
+    const orchestrator = getTradeWorkflow();
+    if (!orchestrator) return reply.status(503).send({ error: "workflow orchestrator not available" });
+    const body = request.body ?? {};
+    if (body.symbol !== undefined && (typeof body.symbol !== "string" || !/^[A-Za-z0-9]{2,20}$/.test(body.symbol.trim()))) {
+      return reply.status(400).send({ error: "symbol must be 2-20 alphanumeric characters" });
+    }
+    if (body.context !== undefined && (typeof body.context !== "string" || body.context.length > 2_000)) {
+      return reply.status(400).send({ error: "context is optional text up to 2000 characters" });
+    }
+    const run = await orchestrator.startRun(body);
+    return reply.status(202).send({ run });
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { symbol?: string; side?: string; quantity?: number };
+  }>("/api/workflows/:id/approve", async (request, reply) => {
+    const orchestrator = getTradeWorkflow();
+    if (!orchestrator) return reply.status(503).send({ error: "workflow orchestrator not available" });
+    const body = request.body ?? {};
+    const side = body.side === "buy" || body.side === "sell" ? body.side : undefined;
+    const quantity = typeof body.quantity === "number" ? body.quantity : Number(body.quantity as unknown as string);
+    if (!side) return reply.status(400).send({ error: "side must be 'buy' or 'sell'" });
+    if (!Number.isFinite(quantity) || quantity <= 0) return reply.status(400).send({ error: "quantity must be a positive number" });
+    if (typeof body.symbol !== "string" || !body.symbol.trim()) return reply.status(400).send({ error: "symbol is required and must match the proposal" });
+    const run = await orchestrator.approve(request.params.id, { symbol: body.symbol, side, quantity });
+    if (!run) return reply.status(404).send({ error: `workflow '${request.params.id}' not found or not awaiting approval` });
+    return { run };
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { reason?: string };
+  }>("/api/workflows/:id/reject", async (request, reply) => {
+    const orchestrator = getTradeWorkflow();
+    if (!orchestrator) return reply.status(503).send({ error: "workflow orchestrator not available" });
+    const reason = typeof request.body?.reason === "string" ? request.body.reason : "";
+    if (!reason.trim()) return reply.status(400).send({ error: "a rejection reason is required" });
+    const run = await orchestrator.reject(request.params.id, reason);
+    if (!run) return reply.status(404).send({ error: `workflow '${request.params.id}' not found` });
+    if (run.approval?.decision !== "rejected") {
+      return reply.status(409).send({ error: `workflow '${request.params.id}' is not awaiting approval`, run });
+    }
+    return { run };
   });
 
   app.post<{
