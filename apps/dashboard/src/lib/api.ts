@@ -1,5 +1,5 @@
 // Finance Agent OS API client — merged HEAD (finance) + main (chat) + agent-runtime
-import { API_BASE, fetchJson } from "./fetch";
+import { API_BASE, fetchJson, postJson } from "./fetch";
 export { API_BASE };
 
 export type Tick = {
@@ -78,6 +78,32 @@ export interface EngineApiStatus {
 
 export function fetchHealth(): Promise<Health> { return fetchJson<Health>("/api/health"); }
 export function fetchPortfolio(): Promise<Portfolio> { return fetchJson<Portfolio>("/api/portfolio"); }
+
+export type WorkflowProposal = { symbol: string; side: "buy" | "sell"; quantity: number; price: number; type: string; rationale: string; assumptions?: string };
+export type WorkflowAgentStep = { agentId: string; stage: string; ok: boolean; error?: string; output?: string };
+export type WorkflowRun = {
+  id: string; createdAt: string; updatedAt: string;
+  status: "running" | "awaiting_approval" | "completed" | "user_rejected" | "failed";
+  stage: string;
+  agents: WorkflowAgentStep[];
+  proposal?: WorkflowProposal;
+  riskReview?: { agentId: string; verdict: string; concerns: string[]; notes?: string };
+  approval?: { decidedAt: string; decision: "approved" | "rejected"; reason?: string };
+  execution?: { success: boolean; stage: string; reason: string; filledPrice?: number; filledQuantity?: number; fee?: number; correlationId: string };
+  portfolioAfter?: { equity?: number; cash?: number };
+  auditIds: string[];
+  error?: string;
+};
+export function fetchWorkflows(): Promise<{ runs: WorkflowRun[] }> { return fetchJson<{ runs: WorkflowRun[] }>("/api/workflows"); }
+export async function startWorkflow(body: { symbol?: string; context?: string }): Promise<{ run: WorkflowRun }> {
+  return postJson<{ run: WorkflowRun }>("/api/workflows", body);
+}
+export async function approveWorkflow(id: string, confirmation: { symbol: string; side: "buy" | "sell"; quantity: number }): Promise<{ run: WorkflowRun }> {
+  return postJson<{ run: WorkflowRun }>(`/api/workflows/${encodeURIComponent(id)}/approve`, confirmation);
+}
+export async function rejectWorkflow(id: string, reason: string): Promise<{ run: WorkflowRun }> {
+  return postJson<{ run: WorkflowRun }>(`/api/workflows/${encodeURIComponent(id)}/reject`, { reason });
+}
 export function fetchTicks(params?: { limit?: number; symbol?: string }): Promise<{ ticks: Tick[]; timestamp: number }> {
   const q = new URLSearchParams();
   if (params?.limit) q.set("limit", String(params.limit));

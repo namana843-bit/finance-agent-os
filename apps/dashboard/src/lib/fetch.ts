@@ -15,3 +15,7 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
   }
   return res.json() as Promise<T>;
 }
+
+export async function postJson<T>(path: string, body: unknown, init?: RequestInit): Promise<T> {
+  return fetchJson<T>(path, { ...init, method: "POST", body: JSON.stringify(body) });
+}

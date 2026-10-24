@@ -51,7 +51,17 @@
 - Tests confirm paper-only default; `binance-market.test.ts` asserts order creation/cancel methods are prohibited; live-safety suite passes.
 
 ## Exact next task
-- Task 6 review then Task 7: orchestrator already records PaperBroker-produced fills via the pipeline result; extend persistence checks (workflow + audit history recovery across restart — largely done in tests, verify against real DATA_DIR conventions) and add UI wiring (Task 8): workspace "Run workflow" actions hitting `/api/workflows*`, showing proposal/risk/decision/fill/portfolio states.
+- Task 9: full regression (server suite + typechecks + builds + dashboard tsc), re-run orchestrator end-to-end API smoke test against the real runtime server if feasible, then final diff safety sweep and Task 10 (push PR summary updates).
+
+## Task 8 UI (latest iteration)
+- `apps/dashboard/src/lib/fetch.ts`: added `postJson` helper.
+- `apps/dashboard/src/lib/api.ts`: `WorkflowRun` types + `fetchWorkflows/startWorkflow/approveWorkflow/rejectWorkflow`.
+- `apps/dashboard/src/app/team/page.tsx`: "Paper trade pipeline" section — run a workflow for a symbol, list runs (status/order/risk verdict/fill/portfolio-after), explicit Approve (browser confirm reads back the exact order params; server still re-validates echo + risk + freshness) and Reject with mandatory reason. Real error/empty/busy states throughout.
+- `apps/dashboard/src/app/team/team.css`: pipeline styles.
+- Verified: `tsc --noEmit` (dashboard) + `vite build` pass.
+
+## Note (anomaly)
+- Untracked `apps/server/src/coding/` (types/providers/projects .ts) appeared in the worktree at 12:12 during this session, not authored by this agent; NOT committed. Needs human review.
 
 ## Known failures / blockers
 - None. GitHub MCP token cannot update PR bodies on public repos (403) — PR text changes must be done by the user or via `gh auth login` (token currently invalid).

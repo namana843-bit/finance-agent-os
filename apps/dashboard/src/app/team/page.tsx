@@ -5,7 +5,7 @@ import {
   MessageSquare, Play, RefreshCw, ShieldCheck, Sparkles, Terminal, TrendingUp,
   Wallet, Zap,
 } from "lucide-react";
-import { fetchAgents, fetchHealth, fetchPortfolio, streamAgentChat, fmtCurrency, type AgentApiConfig, type Portfolio } from "../../lib/api";
+import { fetchAgents, fetchHealth, fetchPortfolio, streamAgentChat, fetchWorkflows, startWorkflow, approveWorkflow, rejectWorkflow, fmtCurrency, type AgentApiConfig, type Portfolio, type WorkflowRun } from "../../lib/api";
 import "./team.css";
 
 type AgentKey = "quant" | "risk" | "market" | "execution";
@@ -52,6 +52,12 @@ export default function TeamPage() {
   const [streamText, setStreamText] = useState("");
   const [activity, setActivity] = useState("Ready when you are");
   const [refreshing, setRefreshing] = useState(false);
+  const [runs, setRuns] = useState<WorkflowRun[]>([]);
+  const [wfBusy, setWfBusy] = useState(false);
+  const [wfError, setWfError] = useState("");
+  const [rejecting, setRejecting] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [wfSymbol, setWfSymbol] = useState("BTCUSDT");
 
   const activeAgent = TEAM.find((agent) => agent.id === selected) ?? TEAM[0];
   const runtimeAgent = agents.find((agent) => agent.id === activeAgent.runtimeId);
@@ -81,7 +87,57 @@ export default function TeamPage() {
     }
   }
 
-  useEffect(() => { void refresh(); }, []);
+  useEffect(() => { void refresh(); void refreshRuns(); }, []);
+
+  async function refreshRuns() {
+    try {
+      const data = await fetchWorkflows();
+      setRuns(data.runs ?? []);
+    } catch { /* server offline — the API status pill already says so */ }
+  }
+
+  async function runWorkflow() {
+    if (wfBusy) return;
+    setWfBusy(true);
+    setWfError("");
+    try {
+      await startWorkflow({ symbol: wfSymbol.trim().toUpperCase() });
+      await refreshRuns();
+      setActivity("Workflow started");
+    } catch (err) {
+      setWfError(err instanceof Error ? err.message : "Could not start the workflow.");
+    } finally { setWfBusy(false); }
+  }
+
+  async function approveRun(run: WorkflowRun) {
+    if (!run.proposal) return;
+    if (!window.confirm(`Deliberately approve this simulated order?\n${run.proposal.side.toUpperCase()} ${run.proposal.quantity} ${run.proposal.symbol} @ ${run.proposal.price} (${run.proposal.type})\nThe server re-checks risk and market freshness before executing the paper order.`)) return;
+    setWfBusy(true);
+    setWfError("");
+    try {
+      await approveWorkflow(run.id, { symbol: run.proposal.symbol, side: run.proposal.side, quantity: run.proposal.quantity });
+      await refreshRuns();
+      void refresh();
+    } catch (err) {
+      setWfError(err instanceof Error ? err.message : "Approval failed.");
+    } finally { setWfBusy(false); }
+  }
+
+  async function rejectRun(run: WorkflowRun) {
+    const reason = rejectReason.trim();
+    if (rejecting !== run.id) { setRejecting(run.id); setRejectReason(""); return; }
+    if (!reason) { setWfError("A rejection reason is required."); return; }
+    setWfBusy(true);
+    setWfError("");
+    try {
+      await rejectWorkflow(run.id, reason);
+      setRejecting(null);
+      setRejectReason("");
+      await refreshRuns();
+    } catch (err) {
+      setWfError(err instanceof Error ? err.message : "Rejection failed.");
+    } finally { setWfBusy(false); }
+  }
 
   async function submitMessage(event?: FormEvent, override?: string) {
     event?.preventDefault();
@@ -228,6 +284,43 @@ export default function TeamPage() {
               <div className="team-context-block"><span className="team-context-label">QUICK TASKS</span>{QUICK_TASKS.map((task) => <button key={task.label} className="team-quick-task" onClick={() => { setSelected(task.agent); setDraft(task.prompt); setError(""); }}><span>{task.label}</span><ChevronRight size={14} /></button>)}</div>
               <div className="team-context-note"><CheckCircle2 size={16} /><p><strong>You are the decision-maker.</strong> Use agents for analysis and preparation. Review outputs and risk checks before approving any simulated order.</p></div>
             </aside>
+          </div>
+
+          <div className="team-section-heading"><div><h2>Paper trade pipeline</h2><p>Research → proposal → risk review → your approval → simulated execution.</p></div><span className="team-section-meta"><span className="team-live-dot" /> APPROVAL REQUIRED</span></div>
+          {wfError && <div className="team-error"><CircleAlert size={17} /><span>{wfError}</span><button onClick={() => setWfError("")} aria-label="Dismiss pipeline error">×</button></div>}
+          <div className="team-wf-controls">
+            <input className="team-wf-symbol" value={wfSymbol} onChange={(e) => setWfSymbol(e.target.value.toUpperCase())} aria-label="Symbol" spellCheck={false} />
+            <button className="team-icon-button" onClick={() => void runWorkflow()} disabled={wfBusy || serverStatus !== "online"} aria-label="Run trade workflow"><Zap size={17} className={wfBusy ? "team-spin" : ""} /> Run trade workflow</button>
+          </div>
+          <div className="team-wf-runs">
+            {runs.length === 0 && <div className="team-wf-empty">No workflow runs yet. Start one above — every run needs your explicit approval before a simulated trade executes.</div>}
+            {runs.slice(0, 8).map((run) => (
+              <div key={run.id} className={`team-wf-run status-${run.status}`}>
+                <div className="team-wf-head">
+                  <span className={`team-wf-badge ${run.status}`}>{run.status.replace(/_/g, " ")}</span>
+                  {run.proposal && <span className="team-wf-order">{run.proposal.side.toUpperCase()} {run.proposal.quantity} {run.proposal.symbol} @ {run.proposal.price}</span>}
+                  <span className="team-wf-time">{new Date(run.updatedAt).toLocaleString()}</span>
+                </div>
+                {run.proposal && <p className="team-wf-rationale">{run.proposal.rationale}</p>}
+                {run.riskReview && <p className="team-wf-risk">Risk Guardian: <strong>{run.riskReview.verdict}</strong>{run.riskReview.concerns.length ? ` — ${run.riskReview.concerns.join("; ")}` : ""}</p>}
+                {run.error && <p className="team-wf-error">{run.error}</p>}
+                {run.execution && <p className="team-wf-fill">{run.execution.success ? "Paper order executed" : `Rejected at '${run.execution.stage}'`} — {run.execution.reason}{run.execution.filledPrice ? ` · fill ${run.execution.filledPrice}` : ""}</p>}
+                {run.portfolioAfter?.equity !== undefined && <p className="team-wf-portfolio">Portfolio after: equity {money(run.portfolioAfter.equity)}</p>}
+                {run.status === "awaiting_approval" && run.proposal && (
+                  <div className="team-wf-actions">
+                    <button onClick={() => void approveRun(run)} disabled={wfBusy} title="Approve the exact recorded order parameters">Approve &amp; submit paper order</button>
+                    <button onClick={() => void rejectRun(run)} disabled={wfBusy}>{rejecting === run.id ? "Use the reason box →" : "Reject"}</button>
+                  </div>
+                )}
+                {rejecting === run.id && run.status === "awaiting_approval" && (
+                  <div className="team-wf-reject-row">
+                    <input value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="Why are you rejecting this proposal? (required, audited)" maxLength={200} />
+                    <button onClick={() => void rejectRun(run)} disabled={wfBusy || !rejectReason.trim()}>Save rejection</button>
+                    <button onClick={() => { setRejecting(null); setRejectReason(""); }}>Cancel</button>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
 
           <footer className="team-footer"><span><span className="team-live-dot" /> {activity}</span><span>FINANCE AGENT OS <span className="team-footer-sep">/</span> DESKTOP WORKSPACE</span></footer>
