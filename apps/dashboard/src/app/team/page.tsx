@@ -19,14 +19,15 @@ type TeamAgent = {
   icon: typeof BrainCircuit;
   color: string;
   prompt: string;
+  systemContext: string;
 };
 type Message = { id: string; role: "user" | "assistant" | "system"; content: string };
 
 const TEAM: TeamAgent[] = [
-  { id: "quant", runtimeId: "btc-quant-agent", name: "Quant Analyst", title: "Strategy & signals", description: "Researches setups, tests hypotheses, and explains the evidence behind a strategy.", focus: ["Strategy research", "Signal review", "Backtest ideas"], icon: BrainCircuit, color: "violet", prompt: "Review the current market and propose a testable strategy. State assumptions, entry and exit logic, and what would invalidate it. Do not place orders." },
-  { id: "risk", runtimeId: "risk-guardian-agent", name: "Risk Guardian", title: "Exposure & guardrails", description: "Checks downside, concentration, position sizing, and whether a proposed trade fits the risk budget.", focus: ["Exposure checks", "Position sizing", "Drawdown watch"], icon: ShieldCheck, color: "green", prompt: "Act as Risk Guardian. Explain the key risks in a paper-trading portfolio and give a concise pre-trade risk checklist. Do not place orders." },
-  { id: "market", runtimeId: "market-research-agent", name: "Market Analyst", title: "Research & context", description: "Turns market context into a clear brief with catalysts, scenarios, and uncertainty called out.", focus: ["Market briefings", "Catalysts", "Bull / base / bear"], icon: CandlestickChart, color: "blue", prompt: "Write a concise market research briefing. Separate known facts from assumptions, give bull/base/bear scenarios, and identify what data should be checked next." },
-  { id: "execution", runtimeId: "cline-cli-agent", name: "Execution Agent", title: "Simulated orders only", description: "Helps prepare and review simulated orders. Live brokerage execution is not enabled in this workspace.", focus: ["Paper orders", "Order review", "Fill tracking"], icon: Zap, color: "amber", prompt: "Help me prepare a paper-trade order ticket. Ask for any missing symbol, side, quantity, and rationale. Do not submit an order until I explicitly confirm the simulated order." },
+  { id: "quant", runtimeId: "btc-quant-agent", name: "Quant Analyst", title: "Strategy & signals", description: "Researches setups, tests hypotheses, and explains the evidence behind a strategy.", focus: ["Strategy research", "Signal review", "Backtest ideas"], icon: BrainCircuit, color: "violet", systemContext: "You are the Quant Analyst for a finance agent team. Focus on testable hypotheses, quantitative evidence, entry and exit logic, and explicit invalidation conditions. Never claim a backtest was run unless a tool actually ran it. Do not place orders.", prompt: "Review the current market and propose a testable strategy. State assumptions, entry and exit logic, and what would invalidate it. Do not place orders." },
+  { id: "risk", runtimeId: "risk-guardian-agent", name: "Risk Guardian", title: "Exposure & guardrails", description: "Checks downside, concentration, position sizing, and whether a proposed trade fits the risk budget.", focus: ["Exposure checks", "Position sizing", "Drawdown watch"], icon: ShieldCheck, color: "green", systemContext: "You are the Risk Guardian for a finance agent team. Prioritize downside, exposure, concentration, liquidity, drawdown, and position sizing. Challenge weak assumptions and do not place orders.", prompt: "Act as Risk Guardian. Explain the key risks in a paper-trading portfolio and give a concise pre-trade risk checklist. Do not place orders." },
+  { id: "market", runtimeId: "market-research-agent", name: "Market Analyst", title: "Research & context", description: "Turns market context into a clear brief with catalysts, scenarios, and uncertainty called out.", focus: ["Market briefings", "Catalysts", "Bull / base / bear"], icon: CandlestickChart, color: "blue", systemContext: "You are the Market Analyst for a finance agent team. Separate verified data from assumptions, state data limitations, and present balanced bull/base/bear scenarios. Do not invent live prices or claim research you did not perform.", prompt: "Write a concise market research briefing. Separate known facts from assumptions, give bull/base/bear scenarios, and identify what data should be checked next." },
+  { id: "execution", runtimeId: "cline-cli-agent", name: "Execution Agent", title: "Simulated orders only", description: "Helps prepare and review simulated orders. Live brokerage execution is not enabled in this workspace.", focus: ["Paper orders", "Order review", "Fill tracking"], icon: Zap, color: "amber", systemContext: "You are the Execution Agent for a paper-trading-only finance workspace. Help prepare and review simulated orders, confirm symbol/side/quantity/rationale, and clearly state that you cannot submit or execute orders from this chat. Never use live brokerage execution.", prompt: "Help me prepare a paper-trade order ticket. Ask for any missing symbol, side, quantity, and rationale. Do not submit an order until I explicitly confirm the simulated order." },
 ];
 
 const QUICK_TASKS = [
@@ -95,7 +96,7 @@ export default function TeamPage() {
     setActivity(`${activeAgent.name} is working`);
     let accumulated = "";
     try {
-      await streamAgentChat(activeAgent.runtimeId, content, (eventData: any) => {
+      await streamAgentChat(activeAgent.runtimeId, `${activeAgent.systemContext}\n\nUser task: ${content}`, (eventData: any) => {
         const type = String(eventData?.type ?? "").toLowerCase();
         const piece = [eventData?.delta, eventData?.text, eventData?.token, eventData?.content]
           .find((value) => typeof value === "string" && value.length > 0);
