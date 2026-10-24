@@ -51,7 +51,13 @@
 - Tests confirm paper-only default; `binance-market.test.ts` asserts order creation/cancel methods are prohibited; live-safety suite passes.
 
 ## Exact next task
-- Task 9: full regression (server suite + typechecks + builds + dashboard tsc), re-run orchestrator end-to-end API smoke test against the real runtime server if feasible, then final diff safety sweep and Task 10 (push PR summary updates).
+- CI fix branch off `main` (done in this session): mock the Binance REST dependency in `finance-environment.test.ts`.
+
+## CI fix (2026-10-24, latest)
+- Root cause of the failing CI check on `main` @ `191e25a`: the 3 market-data tests in `apps/server/__tests__/finance-environment.test.ts` reached the live Binance REST as a fallback. GitHub-hosted runners sit in a Binance-restricted region (HTTP 451 "Service unavailable from a restricted location"), so they fail while local runs pass.
+- Fix per Task 2 ("mock live market-data APIs, deterministic fixtures"): the tests now inject a deterministic fixture exchange (fixed ticker/candles/order-book) behind the real `BinanceMarketDataAdapter`, so the adapter's mapping/shaping logic is still tested but no network is touched.
+- Results: `finance-environment.test.ts` 20/20 pass; full server suite 41 files / 535 tests pass; root typecheck exit 0.
+- Safety: test-file change only; no production code touched, no live trading involved.
 
 ## Task 8 UI (latest iteration)
 - `apps/dashboard/src/lib/fetch.ts`: added `postJson` helper.
