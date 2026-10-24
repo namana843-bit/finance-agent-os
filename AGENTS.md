@@ -12,13 +12,15 @@ Finance Agent OS is an event-driven, multi-agent autonomous financial platform w
 finance-agent-os/
 ├── apps/
 │   ├── server/           # Fastify backend, agent runtime, execution pipeline (:4132)
-│   └── dashboard/        # Vite + React 18 + TailwindCSS + Electron desktop UI (:3000)
+│   └── dashboard/        # Vite + React 18 + TailwindCSS + Electron desktop UI (`:5173`)
 ├── packages/
 │   ├── core/             # BaseAgent, TypedEventBus, FinanceRuntime
 │   └── shared/           # Types, event schemas, risk ticket interfaces
 ├── docs/                 # System documentation & specifications
 ├── prisma/               # Prisma database schema (SQLite / dev)
 ```
+
+Dashboard routes: `#/team` (finance teammates + paper-trade pipeline), `#/coding` (multi-agent coding workspace), `#/engines`, `#/dashboard`. Built-in LLM teammates are declared in `apps/server/src/llm/agent-runtime.ts`; `finance-lead-agent` is advisory-only and must never receive trade-proposal or execution permissions.
 
 ### Key Technologies
 - **Backend**: Node.js, TypeScript (ESM with `.js` import specifiers), Fastify, Vitest

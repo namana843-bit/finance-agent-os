@@ -7,13 +7,15 @@ An event-driven autonomous financial operating system powered by specialized col
 
 ## ✨ Features
 
-- **6 autonomous agents** communicating via `TypedEventBus` (`packages/core/src/event-bus.ts:1`) — registered in `apps/server/src/core/runtime.ts:253-264`
+- **Supervisor + 6 specialist agents** communicating via `TypedEventBus` (`packages/core/src/event-bus.ts:1`) — registered in `apps/server/src/core/runtime.ts`
 - **7-stage execution pipeline** — Signal Validation → LoopGuard → KillSwitch → HardLimits → Risk HMAC Ticket → Gateway → OrderManager → PaperBroker
 - **Real backtesting** — zero look-ahead, `next_bar_open` execution, slippage/spread/fees, Sharpe/Sortino/CAGR/Drawdown/ProfitFactor
 - **Markdown instruction system** — `AGENTS`, `SOUL`, `TOOLS`, `FINANCE_RULES`, `RISK_RULES`, `AGENT_LOOP`, `ROADMAP` specs drive agent behaviour
 - **File-persisted Agent Memory** — no SQLite hang: `memory/agent-memory.json` + `traces.jsonl` (5MB rotate, TTL cleanup)
 - **Desktop OS** — Vite + React 18 + Electron trading desk (alpha lab, risk, telemetry, orderbook, PnL)
-- **Fastify SSE API** on `:4132` — 70 REST endpoints + event stream
+- **Finance Lead teammate** — built-in advisory agent (`finance-lead-agent`) on the Team page (`#/team`): reviews paper NAV, cash vs deployed capital, concentration, P&L and cost drag from the live portfolio snapshot. Advisory only — it cannot submit, approve, or execute orders
+- **Multi-agent coding workspace** — `#/coding` runs real CLI coding agents (OpenCode, Claude Code, Gemini, Cline, Codex, Cursor) against validated project paths, with per-session history, streaming turns, cancellation, git diffs, and optional isolated worktrees (`apps/server/src/coding/`)
+- **Fastify SSE API** on `:4132` — 100+ REST endpoints + event stream
 - **23 registered finance tools** + 4 default strategies (EMA/RSI/MACD/Momentum)
 - **Generic CLI adapter layer** — `Desktop UI → CLI Manager → CLI Adapter` (`apps/server/src/cli/`): Cline is the primary adapter (`cline`); OpenCode is a deprecated fallback adapter (`opencode`), alongside Claude Code, Codex, Gemini, custom descriptors; backend discovery via `GET /api/cli/adapters`, normalized `cli.*` events (details: `docs/CLI_ADAPTERS.md`)
 - **Cline CLI Gateway** — permissioned `cline` one-shot runs with bare-prompt support (only `&;|`$<>\n\r` blocked in prompt text), prompt kept as a single argv element, PATH (`where`/`which`) fallback before `npx`, 18-command allowlist matching `cline --help`; legacy `/api/opencode/*` endpoints kept as deprecated aliases
@@ -110,7 +112,7 @@ Then **Reconciliation** — phantom order / drift detection between Paper Portfo
 
 ## 🤖 Agents — Where is my AI agent?
 
-All agents live in `apps/server/src/agents/` and are wired in `apps/server/src/core/runtime.ts:253-264`:
+Trading agents live in `apps/server/src/agents/` and are wired in `apps/server/src/core/runtime.ts` (six specialists plus the Supervisor orchestrator = 7 registered agents):
 
 | Agent | Path | Role |
 | :--- | :--- | :--- |
@@ -121,9 +123,18 @@ All agents live in `apps/server/src/agents/` and are wired in `apps/server/src/c
 | **`Portfolio`** | `agents/portfolio/index.ts` | Balances, positions, NAV, rebalancing |
 | **`Execution`** | `agents/execution/index.ts` | TWAP/VWAP slicing, PaperBroker orders, slippage |
 | **`Demo`** | `agents/demo-agent/index.ts` | Demo/test agent |
-| **LLM Bridge** | `llm/agent-runtime.ts` + `llm/engines.ts` + `llm/cli-session.ts` | `ProviderRegistry`/`EngineManager`/`CliSessionManager` for `AgentRuntime` |
 
-Talk to them: `SupervisorAgent.submitTask("buy 0.1 BTC if RSI <30")` → `bus.publish({type:"supervisor.task"})` → fan-out. Via HTTP: `POST /api/chat` or `POST /api/publish`.
+The Team page (`#/team`) is a UI over the LLM agent runtime (`apps/server/src/llm/`). Built-in runtime agents (`agent-runtime.ts`, never archivable):
+
+| Teammate | Runtime ID | Role |
+| :--- | :--- | :--- |
+| **`Quant Analyst`** | `btc-quant-agent` | Testable strategy hypotheses, signals, invalidation conditions |
+| **`Risk Guardian`** | `risk-guardian-agent` | Exposure, concentration, sizing, drawdown guardrails |
+| **`Market Analyst`** | `market-research-agent` | Market briefings, catalysts, bull/base/bear scenarios |
+| **`Execution Agent`** | `cline-cli-agent` | Simulated order preparation and review — no live execution |
+| **`Finance Lead`** | `finance-lead-agent` | Treasury/capital allocation: cash vs deployed, concentration, NAV & P&L attribution, fee/slippage drag; receives a measured portfolio snapshot and is advisory-only (no trade proposals) |
+
+Talk to them: `SupervisorAgent.submitTask("buy 0.1 BTC if RSI <30")` → `bus.publish({type:"supervisor.task"})` → fan-out. Via HTTP: `POST /api/chat` or `POST /api/publish`. Team chat streams over `POST /api/agent-runtime/chat/stream`.
 
 ## 📚 Markdown Instruction System
 
@@ -149,7 +160,7 @@ Agent behaviour and platform policy are specified in versioned Markdown at the r
 | Core | `packages/core` `TypedEventBus` + `FinanceRuntime` + `BaseServiceWrapper` (`apps/server/src/core/service-wrapper.ts`) |
 | Dashboard | React 18 + Vite + Electron, `shadcn/ui`, `lib/fetch.ts` (deduped `fetchJson`), `lib/clipboard.ts` |
 | DB | Prisma 5 (slim 9 models) + SQLite `file:./dev.db` + file-persisted `AgentMemory` |
-| Tests | Vitest 3 — 28 files (server test counts pending re-run) + 3 files (core) |
+| Tests | Vitest 3 — 43 server suites / 582 tests + 3 core files |
 
 ## 📁 Repository Structure
 
@@ -158,12 +169,14 @@ finance-agent-os/
 ├── apps/
 │   ├── dashboard/                  # Desktop App (React 18 + Vite + Electron :5173)
 │   │   ├── electron/               # main & preload
-│   │   ├── src/Root.tsx            # hash router (/#/dashboard, /#/engines)
+│   │   ├── src/Root.tsx            # hash router (/#/team, /#/coding, /#/engines, /#/dashboard)
+│   │   ├── src/app/team/           # finance-team workspace: teammate chat + paper-trade pipeline
+│   │   ├── src/app/coding/         # multi-agent coding workspace (providers, projects, sessions, diffs)
 │   │   ├── src/app/engines/        # engines management page
-│   │   ├── src/lib/{api,chat-api,llm-api,cli-api,fetch,clipboard}.ts
+│   │   ├── src/lib/{api,chat-api,llm-api,cli-api,coding-api,fetch,clipboard}.ts
 │   │   └── src/components/ui/*     # shadcn/ui
 │   └── server/                     # Fastify API (:4132) + Multi-Agent Runtime
-│       ├── __tests__/              # 28 vitest suites (test counts pending re-run; 28 CLI-adapter cases)
+│       ├── __tests__/              # vitest suites (server API, runtime, safety, coding workspace)
 │       └── src/
 │           ├── adapters/           # binance-ws adapter
 │           ├── agents/             # supervisor/planner, quant, risk(VaR), portfolio, execution, market, demo
@@ -173,6 +186,7 @@ finance-agent-os/
 │           ├── broker/             # PaperBroker
 │           ├── chat/               # chat service, dialogue engine, bots-as-contacts
 │           ├── cli/                # generic CLI adapter layer (CliManager + adapters; see docs/CLI_ADAPTERS.md)
+│           ├── coding/             # multi-agent coding workspace (registry, projects, sessions, worktrees, routes)
 │           ├── core/               # LoopGuard, server, runtime, storage(DATA_DIR), service-wrapper
 │           ├── environment/        # market/portfolio/paper adapters
 │           ├── execution-pipeline/ # 7-stage gated pipeline
@@ -236,7 +250,7 @@ pnpm desktop:electron       # native Electron window
 ### 5. Typecheck & Tests
 ```bash
 pnpm typecheck              # tsc --noEmit across 4 workspaces
-pnpm test                   # vitest run (server suite counts pending re-run; see Testing & CI)
+pnpm test                   # vitest run (43 server files / 582 tests + core)
 ```
 
 ---
@@ -265,7 +279,7 @@ pnpm test                   # vitest run (server suite counts pending re-run; se
 
 ## 🔌 API Reference (Fastify `:4132`)
 
-Base: `http://localhost:4132` — 70 REST routes + SSE.
+Base: `http://localhost:4132` — 100+ REST routes + SSE (the table below is the primary surface, not exhaustive).
 
 | Method | Path | Description |
 | :--- | :--- | :--- |
@@ -294,6 +308,7 @@ Base: `http://localhost:4132` — 70 REST routes + SSE.
 | `GET` | `/api/cline/cli-path` `/paths` `/gateway/stats` · `POST /api/cline/run` | cline gateway (primary) |
 | `GET` | `/api/opencode/cli-path` `/paths` `/gateway/stats` · `POST /api/opencode/run` | opencode gateway (deprecated alias) |
 | `GET`/`POST`/`DELETE` | `/api/cli/adapters*` · `/api/cli/sessions*` (`/:id/tasks` to send a task) | generic CLI adapter layer (see `docs/API.md`) |
+| `GET`/`POST`/`DELETE` | `/api/coding/providers*` · `/api/coding/projects*` · `/api/coding/sessions*` (turns, `turns/stream`, cancel, permissions, worktree) · `/api/coding/projects/:id/status` · `/api/coding/projects/:id/diff` | multi-agent coding workspace (see `docs/API.md`) |
 | `GET` | `/api/ollama/models` · `/.well-known/finance-agent/environment` | Ollama + environment discovery |
 | `SSE` | `/api/events` (via `TypedEventBus`, filterable by `channelId`/`threadId`/`agentId`/`type`/`runId`) | real-time event stream |
 
@@ -345,7 +360,7 @@ Run via `StrategyLab` (`strategy-lab/service.ts`) or `POST /api/backtest/run`.
 
 ```bash
 pnpm typecheck
-pnpm --filter @finance/server test        # vitest — 28 files, 380 tests
+pnpm --filter @finance/server test        # vitest — 43 files, 582 tests
 pnpm --filter @finance/core test          # event-bus, registries, runtime
 node scripts/verify-honesty.mjs           # live honesty checks (server must be running)
 ```
@@ -358,7 +373,7 @@ Workflows (`.github/workflows/`):
 | `pages.yml` | push → `main` | builds dashboard, deploys to GitHub Pages |
 | `release.yml` | tag `v*` | Electron desktop builds for Windows/macOS/Linux |
 
-Recent work: [#26 Markdown instruction system](https://github.com/namana843-bit/finance-agent-os/pull/26) · [#27 OpenCode orchestrator config](https://github.com/namana843-bit/finance-agent-os/pull/27) · [#29 CLI adapter layer + sandbox](https://github.com/namana843-bit/finance-agent-os/pull/29) · [#30 opencode gateway prompt fix](https://github.com/namana843-bit/finance-agent-os/pull/30)
+Recent work: [#26 Markdown instruction system](https://github.com/namana843-bit/finance-agent-os/pull/26) · [#27 OpenCode orchestrator config](https://github.com/namana843-bit/finance-agent-os/pull/27) · [#29 CLI adapter layer + sandbox](https://github.com/namana843-bit/finance-agent-os/pull/29) · [#30 opencode gateway prompt fix](https://github.com/namana843-bit/finance-agent-os/pull/30) · [#55 unified multi-agent coding workspace](https://github.com/namana843-bit/finance-agent-os/pull/55)
 
 ## 🔮 Future (single-user, in-process — no per-bot Docker, no multi-user auth)
 
