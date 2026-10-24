@@ -1,67 +1,162 @@
 # AGENT_PROGRESS.md — autonomous development loop
 
 ## Current branch and commit
-- Branch: `feat/openbot-finance-workspace` @ `700324b` (PR #53 head, base `main`)
-- Local worktree: `C:\Users\Naman\finance-agent-ws` (separate worktree; the `Downloads\finance-agent-os` clone keeps unrelated uncommitted opencode-removal edits — do not touch)
-- PR: https://github.com/namana843-bit/finance-agent-os/pull/53 (open, 3 files: `Root.tsx`, `app/team/page.tsx`, `team.css`)
+- Branch: `feat/openbot-finance-workspace`
+- Worktree: `C:\Users\Naman\finance-agent-ws` (separate worktree; the
+  `Downloads\finance-agent-os` clone keeps unrelated uncommitted edits — do not touch)
+- At the start of this loop the tree had uncommitted trade-workflow work
+  (`runtime.ts`, `server.ts`, `src/orchestrator/`). It was preserved, and the missing
+  `PipelineRunner` type import was restored so the tree typechecks. During the loop
+  that work was committed by something outside this session as `0b7e381`
+  (orchestrator) and `dd20ae8` (paper-trade UI); this session made no commits.
+- All coding-workspace work below is **uncommitted** on this branch.
+
+## Task lineage
+Earlier loop: finance dashboard / team workspace (PR #53). **Current task:** build a
+multi-coding-agent desktop workspace inside this app (OpenBot-style), reusing the
+existing CLI adapter layer.
 
 ## Overall completion status
-- Task 1 (baseline): ✅ done — green baseline verified.
-- Task 2 (build/test reliability): ✅ satisfied — no failures to fix; documented workspace-ordering footgun (build `@finance/shared`→`@finance/core` before `pnpm typecheck`).
-- Task 3 (team workspace ↔ real agents): ✅ verified — all four workspace cards map to real built-in runtime IDs (`btc-quant-agent`, `risk-guardian-agent`, `market-research-agent`, `cline-cli-agent`) registered in `apps/server/src/llm/agent-runtime.ts` (`BUILT_IN_AGENT_IDS`); existing streaming chat, status, paper indicator in `app/team/page.tsx` confirmed reading real APIs (`/api/health`, `/api/agent-runtime/agents`, `/api/portfolio`, `/api/agent-runtime/chat/stream`).
-- Task 4 (orchestration): ✅ implemented — see below.
-- Task 5 (risk & approval gates): ✅ implemented (approval echo-match, freshness recheck, audit on reject; deterministic risk re-check delegated to pipeline).
-- Tasks 6–10: pending.
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | Typed agent-provider contract | ✅ done (extended `src/coding`) |
+| 2 | Agent registry with real status | ✅ done |
+| 3 | Adapters (OpenCode, Claude, Gemini, Codex) | ✅ discovery live; OpenCode turns verified live (see Increment 5); Claude blocked by an invalid model config |
+| 4 | Unified desktop UI | ✅ built (`#/coding`), typecheck + prod build pass |
+| 5 | Safe project execution | ✅ path validation, per-session isolation, cancellation; ⚠️ no interactive permission channel exists in any adapter |
+| 6 | Deterministic tests | ✅ 47 new tests (29 unit + 18 route); full suite 582 pass |
+| 7 | Completion | ⏳ pending: per-provider model enumeration, Claude model config |
 
-## Task 4+5 implementation (this iteration)
-- New module `apps/server/src/orchestrator/`:
-  - `types.ts` — `WorkflowRun`/stages + `validateProposal()` (strict symbol regex, side, positive quantity/price with sane caps, market|limit, ≥10-char rationale).
-  - `store.ts` — per-run JSON + index under `<DATA_DIR>/workflows/`, atomic writes (`writeFileAtomic`, same convention as AGENTS.md).
-  - `orchestrator.ts` — `TradeWorkflowOrchestrator` (+ `TradeWorkflowService` ServiceLifecycle):
-    - Research (`market-research-agent`) → Proposal (`btc-quant-agent`, JSON-only prompt, re-validated server-side) → Risk review (`risk-guardian-agent`, `block` verdict fails the run before approval) → `awaiting_approval`.
-    - `approve()` requires exact echo of symbol+side+quantity of the recorded proposal; then freshness recheck (`market-state` entry age ≤ 5 min; missing data fails); execution handed to the existing 7-stage `ExecutionPipeline` (risk ticket/permission/kill-switch/hard-limits/paper rerun there non-bypassably); portfolio snapshot recorded after; audit ids recorded; events published on the bus.
-    - `reject()` requires a user reason; records `audit.recorded` event.
-    - Restart recovery via `recoverAfterRestart()`: hydrates from disk; any run left `running` (crashed mid-flow, never approved) is marked `failed` — an order can never silently resume.
-  - Degraded-agent tolerance: unparseable/invalid LLM proposals fail the run ("failed", no pipeline call) — never auto-converted into an ad-hoc trade.
-- Routes (`apps/server/src/core/server.ts`): `GET /api/workflows`, `GET /api/workflows/:id`, `POST /api/workflows` (202, validated symbol/context), `POST /api/workflows/:id/approve` (400 invalid confirm echo → no execution), `POST /api/workflows/:id/reject` (reason required, 409 when not awaiting).
-- Registered in `apps/server/src/core/runtime.ts` as `trade-workflow-orchestrator` with accessors wired to real services (`getAgentRuntime`, `getExecutionPipeline`, `getMarketState`, `getPaperBroker`).
-- Test `apps/server/__tests__/workflow-orchestrator.test.ts` (10 deterministic tests, stub agents/pipeline, temp-dir persistence): happy path with exact-param approval → signal asserted byte-for-byte; invalid proposal; param mismatch; stale/missing market data; reject; reject-reason required; risk block; validation table; restart recovery incl. never-resuming unapproved running runs.
+## What was already there (inspected, not duplicated)
+`apps/server/src/cli/` is a mature adapter layer: `CliAdapter` contract, `CliManager`
+(register/validate/start/sendTask/streamEvents/stop), `process-runner` (argv arrays,
+denied env keys, tree kill), adapters for `cline`, `opencode`, `claude`, `codex`,
+`gemini`, `cursor-cli`, `cline-cli`, plus ACP/JSON-line transports. `/api/cli/*` routes
+already existed. The coding workspace is a **view** over that layer, not a second
+adapter system.
 
-## Verification results (this iteration, actual)
-- `pnpm --filter @finance/server exec vitest run __tests__/workflow-orchestrator.test.ts` — 10/10 pass.
-- `pnpm --filter "@finance/server" test` — 41 files / 535 tests, all pass (was 525 before; +10 new).
-- `pnpm typecheck` — exit 0.
+## Increment 1 — coding agent domain (done, verified)
+New files:
+- `apps/server/src/coding/types.ts` — `CodingCapabilityId`, `Capability`
+  (`{supported:true}` | `{supported:false, reason}`), provider descriptor/status,
+  projects, sessions, turns, `CodingTurnEvent`, permission requests.
+- `apps/server/src/coding/providers.ts` — `CodingProviderRegistry` over `CliManager`.
+  Capabilities derived from adapter metadata only; unknown → explicit unsupported.
+  Auth verdict derived from probe error text (regex), never a credential value.
+- `apps/server/src/coding/projects.ts` — `validateProjectPath` (absolute only,
+  `..` rejected, filesystem roots / home dir / credential dirs / OS prefixes /
+  `node_modules` blocked, optional `allowedRoots`, realpath + stat) and
+  `CodingProjectStore` (atomic 0600 JSON, git branch/dirty detection).
+- `apps/server/src/coding/sessions.ts` — `CodingSessionManager`: one provider +
+  one project + one CLI session per record; streams `CliEvent`s into
+  `CodingTurnEvent`s; cancellation; persistence that never restores `running`.
+- `apps/server/src/coding/routes.ts`, `apps/server/src/coding/index.ts`
+  (`getCodingWorkspace`, test hooks) and wiring in `core/server.ts`.
 
-## Key facts about existing architecture (inspected, do not duplicate)
-- `pnpm install` — OK (Prisma client generated, 42.7s).
-- `pnpm typecheck` — exit 0 **after** building `@finance/shared` then `@finance/core` first. Initial run failed with TS2307 `Cannot find module '@finance/shared'` because empty `packages/*/dist` litters weren't fetched/shipped. Fix used: `pnpm --filter @finance/shared build && pnpm --filter @finance/core build` before `pnpm typecheck`. Noted as a workspace-ordering footgun, not a code defect (committing `dist` is wrong; leave fix as documented step).
-- `pnpm --filter @finance/server test` — **40 files / 525 tests, all passed** (43s). Notable existing coverage: risk-engine, risk-gate, execution-pipeline (permission/daily-limit stages), order lifecycle integration incl. idempotency, paper-broker incl. partial fills, approvals, supervisor (26 tests), CLI API, cowworkers/bots, live-safety (kill switch, reconciliation).
-- `AGENT_PROGRESS.md` — created (this file).
+Routes: `GET /api/coding/providers[?refresh=1]`, `GET/POST /api/coding/providers/:id`,
+`POST /api/coding/providers/:id/refresh`, `GET /api/coding/providers/:id/models`
+(501 + reason), `GET/POST /api/coding/projects`, `DELETE /api/coding/projects/:id`,
+`GET /api/coding/projects/:id/status`, `GET/POST /api/coding/sessions`,
+`GET/DELETE /api/coding/sessions/:id`, `POST .../turns`, `POST .../turns/stream` (SSE),
+`POST .../cancel`, `GET .../permissions` (501 + reason).
 
-## Key facts about existing architecture (inspected, do not duplicate)
-- Agents registered on runtime: `market`, `quant`, `risk`, `portfolio`, `execution`, `demo-agent`, `supervisor`, plus coworker bots. NOT yet verified: the workspace-facing IDs `btc-quant-agent`, `risk-guardian-agent`, `market-research-agent`, `cline-cli-agent` (Task 4 must map them in source).
-- 7-stage execution pipeline with risk + permission + paper stages; `RiskApprovalTicket` HMAC; KillSwitch; gateway daily limits. Reuse, never bypass.
-- `PaperBroker`, `OrderManager`, `TradeEngine`, `AuditLogger`, `ApprovalService`, chat service all already exist as services on the runtime.
+## Increment 2 — desktop UI (done, builds)
+- `apps/dashboard/src/lib/coding-api.ts` — typed client + SSE reader.
+- `apps/dashboard/src/app/coding/page.tsx` + `coding.css` — provider cards with real
+  install/version/auth, project add/remove (server-validated paths), per-provider
+  session history, streaming chat, cancel, capability matrix with reasons, terminal
+  output (stdout/stderr + tool calls), git branch/dirty, auth guidance.
+- `Root.tsx` route `#/coding`; nav links added on both the team and coding pages.
 
-## Important architectural decisions
-- Work in a dedicated worktree (`C:\Users\Naman\finance-agent-ws`) so the pre-existing uncommitted opencode-removal edits in `Downloads\finance-agent-os` are not destroyed or accidentally committed to this branch.
-- Build `shared`→`core` before workspace-wide typecheck.
+## Increment 3 — working-tree review (done, verified)
+- `readProjectDiff` in `coding/projects.ts`: `git status --porcelain`, `git diff --stat`,
+  and a 60k-capped unified `git diff`; read-only, bounded, never throws. Non-repo →
+  `isRepo: false`.
+- `GET /api/coding/projects/:id/diff`; 404 for unknown projects.
+- UI: CHANGES block in the session context panel — changed-file list with status
+  badges, file count, "Review patch" toggle rendering the unified diff. Refresh
+  happens on project switch and after every completed turn.
+- Live check: `prj-4cf10ad0` reported 9 changed files and a 18,587-char patch; the
+  panel and patch rendered in the browser.
+
+## Increment 4 — isolated git worktrees (done, verified)
+- `coding/worktrees.ts`: `createSessionWorktree` (`git worktree add -b coding/<session>`
+  under `<dataDir>/coding/worktrees`), `removeSessionWorktree`, `listProjectWorktrees`,
+  `isGitRepository`. Argv arrays only; fails instead of falling back to the shared tree.
+- Session policy (`sessions.ts`):
+  - `isolate: true` runs the provider with `cwd` = the session worktree and records
+    `isolated`, `worktreePath`, `worktreeBranch`.
+  - A non-isolated session is refused with `project_busy` while another session on the
+    same project is running — parallel agents cannot race one working tree.
+  - Isolation on a non-repo / commit-less repo returns `isolation_unavailable`
+    (501), not a silent fallback.
+  - Failed provider start removes the freshly created worktree.
+- `DELETE /api/coding/sessions/:id/worktree` requires `?force=1` to discard
+  uncommitted agent work; the UI asks for confirmation first.
+- UI: "isolated worktree" checkbox in the composer, worktree path + branch rows and a
+  "Remove worktree" button in the session context panel.
+- Live check: created `cs-957a1e37` isolated on the real repo →
+  `~/.finance-agent/coding/worktrees/cs-957a1e37` existed on branch
+  `coding/cs-957a1e37`; removal deleted both.
+
+## Verification (actual results)
+- `pnpm --filter @finance/shared build && pnpm --filter @finance/core build` — OK.
+- `pnpm --filter @finance/server exec tsc --noEmit` — exit 0.
+- `pnpm --filter @finance/dashboard exec tsc --noEmit` — exit 0.
+- `pnpm --filter @finance/dashboard build` — OK (1599 modules, 5.16s).
+- `pnpm --filter @finance/server test` — **43 files / 574 tests passed**.
+  New: `__tests__/coding-workspace.test.ts` (25), `__tests__/coding-api.test.ts` (14).
+- Live discovery on this machine (`GET /api/coding/providers`):
+  opencode `1.19.4` installed, claude `2.1.288` installed, gemini installed,
+  cline + cline-cli installed, codex **not installed**, cursor-cli **not installed**.
+  Reported honestly in the UI (installed flag comes from a real probe).
+
+## Live turn — now verified (Increment 5)
+OpenCode previously failed with `[invalid_value] ... 'tools': maximum number of items
+is 128` because the user-level OpenCode config enables two MCP servers (`cua` 138
+tools, `cua-driver` 57 tools) and the selected model rejects >128 tools. The adapter
+was never at fault; the model/tool budget was.
+
+Fix used (no code change, no edit to the user's global config): launch the **server**
+with `OPENCODE_CONFIG` pointing at a session config that disables those MCP servers.
+```json
+{ "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "cua": { "type": "local", "command": ["x"], "enabled": false },
+    "cua-driver": { "type": "local", "command": ["x"], "enabled": false }
+  } }
+```
+Verified end-to-end on 2026-10-24:
+- Non-streaming turn: `POST /api/coding/sessions/cs-ad86e853/turns` returned
+  `content = "PONG"`, `status = idle`, events `status,terminal,terminal,terminal,exit,text`.
+- SSE turn: `POST .../turns/stream` emitted `status` → three `terminal` chunks
+  (stderr banner + `PONG`) → `exit` → `text` → `turn_complete` for model `beam-free`.
+- A real provider turn now runs through the workspace with a real install probe.
+
+Remaining provider blocker (environment, not adapter): **Claude Code** still hangs —
+the configured model `minimax-m2.5-free` is rejected (`unrecognized_model`) and Claude
+retries 10×; the turn times out correctly at 180 s and answers
+`502 {code:"turn_failed"}`. Pick a valid Claude model to exercise that provider.
 
 ## Safety checks completed
-- Tests confirm paper-only default; `binance-market.test.ts` asserts order creation/cancel methods are prohibited; live-safety suite passes.
+- Project paths validated before any session start; the CLI process cwd is that path.
+- No shell-string command construction: adapter argv arrays only, prompt passed as an
+  argument (existing `process-runner` policy, reused).
+- Session records carry providerId + projectId + projectPath; events from another
+  `cliSessionId` are dropped in `mapEvent` (tested).
+- Provider payloads contain no env values or credentials (route test asserts this).
 
 ## Exact next task
-- Task 9: full regression (server suite + typechecks + builds + dashboard tsc), re-run orchestrator end-to-end API smoke test against the real runtime server if feasible, then final diff safety sweep and Task 10 (push PR summary updates).
-
-## Task 8 UI (latest iteration)
-- `apps/dashboard/src/lib/fetch.ts`: added `postJson` helper.
-- `apps/dashboard/src/lib/api.ts`: `WorkflowRun` types + `fetchWorkflows/startWorkflow/approveWorkflow/rejectWorkflow`.
-- `apps/dashboard/src/app/team/page.tsx`: "Paper trade pipeline" section — run a workflow for a symbol, list runs (status/order/risk verdict/fill/portfolio-after), explicit Approve (browser confirm reads back the exact order params; server still re-validates echo + risk + freshness) and Reject with mandatory reason. Real error/empty/busy states throughout.
-- `apps/dashboard/src/app/team/team.css`: pipeline styles.
-- Verified: `tsc --noEmit` (dashboard) + `vite build` pass.
-
-## Note (anomaly)
-- Untracked `apps/server/src/coding/` (types/providers/projects .ts) appeared in the worktree at 12:12 during this session, not authored by this agent; NOT committed. Needs human review.
-
-## Known failures / blockers
-- None. GitHub MCP token cannot update PR bodies on public repos (403) — PR text changes must be done by the user or via `gh auth login` (token currently invalid).
+1. Add per-provider model selection: adapters expose no model list, so either add a
+   declared list to adapter metadata or a provider-specific `models` probe; until then
+   the API keeps answering 501 with a reason.
+2. Give Claude Code a valid configured model and verify one live turn (the adapter,
+   timeout and error path already work).
+3. Optional: session-worktree diff review (show `git status` inside a session worktree
+   instead of the project tree).
+4. Not done, and not doable through current adapters: interactive permission prompts.
+   `/api/coding/sessions/:id/permissions` answers 501 with a reason. Safety caveat:
+   the OpenCode adapter launches `opencode run --auto`, i.e. it auto-approves its own
+   tool calls. Combined with per-session worktrees this keeps damage reviewable, but
+   the workspace cannot ask the user before a destructive write. Removing `--auto`
+   requires an adapter-level permission channel that no provider currently exposes.

@@ -4,6 +4,8 @@ import { TypedEventBus, type EventBusOptions } from "@finance/core";
 import type { FinanceEvent, HistoryFilter } from "@finance/shared";
 import { getRuntime, getGateway, getAuditLogger, getMarketState, getPortfolioHistory, getStrategyRegistry, getPaperBroker, getClineGateway, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory, getCliManager, getTradeWorkflow } from "./runtime.js";
 import { ApprovalError } from "../approvals/types.js";
+import { getCodingWorkspace } from "../coding/index.js";
+import { registerCodingRoutes } from "../coding/routes.js";
 import { COWORKER_TEMPLATES, buildCoworkerValidationDeps, sanitizeBotInput, templateSystemPrompt, validateCoworkerInput } from "../coworkers/index.js";
 import { isBuiltInAgent } from "../llm/agent-runtime.js";
 import type { LlmConfig } from "../llm/types.js";
@@ -959,6 +961,13 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     await cli.stop(request.params.id, "stopped via API");
     return { ok: true, session: cli.getSession(request.params.id)?.getSummary() ?? null };
   });
+
+  // -------------------------------------------------------------------------
+  // Coding Agent Workspace — providers, projects, sessions, streaming turns.
+  // Provider state is probed, never assumed; unsupported capabilities answer
+  // with an explicit { supported: false, reason } instead of an empty payload.
+  // -------------------------------------------------------------------------
+  registerCodingRoutes(app, getCodingWorkspace);
 
   // -------------------------------------------------------------------------
   // GET /api/market/state
