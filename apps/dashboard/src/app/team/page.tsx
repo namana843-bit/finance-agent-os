@@ -11,6 +11,7 @@ import "./team.css";
 type AgentKey = "quant" | "risk" | "market" | "execution";
 type TeamAgent = {
   id: AgentKey;
+  runtimeId: string;
   name: string;
   title: string;
   description: string;
@@ -22,10 +23,10 @@ type TeamAgent = {
 type Message = { id: string; role: "user" | "assistant" | "system"; content: string };
 
 const TEAM: TeamAgent[] = [
-  { id: "quant", name: "Quant Analyst", title: "Strategy & signals", description: "Researches setups, tests hypotheses, and explains the evidence behind a strategy.", focus: ["Strategy research", "Signal review", "Backtest ideas"], icon: BrainCircuit, color: "violet", prompt: "Review the current market and propose a testable strategy. State assumptions, entry and exit logic, and what would invalidate it. Do not place orders." },
-  { id: "risk", name: "Risk Guardian", title: "Exposure & guardrails", description: "Checks downside, concentration, position sizing, and whether a proposed trade fits the risk budget.", focus: ["Exposure checks", "Position sizing", "Drawdown watch"], icon: ShieldCheck, color: "green", prompt: "Act as Risk Guardian. Explain the key risks in a paper-trading portfolio and give a concise pre-trade risk checklist. Do not place orders." },
-  { id: "market", name: "Market Analyst", title: "Research & context", description: "Turns market context into a clear brief with catalysts, scenarios, and uncertainty called out.", focus: ["Market briefings", "Catalysts", "Bull / base / bear"], icon: CandlestickChart, color: "blue", prompt: "Write a concise market research briefing. Separate known facts from assumptions, give bull/base/bear scenarios, and identify what data should be checked next." },
-  { id: "execution", name: "Execution Agent", title: "Simulated orders only", description: "Helps prepare and review simulated orders. Live brokerage execution is not enabled in this workspace.", focus: ["Paper orders", "Order review", "Fill tracking"], icon: Zap, color: "amber", prompt: "Help me prepare a paper-trade order ticket. Ask for any missing symbol, side, quantity, and rationale. Do not submit an order until I explicitly confirm the simulated order." },
+  { id: "quant", runtimeId: "btc-quant-agent", name: "Quant Analyst", title: "Strategy & signals", description: "Researches setups, tests hypotheses, and explains the evidence behind a strategy.", focus: ["Strategy research", "Signal review", "Backtest ideas"], icon: BrainCircuit, color: "violet", prompt: "Review the current market and propose a testable strategy. State assumptions, entry and exit logic, and what would invalidate it. Do not place orders." },
+  { id: "risk", runtimeId: "risk-guardian-agent", name: "Risk Guardian", title: "Exposure & guardrails", description: "Checks downside, concentration, position sizing, and whether a proposed trade fits the risk budget.", focus: ["Exposure checks", "Position sizing", "Drawdown watch"], icon: ShieldCheck, color: "green", prompt: "Act as Risk Guardian. Explain the key risks in a paper-trading portfolio and give a concise pre-trade risk checklist. Do not place orders." },
+  { id: "market", runtimeId: "market-research-agent", name: "Market Analyst", title: "Research & context", description: "Turns market context into a clear brief with catalysts, scenarios, and uncertainty called out.", focus: ["Market briefings", "Catalysts", "Bull / base / bear"], icon: CandlestickChart, color: "blue", prompt: "Write a concise market research briefing. Separate known facts from assumptions, give bull/base/bear scenarios, and identify what data should be checked next." },
+  { id: "execution", runtimeId: "cline-cli-agent", name: "Execution Agent", title: "Simulated orders only", description: "Helps prepare and review simulated orders. Live brokerage execution is not enabled in this workspace.", focus: ["Paper orders", "Order review", "Fill tracking"], icon: Zap, color: "amber", prompt: "Help me prepare a paper-trade order ticket. Ask for any missing symbol, side, quantity, and rationale. Do not submit an order until I explicitly confirm the simulated order." },
 ];
 
 const QUICK_TASKS = [
@@ -52,7 +53,7 @@ export default function TeamPage() {
   const [refreshing, setRefreshing] = useState(false);
 
   const activeAgent = TEAM.find((agent) => agent.id === selected) ?? TEAM[0];
-  const runtimeAgent = agents.find((agent) => agent.id === selected);
+  const runtimeAgent = agents.find((agent) => agent.id === activeAgent.runtimeId);
   const activeMessages = messages[selected];
   const agentStatus = (id: AgentKey) => {
     const agent = agents.find((item) => item.id === id);
@@ -93,7 +94,7 @@ export default function TeamPage() {
     setActivity(`${activeAgent.name} is working`);
     let accumulated = "";
     try {
-      await streamAgentChat(selected, content, (eventData: any) => {
+      await streamAgentChat(activeAgent.runtimeId, content, (eventData: any) => {
         const type = String(eventData?.type ?? "").toLowerCase();
         const piece = [eventData?.delta, eventData?.text, eventData?.token, eventData?.content]
           .find((value) => typeof value === "string" && value.length > 0);
