@@ -56,7 +56,8 @@ export default function TeamPage() {
   const runtimeAgent = agents.find((agent) => agent.id === activeAgent.runtimeId);
   const activeMessages = messages[selected];
   const agentStatus = (id: AgentKey) => {
-    const agent = agents.find((item) => item.id === id);
+    const runtimeId = TEAM.find((item) => item.id === id)?.runtimeId;
+    const agent = agents.find((item) => item.id === runtimeId);
     return agent ? "Configured" : serverStatus === "online" ? "Awaiting runtime" : "Offline";
   };
 
