@@ -160,3 +160,28 @@ retries 10×; the turn times out correctly at 180 s and answers
    tool calls. Combined with per-session worktrees this keeps damage reviewable, but
    the workspace cannot ask the user before a destructive write. Removing `--auto`
    requires an adapter-level permission channel that no provider currently exposes.
+
+## CI fix (main, 2026-10-24)
+- Root cause of the failing CI check on `main` @ `191e25a`: the 3 market-data tests in
+  `apps/server/__tests__/finance-environment.test.ts` reached the live Binance REST as
+  a fallback. GitHub-hosted runners sit in a Binance-restricted region (HTTP 451), so
+  they fail there while local runs pass.
+- Fix: the tests inject a deterministic fixture exchange behind the real
+  `BinanceMarketDataAdapter`, so mapping/shaping is still tested with no network.
+- Results: `finance-environment.test.ts` 20/20; full suite 41 files / 535 tests at the
+  time; root typecheck exit 0. Test-file change only.
+
+## Task 8 UI (main)
+- `apps/dashboard/src/lib/fetch.ts`: `postJson` helper.
+- `apps/dashboard/src/lib/api.ts`: `WorkflowRun` types + workflow client functions.
+- `apps/dashboard/src/app/team/page.tsx`: "Paper trade pipeline" section with explicit
+  approve/reject controls; server re-validates echo + risk + freshness.
+- Verified: dashboard `tsc --noEmit` + `vite build`.
+
+## Note
+- The untracked `apps/server/src/coding/` that appeared earlier in the worktree at 12:12
+  is the coding-workspace work documented above; it is committed in `e67a96a`.
+
+## Known failures / blockers
+- None in the merged tree. GitHub MCP token cannot update PR bodies on public repos
+  (403) — PR text changes need `gh auth login` or the GitHub web UI.

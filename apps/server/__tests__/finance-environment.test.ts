@@ -37,22 +37,58 @@ function trendingUp(n: number): BacktestCandle[] {
 }
 
 // ---------------------------------------------------------------------------
-// Market Data — Binance adapter (synthetic fallback, no network)
+// Market Data — Binance adapter (deterministic stubbed exchange, no network)
+// The adapter used to rely on a live Binance REST fallback in tests; on
+// network-restricted runners (HTTP 451) that fails the suite. The tests now
+// inject a fixed fixture exchange so they are hermetic and deterministic.
 // ---------------------------------------------------------------------------
+
+/** Deterministic Binance-like REST fixture (no network). */
+function stubBinanceInner() {
+  const now = Date.now();
+  return {
+    getTicker: async (symbol: string) => ({
+      symbol,
+      bid: 67990,
+      ask: 68010,
+      last: 68000,
+      volume: 1234,
+      timestamp: now,
+    }),
+    getCandles: async (symbol: string, timeframe: string, limit: number) =>
+      Array.from({ length: limit }, (_, i) => {
+        const close = 67000 + i * 10;
+        return { open: close - 5, high: close + 5, low: close - 10, close, volume: 100, timestamp: now - (limit - i) * 60_000 };
+      }),
+    getOrderBook: async (symbol: string, depth: number) => ({
+      bids: Array.from({ length: depth }, (_, i) => ({ price: 68000 - (i + 1) * 10, quantity: 1 })),
+      asks: Array.from({ length: depth }, (_, i) => ({ price: 68000 + (i + 1) * 10, quantity: 1 })),
+      timestamp: now,
+    }),
+    getTrades: async () => [],
+    connect: async () => undefined,
+    disconnect: async () => undefined,
+    isConnected: () => true,
+  };
+}
+
+function stubbedBinanceMarketAdapter() {
+  return new BinanceMarketDataAdapter(stubBinanceInner() as never);
+}
 
 describe("FinanceEnvironment — market data (Binance adapter)", () => {
   it("getPrice returns price for known symbol", async () => {
     const bus = new TypedEventBus();
-    const env = createFinanceEnvironment({ bus, mode: "paper" });
+    const env = createFinanceEnvironment({ bus, mode: "paper", marketAdapter: stubbedBinanceMarketAdapter() });
     const res = await env.market.getPrice("BTCUSDT");
     expect(res.symbol).toBe("BTCUSDT");
-    expect(res.price).toBeGreaterThan(0);
+    expect(res.price).toBe(68000);
     expect(res.source).toBe("binance");
   });
 
   it("getOHLCV returns candles with OHLCV shape", async () => {
     const bus = new TypedEventBus();
-    const env = createFinanceEnvironment({ bus });
+    const env = createFinanceEnvironment({ bus, marketAdapter: stubbedBinanceMarketAdapter() });
     const bars = await env.market.getOHLCV("BTCUSDT", "1h", 5);
     expect(bars).toHaveLength(5);
     for (const b of bars) {
@@ -65,7 +101,7 @@ describe("FinanceEnvironment — market data (Binance adapter)", () => {
 
   it("getOrderBook returns bids/asks with spread", async () => {
     const bus = new TypedEventBus();
-    const env = createFinanceEnvironment({ bus });
+    const env = createFinanceEnvironment({ bus, marketAdapter: stubbedBinanceMarketAdapter() });
     const book = await env.market.getOrderBook("BTCUSDT", 5);
     expect(book.bids).toHaveLength(5);
     expect(book.asks).toHaveLength(5);
