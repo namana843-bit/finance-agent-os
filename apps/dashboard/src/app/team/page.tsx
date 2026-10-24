@@ -8,7 +8,7 @@ import {
 import { fetchAgents, fetchHealth, fetchPortfolio, streamAgentChat, fetchWorkflows, startWorkflow, approveWorkflow, rejectWorkflow, fmtCurrency, type AgentApiConfig, type Portfolio, type WorkflowRun } from "../../lib/api";
 import "./team.css";
 
-type AgentKey = "quant" | "risk" | "market" | "execution";
+type AgentKey = "quant" | "risk" | "market" | "execution" | "finance";
 type TeamAgent = {
   id: AgentKey;
   runtimeId: string;
@@ -28,16 +28,36 @@ const TEAM: TeamAgent[] = [
   { id: "risk", runtimeId: "risk-guardian-agent", name: "Risk Guardian", title: "Exposure & guardrails", description: "Checks downside, concentration, position sizing, and whether a proposed trade fits the risk budget.", focus: ["Exposure checks", "Position sizing", "Drawdown watch"], icon: ShieldCheck, color: "green", systemContext: "You are the Risk Guardian for a finance agent team. Prioritize downside, exposure, concentration, liquidity, drawdown, and position sizing. Challenge weak assumptions and do not place orders.", prompt: "Act as Risk Guardian. Explain the key risks in a paper-trading portfolio and give a concise pre-trade risk checklist. Do not place orders." },
   { id: "market", runtimeId: "market-research-agent", name: "Market Analyst", title: "Research & context", description: "Turns market context into a clear brief with catalysts, scenarios, and uncertainty called out.", focus: ["Market briefings", "Catalysts", "Bull / base / bear"], icon: CandlestickChart, color: "blue", systemContext: "You are the Market Analyst for a finance agent team. Separate verified data from assumptions, state data limitations, and present balanced bull/base/bear scenarios. Do not invent live prices or claim research you did not perform.", prompt: "Write a concise market research briefing. Separate known facts from assumptions, give bull/base/bear scenarios, and identify what data should be checked next." },
   { id: "execution", runtimeId: "cline-cli-agent", name: "Execution Agent", title: "Simulated orders only", description: "Helps prepare and review simulated orders. Live brokerage execution is not enabled in this workspace.", focus: ["Paper orders", "Order review", "Fill tracking"], icon: Zap, color: "amber", systemContext: "You are the Execution Agent for a paper-trading-only finance workspace. Help prepare and review simulated orders, confirm symbol/side/quantity/rationale, and clearly state that you cannot submit or execute orders from this chat. Never use live brokerage execution.", prompt: "Help me prepare a paper-trade order ticket. Ask for any missing symbol, side, quantity, and rationale. Do not submit an order until I explicitly confirm the simulated order." },
+  { id: "finance", runtimeId: "finance-lead-agent", name: "Finance Lead", title: "Treasury & allocation", description: "Reviews the paper portfolio as a CFO would — cash, concentration, P&L attribution, and capital allocation.", focus: ["Cash & NAV", "Allocation", "Fee / slippage drag"], icon: Wallet, color: "teal", systemContext: "You are the Finance Lead for a paper-trading-only finance workspace. Focus on treasury, capital allocation, cash vs deployed capital, concentration, NAV and P&L attribution, fees and slippage drag, and fit against the user's stated risk budget. Use portfolio and market tools to read real paper data rather than guessing, show the arithmetic, and separate measured facts from assumptions. You are advisory only: never submit, approve, or execute an order.", prompt: "Review the current paper portfolio as Finance Lead. Show cash vs deployed capital, concentration, P&L and cost drag, then suggest one allocation change with the arithmetic and the risks. Do not place orders." },
 ];
 
 const QUICK_TASKS = [
   { label: "Draft a strategy", agent: "quant" as AgentKey, prompt: "Suggest one simple, testable crypto strategy and define entry, exit, and invalidation rules. Do not place orders." },
   { label: "Run a risk review", agent: "risk" as AgentKey, prompt: "Give me a pre-trade risk review checklist for a simulated crypto portfolio. Explain sizing, concentration, and stop-loss considerations." },
   { label: "Get a market brief", agent: "market" as AgentKey, prompt: "Prepare a market briefing framework with bull, base, and bear scenarios. Be clear about data limitations and uncertainty." },
+  { label: "Review the portfolio", agent: "finance" as AgentKey, prompt: "Review the paper portfolio as Finance Lead: cash vs deployed capital, concentration, P&L and cost drag, then one allocation change with the arithmetic and risks. Do not place orders." },
 ];
 
 function money(value: number | undefined, currency = "USDT") {
   return fmtCurrency(Number.isFinite(value) ? value ?? 0 : 0, currency);
+}
+
+/** Facts the Finance Lead can cite without inventing numbers. Empty when no snapshot is loaded. */
+function portfolioBrief(portfolio: Portfolio | null): string {
+  if (!portfolio) {
+    return "No portfolio snapshot is loaded in this UI session. Call get_portfolio before making any numeric claim.";
+  }
+  const holdings = portfolio.holdings.length
+    ? portfolio.holdings.map((h) => `${h.symbol}: qty=${h.qty}, avg=${h.avgPrice}, mark=${h.price}, value=${h.value}, pnl=${h.pnl}`).join("; ")
+    : "none";
+  return [
+    "Measured paper portfolio snapshot (loaded from the local API):",
+    `- totalValue=${portfolio.totalValue} ${portfolio.baseCurrency}`,
+    `- availableCash=${portfolio.availableCash} ${portfolio.baseCurrency}`,
+    `- pnl: day=${portfolio.pnl.day}, week=${portfolio.pnl.week}, total=${portfolio.pnl.total}, percentDay=${portfolio.pnl.percentDay}`,
+    `- risk: exposure=${portfolio.risk.exposure}, maxDrawdown=${portfolio.risk.maxDrawdown}, sharpe=${portfolio.risk.sharpe}, status=${portfolio.risk.status}`,
+    `- holdings: ${holdings}`,
+  ].join("\n");
 }
 
 export default function TeamPage() {
@@ -47,7 +67,7 @@ export default function TeamPage() {
   const [serverStatus, setServerStatus] = useState<"checking" | "online" | "offline">("checking");
   const [error, setError] = useState("");
   const [draft, setDraft] = useState("");
-  const [messages, setMessages] = useState<Record<AgentKey, Message[]>>({ quant: [], risk: [], market: [], execution: [] });
+  const [messages, setMessages] = useState<Record<AgentKey, Message[]>>({ quant: [], risk: [], market: [], execution: [], finance: [] });
   const [busy, setBusy] = useState(false);
   const [streamText, setStreamText] = useState("");
   const [activity, setActivity] = useState("Ready when you are");
@@ -152,7 +172,8 @@ export default function TeamPage() {
     setActivity(`${activeAgent.name} is working`);
     let accumulated = "";
     try {
-      await streamAgentChat(activeAgent.runtimeId, `${activeAgent.systemContext}\n\nUser task: ${content}`, (eventData: any) => {
+      const context = activeAgent.id === "finance" ? `${portfolioBrief(portfolio)}\n\n` : "";
+      await streamAgentChat(activeAgent.runtimeId, `${activeAgent.systemContext}\n\n${context}User task: ${content}`, (eventData: any) => {
         const type = String(eventData?.type ?? "").toLowerCase();
         const piece = [eventData?.delta, eventData?.text, eventData?.token, eventData?.content]
           .find((value) => typeof value === "string" && value.length > 0);
@@ -190,12 +211,12 @@ export default function TeamPage() {
           <span><strong>FINANCE OS</strong><small>AGENT WORKSPACE</small></span>
         </a>
         <div className="team-workspace-label">WORKSPACE</div>
-        <a className="team-nav-item active" href="#/team"><Sparkles size={17} /> Agent team <span className="team-nav-count">4</span></a>
+        <a className="team-nav-item active" href="#/team"><Sparkles size={17} /> Agent team <span className="team-nav-count">5</span></a>
         <a className="team-nav-item" href="#/dashboard"><LayoutDashboard size={17} /> Overview</a>
         <a className="team-nav-item" href="#/engines"><Terminal size={17} /> Model engines <ChevronRight size={14} className="team-nav-chevron" /></a>
         <a className="team-nav-item" href="#/coding"><Code2 size={17} /> Coding agents <ChevronRight size={14} className="team-nav-chevron" /></a>
         <div className="team-divider" />
-        <div className="team-workspace-label">YOUR SPECIALISTS <span>04</span></div>
+        <div className="team-workspace-label">YOUR SPECIALISTS <span>05</span></div>
         <div className="team-agent-list">
           {TEAM.map((agent) => {
             const AgentIcon = agent.icon;
@@ -226,7 +247,7 @@ export default function TeamPage() {
             <div>
               <div className="team-eyebrow"><span className="team-eyebrow-line" /> YOUR AI DESK</div>
               <h1>Your finance team, <span>in sync.</span></h1>
-              <p className="team-subtitle">Four focused agents. One workspace. You stay in control of every simulated trade.</p>
+              <p className="team-subtitle">Five focused agents. One workspace. You stay in control of every simulated trade.</p>
             </div>
             <button className="team-icon-button" onClick={() => void refresh()} aria-label="Refresh workspace" disabled={refreshing}><RefreshCw size={17} className={refreshing ? "team-spin" : ""} /></button>
           </div>
@@ -237,7 +258,7 @@ export default function TeamPage() {
             <div className="team-metric-card"><div className="team-metric-top"><span>Paper equity</span><Wallet size={16} /></div><strong>{portfolio ? money(portfolio.totalValue, portfolio.baseCurrency) : "—"}</strong><small>{portfolio ? "Live from local paper broker" : "Waiting for portfolio API"}</small></div>
             <div className="team-metric-card"><div className="team-metric-top"><span>Available cash</span><ArrowDownRight size={16} /></div><strong>{portfolio ? money(portfolio.availableCash, portfolio.baseCurrency) : "—"}</strong><small>Uncommitted simulated funds</small></div>
             <div className="team-metric-card"><div className="team-metric-top"><span>Total P&L</span>{(portfolio?.pnl.total ?? 0) >= 0 ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}</div><strong className={(portfolio?.pnl.total ?? 0) >= 0 ? "positive" : "negative"}>{portfolio ? money(portfolio.pnl.total, portfolio.baseCurrency) : "—"}</strong><small>{portfolio ? `${portfolio.pnl.percentDay >= 0 ? "+" : ""}${portfolio.pnl.percentDay.toFixed(2)}% reported return` : "Connect the local API to load P&L"}</small></div>
-            <div className="team-metric-card"><div className="team-metric-top"><span>Specialists</span><Bot size={16} /></div><strong>04 <span className="team-muted-number">/ 04</span></strong><small>{agents.length ? `${agents.length} runtime agents discovered` : "Team roles ready to configure"}</small></div>
+            <div className="team-metric-card"><div className="team-metric-top"><span>Specialists</span><Bot size={16} /></div><strong>05 <span className="team-muted-number">/ 05</span></strong><small>{agents.length ? `${agents.length} runtime agents discovered` : "Team roles ready to configure"}</small></div>
           </div>
 
           <div className="team-section-heading"><div><h2>Meet your specialists</h2><p>Choose an agent to give it a task.</p></div><span className="team-section-meta"><span className="team-live-dot" /> LOCAL WORKSPACE</span></div>

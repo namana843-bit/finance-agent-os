@@ -104,6 +104,18 @@ describe("bot APIs: list + templates", () => {
     expect(res.statusCode).toBe(200);
     const ids = (res.json() as { agents: Array<{ id: string }> }).agents.map((a) => a.id);
     expect(ids).toContain("btc-quant-agent");
+    expect(ids).toContain("finance-lead-agent");
+
+    const financeLead = (res.json() as {
+      agents: Array<{
+        id: string;
+        permissions?: { execution?: boolean };
+        riskPermissions?: { allowTradeProposals?: boolean };
+      }>;
+    }).agents.find((a) => a.id === "finance-lead-agent");
+    expect(financeLead).toBeTruthy();
+    expect(financeLead?.permissions?.execution).toBe(false);
+    expect(financeLead?.riskPermissions?.allowTradeProposals).toBe(false);
 
     const tpl = await app.inject({ method: "GET", url: "/api/agent-runtime/templates" });
     expect(tpl.statusCode).toBe(200);

@@ -185,3 +185,35 @@ retries 10×; the turn times out correctly at 180 s and answers
 ## Known failures / blockers
 - None in the merged tree. GitHub MCP token cannot update PR bodies on public repos
   (403) — PR text changes need `gh auth login` or the GitHub web UI.
+
+## Increment 6 (2026-10-24) — Finance Lead teammate + docs reconciliation
+### Finance teammate
+- Added built-in runtime agent `finance-lead-agent` ("Finance Lead") in
+  `apps/server/src/llm/agent-runtime.ts` + `BUILT_IN_AGENT_IDS`:
+  treasury/capital allocation role, tools `get_portfolio`, `get_market_price`,
+  `get_ohlcv`; `permissions.execution = false` and
+  `riskPermissions.allowTradeProposals = false` (advisory only, cannot propose or execute).
+- Team page (`#/team`): five teammates now; Finance Lead card/chat/quick task.
+  The chat prompt receives a measured portfolio snapshot (NAV, cash, P&L, risk,
+  holdings) instead of letting the model invent numbers.
+- Styling: 5-column specialist grid (3 at <=1500px, 2 at <=1200px), teal accent.
+
+### Docs
+- `README.md`: verified claims against the tree — Supervisor + 6 specialists,
+  built-in LLM teammate table (incl. Finance Lead), coding workspace feature and
+  `apps/server/src/coding/` + `#/coding` in the structure, coding API row,
+  100+ REST routes, test counts 43 server files / 582 tests, PR #55.
+- `AGENTS.md`: dashboard port corrected to `:5173`; documented dashboard routes and
+  the advisory-only rule for `finance-lead-agent`.
+
+### Verification
+- `apps/server` + `apps/dashboard` `tsc --noEmit`: exit 0.
+- `__tests__/coworker-bot-apis.test.ts`: 11/11 (asserts Finance Lead is listed and
+  has no execution/trade-proposal permission).
+- `@finance/server` full suite before the agent addition: 43 files / 582 tests passed.
+- Dashboard production build: success.
+
+### Not done
+- No commit/push/PR for this increment (awaiting user direction).
+- Finance Lead is advisory by config only; the Execution Agent still uses the
+  Cline CLI runtime, and live trading remains gated by the 7-stage pipeline.

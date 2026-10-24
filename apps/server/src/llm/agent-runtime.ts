@@ -35,6 +35,7 @@ export const BUILT_IN_AGENT_IDS = [
   "risk-guardian-agent",
   "cline-cli-agent",
   "market-research-agent",
+  "finance-lead-agent",
 ];
 
 export function isBuiltInAgent(id: string): boolean {
@@ -127,6 +128,25 @@ export class AgentRuntime {
         systemPrompt: "You are a macro crypto market researcher running via Cline CLI. Inspect price history, volume trends, and market orderbook depth to deliver clear insights.",
         tools: ["get_market_price", "get_ohlcv"],
         permissions: { execution: false },
+      },
+      {
+        id: "finance-lead-agent",
+        name: "Finance Lead",
+        description: "Treasury, capital allocation, and portfolio P&L reviewer for the paper-trading desk",
+        role: "Finance Lead",
+        engine: "cline-cli",
+        systemPrompt:
+          "You are the Finance Lead for Finance Agent OS, a paper-trading-only desk. " +
+          "You own treasury and capital allocation: cash vs deployed capital, concentration, " +
+          "NAV and P&L attribution, fees and slippage drag, and whether the portfolio matches " +
+          "the user's stated risk budget. Use the finance tools to read the real paper portfolio " +
+          "and market prices instead of guessing. Separate measured facts from assumptions, show " +
+          "the arithmetic behind every allocation suggestion, and state what data is missing. " +
+          "You are advisory only: never submit, approve, or execute an order, and never claim a " +
+          "trade or backtest happened unless a tool actually ran it.",
+        tools: ["get_portfolio", "get_market_price", "get_ohlcv"],
+        permissions: { execution: false },
+        riskPermissions: { allowTradeProposals: false },
       },
     ];
 
