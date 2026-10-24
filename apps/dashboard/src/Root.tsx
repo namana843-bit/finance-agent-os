@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import App from "./App";
 import EnginesPage from "./app/engines/page";
+import TeamPage from "./app/team/page";
 
 function currentRoute(): string {
   const hash = window.location.hash.replace(/^#/, "");
-  return hash === "" ? "/dashboard" : hash;
+  return hash === "" ? "/team" : hash;
 }
 
 export function Root() {
@@ -17,6 +18,7 @@ export function Root() {
   }, []);
 
   if (route === "/engines") return <EnginesPage />;
+  if (route === "/team" || route === "/") return <TeamPage />;
   return <App />;
 }
 
