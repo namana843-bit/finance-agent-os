@@ -214,6 +214,6 @@ retries 10×; the turn times out correctly at 180 s and answers
 - Dashboard production build: success.
 
 ### Not done
-- No commit/push/PR for this increment (awaiting user direction).
+- Commit `6fa8968` + PR opened for this increment.
 - Finance Lead is advisory by config only; the Execution Agent still uses the
   Cline CLI runtime, and live trading remains gated by the 7-stage pipeline.
