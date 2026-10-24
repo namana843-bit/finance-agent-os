@@ -72,7 +72,7 @@ flowchart TB
     TEAM[Finance team workspace]
     TRADE[Proposal and approval UI]
     PORTFOLIO[Portfolio and run history]
-    CODE[ Removed coding-agent workspace ]
+    CODE[Coding-agent workspace]
   end
 
   subgraph Control["Backend control plane — Fastify / TypeScript"]
