@@ -7,6 +7,12 @@ import type { FinanceToolRegistry } from "./finance-tool-registry.js";
 import { AgentPersistence } from "./persistence.js";
 import type { EngineManager } from "./registry.js";
 
+export type AgentStatus = "active" | "busy" | "idle" | "archived";
+
+export interface AgentConcurrency {
+  maxConcurrent?: number;
+}
+
 export interface AgentConfig {
   id: string;
   name: string;
@@ -23,6 +29,13 @@ export interface AgentConfig {
     allowTradeProposals?: boolean;
     maxOrderSize?: number;
   };
+  avatar?: string;
+  personality?: string;
+  providerId?: string;
+  memoryScope?: string;
+  concurrency?: AgentConcurrency;
+  /** Lifecycle status: archived (soft-deleted) | busy (run in flight) | idle | active. */
+  status?: AgentStatus;
   /** Soft-delete flag. Archived bots are hidden from default listings. */
   archived?: boolean;
   createdAt?: string;
@@ -148,6 +161,133 @@ export class AgentRuntime {
         permissions: { execution: false },
         riskPermissions: { allowTradeProposals: false },
       },
+      {
+        id: "financebot-supervisor",
+        name: "FinanceBot Supervisor",
+        description: "Coordinates the FinanceBot coworker team and routes research, quant and risk work into supervised tasks.",
+        role: "Supervisor",
+        engine: "cline-cli",
+        systemPrompt:
+          "You are the FinanceBot Supervisor for Finance Agent OS. Coordinate the finance coworker team: assign research, quant and risk analysis tasks to the appropriate specialists, synthesize their findings, and produce an end-to-end plan before any paper-trading proposal is created.",
+        tools: ["get_market_price", "get_ohlcv", "get_portfolio"],
+        permissions: { execution: false },
+        riskPermissions: { allowTradeProposals: false },
+        avatar: "FS",
+        personality: "orchestrating",
+        memoryScope: "coworker:supervisor",
+        concurrency: { maxConcurrent: 1 },
+        status: "active",
+      },
+      {
+        id: "financebot-market-researcher",
+        name: "Market Researcher",
+        description: "Macro researcher scanning markets, price history, volume trends and orderbook depth.",
+        role: "Market Researcher",
+        engine: "cline-cli",
+        systemPrompt:
+          "You are the FinanceBot Market Researcher for Finance Agent OS. Scan markets, price history, volume trends and market orderbook depth via tools, and deliver concise evidence-based insights.",
+        tools: ["get_market_price", "get_ohlcv"],
+        permissions: { execution: false },
+        riskPermissions: { allowTradeProposals: false },
+        avatar: "MR",
+        personality: "analytical",
+        memoryScope: "coworker:market",
+        concurrency: { maxConcurrent: 1 },
+        status: "active",
+      },
+      {
+        id: "financebot-quant-researcher",
+        name: "Quant Researcher",
+        description: "Quant researcher generating testable strategy hypotheses and trade proposals from technical indicators.",
+        role: "Quant Researcher",
+        engine: "cline-cli",
+        systemPrompt:
+          "You are the FinanceBot Quant Researcher for Finance Agent OS. Analyze price data with technical indicators, inspect portfolio state, and draft structured trade proposals only for high-probability setups.",
+        tools: [
+          "get_market_price",
+          "get_ohlcv",
+          "calculate_rsi",
+          "calculate_macd",
+          "calculate_supertrend",
+          "get_portfolio",
+          "create_trade_proposal",
+        ],
+        permissions: { execution: true },
+        riskPermissions: { allowTradeProposals: true, maxOrderSize: 1 },
+        avatar: "QR",
+        personality: "rigorous",
+        memoryScope: "coworker:quant",
+        concurrency: { maxConcurrent: 1 },
+        status: "active",
+      },
+      {
+        id: "financebot-risk-guardian",
+        name: "Risk Guardian",
+        description: "Risk and compliance guardian validating exposure and trade candidates against hard risk limits.",
+        role: "Risk Guardian",
+        engine: "cline-cli",
+        systemPrompt:
+          "You are the FinanceBot Risk Guardian for Finance Agent OS. Monitor portfolio exposure, leverage and drawdown and verify trade candidates against hard risk parameters; verdicts are advisory only.",
+        tools: ["get_portfolio", "get_market_price"],
+        permissions: { execution: false },
+        riskPermissions: { allowTradeProposals: false },
+        avatar: "RG",
+        personality: "cautious",
+        memoryScope: "coworker:risk",
+        concurrency: { maxConcurrent: 1 },
+        status: "active",
+      },
+      {
+        id: "financebot-portfolio-manager",
+        name: "Portfolio Manager",
+        description: "Portfolio manager tracking balances, positions, NAV and allocation.",
+        role: "Portfolio Manager",
+        engine: "cline-cli",
+        systemPrompt:
+          "You are the FinanceBot Portfolio Manager for Finance Agent OS. Track portfolio balances, positions, NAV and allocation using finance tools; no execution.",
+        tools: ["get_portfolio", "get_market_price", "get_ohlcv"],
+        permissions: { execution: false },
+        riskPermissions: { allowTradeProposals: false },
+        avatar: "PM",
+        personality: "steady",
+        memoryScope: "coworker:portfolio",
+        concurrency: { maxConcurrent: 1 },
+        status: "active",
+      },
+      {
+        id: "financebot-execution-analyst",
+        name: "Execution Analyst",
+        description: "Execution analyst that drafts small risk-capped execution slices for supervisor review.",
+        role: "Execution Analyst",
+        engine: "cline-cli",
+        systemPrompt:
+          "You are the FinanceBot Execution Analyst for Finance Agent OS. Check market state and portfolio before drafting small execution slices; proposals require stop-loss reasoning and stay capped.",
+        tools: ["get_market_price", "get_portfolio", "create_trade_proposal"],
+        permissions: { execution: true },
+        riskPermissions: { allowTradeProposals: true, maxOrderSize: 0.5 },
+        avatar: "EA",
+        personality: "cautious",
+        memoryScope: "coworker:execution",
+        concurrency: { maxConcurrent: 1 },
+        status: "active",
+      },
+      {
+        id: "financebot-macro-economist",
+        name: "Macro Economist",
+        description: "Macro economist producing scenario and sentiment analysis from market data.",
+        role: "Macro Economist",
+        engine: "cline-cli",
+        systemPrompt:
+          "You are the FinanceBot Macro Economist for Finance Agent OS. Produce macro-level market analysis: price history, volume, sentiment and scenarios, using tools for evidence only.",
+        tools: ["get_market_price", "get_ohlcv"],
+        permissions: { execution: false },
+        riskPermissions: { allowTradeProposals: false },
+        avatar: "ME",
+        personality: "curious",
+        memoryScope: "coworker:macro",
+        concurrency: { maxConcurrent: 1 },
+        status: "active",
+      },
     ];
 
     let updated = false;
@@ -209,12 +349,14 @@ export class AgentRuntime {
 
   /**
    * Soft-delete (archive) or restore a bot. Archiving cancels any in-flight
-   * run first so no orphaned execution survives. Returns the stored record,
-   * or undefined when the agent does not exist.
+   * run first so no orphaned execution survives. Built-in system agents can
+   * never be archived. Returns the stored record, or undefined when the agent
+   * does not exist (or is a built-in).
    */
   setArchived(id: string, archived: boolean): AgentConfig | undefined {
     const existing = this.agentConfigs.get(id);
     if (!existing) return undefined;
+    if (isBuiltInAgent(id)) return undefined;
     if (archived) this.cancelAgent(id);
     const stored: AgentConfig = {
       ...existing,
@@ -235,6 +377,8 @@ export class AgentRuntime {
   }
 
   deleteAgent(id: string): boolean {
+    // Built-in safety-critical agents cannot be silently deleted.
+    if (isBuiltInAgent(id)) return false;
     this.cancelAgent(id);
     const deleted = this.agentConfigs.delete(id);
     if (deleted) {
@@ -245,6 +389,43 @@ export class AgentRuntime {
 
   getAgent(id: string): AgentConfig | undefined {
     return this.agentConfigs.get(id);
+  }
+
+  /** Derived lifecycle status: archived | busy | idle | active. */
+  getStatus(id: string): AgentStatus {
+    const agent = this.agentConfigs.get(id);
+    if (!agent) return "idle";
+    if (agent.archived) return "archived";
+    if (this.activeRuns.has(id)) return "busy";
+    return agent.status === "idle" ? "idle" : "active";
+  }
+
+  /** Clone a coworker (custom or built-in) into a fresh editable copy. */
+  duplicateAgent(id: string): AgentConfig | undefined {
+    const source = this.agentConfigs.get(id);
+    if (!source) return undefined;
+    let newId = `${id}-copy`;
+    let suffix = 2;
+    while (this.agentConfigs.has(newId)) newId = `${id}-copy-${suffix++}`;
+    const now = new Date().toISOString();
+    const copy: AgentConfig = {
+      ...source,
+      id: newId,
+      name: `${source.name} (Copy)`,
+      archived: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.agentConfigs.set(newId, copy);
+    void this.persistence.saveAgents(Array.from(this.agentConfigs.values()));
+    if (this.bus) {
+      this.bus.publish({
+        type: "agent.created",
+        data: { agentId: newId, name: copy.name, engine: copy.engine },
+        source: "agent-runtime",
+      });
+    }
+    return copy;
   }
 
   /** Cancel a single agent's in-flight run (aborts its tool loop). */
@@ -433,16 +614,20 @@ export class AgentRuntime {
             let isError = false;
 
             try {
-              // Check tool permission (e.g. execution permission for trade proposal)
+              // Check tool permission (e.g. execution permission / trade-proposal gating for trade proposals)
               if (
                 call.name === "create_trade_proposal" &&
-                config.permissions?.execution === false
+                (config.permissions?.execution === false ||
+                  config.riskPermissions?.allowTradeProposals === false)
               ) {
                 isError = true;
                 result = {
                   status: "REJECTED",
                   decision: "REJECTED",
-                  reason: "Agent execution permission is disabled (Execution = OFF in agent configuration)",
+                  reason:
+                    config.permissions?.execution === false
+                      ? "Agent execution permission is disabled (Execution = OFF in agent configuration)"
+                      : "Agent is not permitted to create trade proposals (riskPermissions.allowTradeProposals = false)",
                 };
               } else {
                 result = await this.toolRegistry.executeTool(call.name, call.arguments);

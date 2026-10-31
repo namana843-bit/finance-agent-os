@@ -1897,6 +1897,12 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     if (!clean.ok) {
       return reply.status(400).send({ error: "invalid coworker config", details: clean.errors });
     }
+    // Built-in safety-critical agents cannot be weakened through updates
+    // (permission / risk-permission changes are refused; archive/delete are
+    // handled separately with 403s).
+    if (isBuiltInAgent(id) && (body.permissions !== undefined || body.riskPermissions !== undefined)) {
+      return reply.status(403).send({ error: `Agent '${id}' is a built-in safety-critical agent and cannot be weakened via update` });
+    }
     const engineManager = getEngineManager();
     const toolRegistry = getFinanceToolRegistry();
     const result = await validateCoworkerInput(
@@ -1943,6 +1949,20 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     const deleted = runtime.deleteAgent(request.params.id);
     if (!deleted) return reply.status(404).send({ error: `Agent '${request.params.id}' not found` });
     return { ok: true, id: request.params.id };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/agent-runtime/agents/:id/duplicate", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const agent = runtime.duplicateAgent(request.params.id);
+    if (!agent) return reply.status(404).send({ error: `Agent '${request.params.id}' not found` });
+    return { ok: true, agent };
+  });
+
+  app.get<{ Params: { id: string } }>("/api/agent-runtime/agents/:id/activity", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const agent = runtime.getAgent(request.params.id);
+    if (!agent) return reply.status(404).send({ error: `Agent '${request.params.id}' not found` });
+    return { agent, status: runtime.getStatus(request.params.id) };
   });
 
   app.get<{ Params: { id: string } }>("/api/agent-runtime/agents/:id/export", async (request, reply) => {
