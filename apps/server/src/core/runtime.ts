@@ -48,7 +48,7 @@ import { OpencodeDaemonManager } from "../gateway/opencode-daemon.js";
 import { CliManager, getDefaultCliManager } from "../cli/index.js";
 import { TradeWorkflowService, type AgentRunner, type MarketFreshness, type PortfolioReader, type PipelineRunner } from "../orchestrator/orchestrator.js";
 
-import { ProviderRegistry, EngineManager, FinanceToolRegistry, AgentRuntime } from "../llm/index.js";
+import { ProviderRegistry, EngineManager, FinanceToolRegistry, AgentRuntime, applyConnections } from "../llm/index.js";
 import { CliSessionManager, createCliSessionManager } from "../llm/cli-session.js";
 
 // Service IDs — canonical identifiers for service lookup
@@ -669,6 +669,10 @@ function getCliSessionManager(): CliSessionManager {
 export function getProviderRegistry(): ProviderRegistry {
   if (!providerRegistryInstance) {
     providerRegistryInstance = new ProviderRegistry();
+    // Phase 4: register one provider instance per persisted connection in the
+    // same single registry (no second registry). Credentials are read from the
+    // environment by name; connections never carry key material.
+    applyConnections(providerRegistryInstance);
   }
   return providerRegistryInstance;
 }

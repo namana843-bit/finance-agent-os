@@ -8,6 +8,16 @@ import { getCodingWorkspace } from "../coding/index.js";
 import { registerCodingRoutes } from "../coding/routes.js";
 import { COWORKER_TEMPLATES, buildCoworkerValidationDeps, sanitizeBotInput, templateSystemPrompt, validateCoworkerInput } from "../coworkers/index.js";
 import { isBuiltInAgent } from "../llm/agent-runtime.js";
+import type { ProviderHealth } from "@finance/shared";
+import {
+  applyConnections,
+  connectionPresets,
+  getProviderConnections,
+  providerForConnection,
+  type ConnectionInput,
+} from "../llm/connections.js";
+import { presetSummary } from "../llm/provider-catalog.js";
+import { redactSecrets, redactText } from "../llm/redact.js";
 import type { LlmConfig } from "../llm/types.js";
 import { CustomBotAgent } from "../agents/custom-bot-agent.js";
 import { resolveCandles, resolveOrderBook } from "../market/market-data-resolver.js";
@@ -1850,6 +1860,148 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     return { providers };
   });
 
+  // -------------------------------------------------------------------------
+  // Multi-provider configuration (Phase 4)
+  //
+  // Every response is projected through `redactSecrets`: connections carry
+  // environment variable *names*, never values, and health messages are
+  // scrubbed so a provider error body cannot echo a key into the renderer.
+  // -------------------------------------------------------------------------
+  const syncProviders = () => {
+    applyConnections(getProviderRegistry());
+  };
+
+  app.get("/api/providers/catalog", async () => {
+    return {
+      providers: connectionPresets().map((preset) => redactSecrets(presetSummary(preset))),
+    };
+  });
+
+  app.get("/api/providers", async () => {
+    const store = getProviderConnections();
+    const providerRegistry = getProviderRegistry();
+    return {
+      providers: store.list().map((connection) => {
+        const view = store.view(connection);
+        return redactSecrets({
+          ...view,
+          registered: providerRegistry.get(connection.id) !== undefined,
+        });
+      }),
+    };
+  });
+
+  app.post<{ Body: ConnectionInput }>("/api/providers", async (request, reply) => {
+    const store = getProviderConnections();
+    const result = store.upsert(request.body ?? {});
+    if (!result.ok || !result.connection) {
+      return reply.status(400).send({ error: "invalid provider connection", details: result.errors });
+    }
+    syncProviders();
+    return reply.status(201).send({ provider: redactSecrets(store.view(result.connection)) });
+  });
+
+  app.put<{ Params: { id: string }; Body: ConnectionInput }>(
+    "/api/providers/:id",
+    async (request, reply) => {
+      const store = getProviderConnections();
+      const existing = store.get(request.params.id);
+      if (!existing) return reply.status(404).send({ error: "provider connection not found" });
+      const result = store.upsert(request.body ?? {}, request.params.id);
+      if (!result.ok || !result.connection) {
+        return reply.status(400).send({ error: "invalid provider connection", details: result.errors });
+      }
+      syncProviders();
+      return { provider: redactSecrets(store.view(result.connection)) };
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>("/api/providers/:id", async (request, reply) => {
+    const store = getProviderConnections();
+    if (!store.remove(request.params.id)) {
+      return reply.status(404).send({ error: "provider connection not found" });
+    }
+    getProviderRegistry().unregister(request.params.id);
+    return { ok: true };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/providers/:id/validate", async (request, reply) => {
+    const store = getProviderConnections();
+    const connection = store.get(request.params.id);
+    if (!connection) return reply.status(404).send({ error: "provider connection not found" });
+    const provider = providerForConnection(connection);
+    if (!provider) {
+      return reply.status(400).send({ error: `unknown preset '${connection.presetId}'` });
+    }
+    let health: ProviderHealth;
+    try {
+      health = await provider.healthCheck();
+    } catch (err) {
+      health = {
+        providerId: connection.id,
+        status: "error",
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+    // Only a real round trip records status — nothing is "connected" on faith.
+    store.recordHealth(connection.id, health);
+    return {
+      connected: health.status === "ok",
+      health: redactSecrets(health),
+      provider: redactSecrets(store.view(store.get(connection.id) ?? connection)),
+    };
+  });
+
+  app.get<{ Params: { id: string } }>("/api/providers/:id/models", async (request, reply) => {
+    const store = getProviderConnections();
+    const connection = store.get(request.params.id);
+    if (!connection) return reply.status(404).send({ error: "provider connection not found" });
+    const provider = providerForConnection(connection);
+    if (!provider) return reply.status(400).send({ error: `unknown preset '${connection.presetId}'` });
+    try {
+      const models = await provider.listModels();
+      return {
+        providerId: connection.id,
+        models: models.map((model) => redactSecrets(model)),
+      };
+    } catch (err) {
+      // A dead endpoint is a normal condition, not a crash.
+      return reply.status(502).send({
+        error: redactText(err instanceof Error ? err.message : String(err)),
+        providerId: connection.id,
+        models: [],
+      });
+    }
+  });
+
+  app.get("/api/providers/health", async () => {
+    const store = getProviderConnections();
+    const results = await Promise.all(
+      store.list().map(async (connection) => {
+        if (!connection.enabled) {
+          return { providerId: connection.id, status: "unreachable" as const, message: "disabled" };
+        }
+        const provider = providerForConnection(connection);
+        if (!provider) {
+          return { providerId: connection.id, status: "error" as const, message: "unknown preset" };
+        }
+        let health: ProviderHealth;
+        try {
+          health = await provider.healthCheck();
+        } catch (err) {
+          health = {
+            providerId: connection.id,
+            status: "error",
+            message: err instanceof Error ? err.message : String(err),
+          };
+        }
+        store.recordHealth(connection.id, health);
+        return health;
+      }),
+    );
+    return { health: redactSecrets(results) };
+  });
+
   app.post<{
     Body: { id?: string; name?: string; engine?: string; model?: string; systemPrompt?: string; tools?: string[]; permissions?: any; riskPermissions?: any; description?: string; role?: string; responsibilities?: string[]; constraints?: string[] };
   }>("/api/agent-runtime/agents", async (request, reply) => {
@@ -2076,6 +2228,161 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     } finally {
       reply.raw.end();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 5 — Coworker conversations: create / list / history / stream /
+  // stop / regenerate / search / model switch.
+  // -------------------------------------------------------------------------
+  app.post<{ Body: { agentId?: string } }>("/api/agent-runtime/conversations", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const agentId = request.body?.agentId;
+    if (!agentId || typeof agentId !== "string") {
+      return reply.status(400).send({ error: "agentId is required" });
+    }
+    const agent = runtime.getAgent(agentId);
+    if (!agent) {
+      return reply.status(404).send({ error: `Agent '${agentId}' not found` });
+    }
+    const conversationId = await runtime.createConversation(agentId);
+    return reply.status(201).send({ ok: true, conversationId });
+  });
+
+  app.get<{ Querystring: { agentId?: string } }>("/api/agent-runtime/conversations", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const agentId = typeof request.query?.agentId === "string" ? request.query.agentId : undefined;
+    const list = agentId ? await runtime.listConversations(agentId) : [];
+    return { conversations: list };
+  });
+
+  app.get<{ Params: { agentId: string; conversationId: string } }>(
+    "/api/agent-runtime/conversations/:agentId/:conversationId/messages",
+    async (request, reply) => {
+      const runtime = getAgentRuntime();
+      const agent = runtime.getAgent(request.params.agentId);
+      if (!agent) {
+        return reply.status(404).send({ error: `Agent '${request.params.agentId}' not found` });
+      }
+      const messages = await runtime.getConversation(request.params.agentId, request.params.conversationId);
+      return { messages };
+    },
+  );
+
+  app.post<{
+    Params: { agentId: string; conversationId: string };
+    Body: { prompt?: string; history?: any[] };
+  }>("/api/agent-runtime/conversations/:agentId/:conversationId/messages", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const body = request.body ?? {};
+    const prompt = body.prompt;
+    if (!prompt || typeof prompt !== "string") {
+      return reply.status(400).send({ error: "prompt is required" });
+    }
+    const agent = runtime.getAgent(request.params.agentId);
+    if (!agent) {
+      return reply.status(404).send({ error: `Agent '${request.params.agentId}' not found` });
+    }
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    });
+    try {
+      const stream = runtime.runAgentStream(request.params.agentId, prompt, (body.history ?? []) as Parameters<typeof runtime.runAgentStream>[2], {
+        conversationId: request.params.conversationId,
+      });
+      for await (const event of stream) {
+        reply.raw.write(`event: ${event.type}\n`);
+        reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      }
+    } catch (err) {
+      const errEvent = {
+        type: "error",
+        error: err instanceof Error ? err.message : String(err),
+        timestamp: Date.now(),
+      };
+      reply.raw.write(`event: error\n`);
+      reply.raw.write(`data: ${JSON.stringify(errEvent)}\n\n`);
+    } finally {
+      reply.raw.end();
+    }
+  });
+
+  app.post<{ Params: { agentId: string; conversationId: string } }>(
+    "/api/agent-runtime/conversations/:agentId/:conversationId/stop",
+    async (request, reply) => {
+      const runtime = getAgentRuntime();
+      const agent = runtime.getAgent(request.params.agentId);
+      if (!agent) {
+        return reply.status(404).send({ error: `Agent '${request.params.agentId}' not found` });
+      }
+      const stopped = runtime.stopAgent(request.params.agentId);
+      return { ok: true, stopped };
+    },
+  );
+
+  app.post<{
+    Params: { agentId: string; conversationId: string };
+  }>("/api/agent-runtime/conversations/:agentId/:conversationId/regenerate", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const agent = runtime.getAgent(request.params.agentId);
+    if (!agent) {
+      return reply.status(404).send({ error: `Agent '${request.params.agentId}' not found` });
+    }
+    const outcome = await runtime.regenerateConversation(request.params.agentId, request.params.conversationId);
+    if (!outcome) {
+      return reply.status(404).send({ error: "nothing to regenerate for this conversation" });
+    }
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    });
+    try {
+      const stream = runtime.runAgentStream(request.params.agentId, outcome.prompt, outcome.history, {
+        conversationId: request.params.conversationId,
+      });
+      for await (const event of stream) {
+        reply.raw.write(`event: ${event.type}\n`);
+        reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      }
+    } catch (err) {
+      const errEvent = {
+        type: "error",
+        error: err instanceof Error ? err.message : String(err),
+        timestamp: Date.now(),
+      };
+      reply.raw.write(`event: error\n`);
+      reply.raw.write(`data: ${JSON.stringify(errEvent)}\n\n`);
+    } finally {
+      reply.raw.end();
+    }
+  });
+
+  app.get<{ Querystring: { agentId?: string; q?: string } }>("/api/agent-runtime/conversations/search", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const agentId = typeof request.query?.agentId === "string" ? request.query.agentId : undefined;
+    const q = typeof request.query?.q === "string" ? request.query.q : "";
+    const results = agentId ? await runtime.searchConversations(agentId, q) : [];
+    return { results };
+  });
+
+  app.patch<{ Params: { id: string } }>("/api/agent-runtime/agents/:id/model", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const body = (request.body ?? {}) as { model?: string };
+    const model = body.model;
+    if (!model || typeof model !== "string") {
+      return reply.status(400).send({ error: "model is required" });
+    }
+    const agent = runtime.setAgentModel(request.params.id, model);
+    if (!agent) {
+      const existing = runtime.getAgent(request.params.id);
+      if (!existing) {
+        return reply.status(404).send({ error: `Agent '${request.params.id}' not found` });
+      }
+      return reply.status(403).send({ error: `Agent '${request.params.id}' is a built-in safety-critical agent and cannot switch models` });
+    }
+    return { ok: true, agent };
   });
 
   // -------------------------------------------------------------------------

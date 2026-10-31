@@ -17,3 +17,11 @@ export * from "./registry.js";
 export * from "./cli-resolver.js";
 export * from "./finance-tool-registry.js";
 export * from "./agent-runtime.js";
+
+// Phase 4 Multi-Provider Layer
+export * from "./redact.js";
+export * from "./provider-catalog.js";
+export * from "./connections.js";
+export * from "./routing.js";
+export * from "./providers/anthropic.js";
+export * from "./providers/gemini.js";
