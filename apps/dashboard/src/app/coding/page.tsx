@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -368,7 +368,7 @@ export default function CodingPage() {
         </a>
         <div className="team-workspace-label">WORKSPACE</div>
         <a className="team-nav-item" href="#/team"><Sparkles size={17} /> Agent team <span className="team-nav-count">4</span></a>
-        <a className="team-nav-item" href="#/dashboard"><LayoutDashboard size={17} /> Overview</a>
+        <a className="team-nav-item" href="#/home"><LayoutDashboard size={17} /> Workspace home</a>
         <a className="team-nav-item" href="#/engines"><Terminal size={17} /> Model engines</a>
         <a className="team-nav-item active" href="#/coding"><Code2 size={17} /> Coding agents</a>
         <div className="team-divider" />

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+﻿import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   Activity, ArrowDownRight, ArrowUpRight, Bot, BrainCircuit, CandlestickChart,
   CheckCircle2, ChevronRight, CircleAlert, Code2, Gauge, LayoutDashboard, LoaderCircle,
@@ -212,7 +212,7 @@ export default function TeamPage() {
         </a>
         <div className="team-workspace-label">WORKSPACE</div>
         <a className="team-nav-item active" href="#/team"><Sparkles size={17} /> Agent team <span className="team-nav-count">5</span></a>
-        <a className="team-nav-item" href="#/dashboard"><LayoutDashboard size={17} /> Overview</a>
+        <a className="team-nav-item" href="#/home"><LayoutDashboard size={17} /> Workspace home</a>
         <a className="team-nav-item" href="#/engines"><Terminal size={17} /> Model engines <ChevronRight size={14} className="team-nav-chevron" /></a>
         <a className="team-nav-item" href="#/coding"><Code2 size={17} /> Coding agents <ChevronRight size={14} className="team-nav-chevron" /></a>
         <div className="team-divider" />
