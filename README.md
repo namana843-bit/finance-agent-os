@@ -1,7 +1,10 @@
-# Finance Agent OS — Autonomous Multi-Agent Trading Platform
+# FinanceBot — AI Financial Teammates
 
 [![CI](https://github.com/namana843-bit/finance-agent-os/actions/workflows/ci.yml/badge.svg)](https://github.com/namana843-bit/finance-agent-os/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e.svg)](LICENSE)
+> **FinanceBot** is the desktop-first AI teammate workspace built on this finance platform. It brings persistent specialist agents, model-provider choice, collaborative research and task orchestration together while preserving the deterministic risk and paper-execution controls below.
+
+> Product architecture: [FinanceBot Desktop Architecture](docs/FINANCEBOT_ARCHITECTURE.md) · [Provider Strategy](docs/FINANCEBOT_PROVIDER_STRATEGY.md) · [Delivery Roadmap](docs/FINANCEBOT_ROADMAP.md)
 
 An event-driven autonomous financial operating system powered by specialized collaborating trading agents (`Supervisor` → `Market` → `Quant` → `Risk` → `Portfolio` → `Execution`) with SSE Event API and Electron/React Desktop Dashboard. Paper-only by default — live trading is gated behind `LIVE_TRADING_ENABLED` and HMAC approval tickets.
 
