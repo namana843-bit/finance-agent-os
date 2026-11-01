@@ -468,6 +468,8 @@ export interface ModelInfo {
   contextWindow?: number;
   supportsTools?: boolean;
   supportsReasoning?: boolean;
+  /** Only set when the provider (or its metadata) streams responses. */
+  supportsStreaming?: boolean;
   description?: string;
 }
 
@@ -489,6 +491,8 @@ export interface LLMMessage {
     name: string;
     arguments: Record<string, unknown>;
   }>;
+  /** Epoch ms when the message settled (user/assistant/tool); used for conversation recency. */
+  timestamp?: number;
 }
 
 export interface LLMToolDefinition {

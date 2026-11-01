@@ -826,14 +826,14 @@ export function App() {
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-bold tracking-tight">
-                    FINANCE AGENT OS
+                    FINANCEBOT
                   </span>
                   <Badge variant="cyan" className="text-[10px] px-1.5 py-0 h-4">
-                    shadcn/ui
+                    Terminal
                   </Badge>
                 </div>
                 <div className="text-[10px] text-muted-foreground leading-none">
-                  Autonomous Trading & LLM Orchestration
+                  Portfolio, risk & order telemetry · paper mode
                 </div>
               </div>
             </div>
@@ -862,6 +862,17 @@ export function App() {
 
           {/* RIGHT ACTION CONTROLS */}
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-2 border-border/60 bg-background/40 hover:bg-accent text-xs"
+              onClick={() => {
+                window.location.hash = "/home";
+              }}
+            >
+              <Users className="h-3.5 w-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">Workspace</span>
+            </Button>
             {/* Active Engine Dropdown Switcher */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

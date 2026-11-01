@@ -155,9 +155,9 @@ describe("Finance Agent OS — Engine & Agent System (OpenMausBot Architecture)"
     expect(agent?.permissions?.execution).toBe(false);
 
     // Verify conversation persistence saving
-    await runtime.saveConversationHistory("test-quant-agent", [
-      { role: "user", content: "Test prompt" },
-      { role: "assistant", content: "Test response" },
+    await runtime.saveConversationHistory("test-quant-agent", "test-quant-agent", [
+      { role: "user", content: "Test prompt", timestamp: Date.now() },
+      { role: "assistant", content: "Test response", timestamp: Date.now() },
     ]);
 
     const history = await runtime.loadConversationHistory("test-quant-agent");
