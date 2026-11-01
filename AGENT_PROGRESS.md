@@ -217,3 +217,45 @@ retries 10×; the turn times out correctly at 180 s and answers
 - Commit `6fa8968` + PR opened for this increment.
 - Finance Lead is advisory by config only; the Execution Agent still uses the
   Cline CLI runtime, and live trading remains gated by the 7-stage pipeline.
+
+--- 
+
+## Phase 1 — FinanceBot foundation architecture (2026-11-01)
+
+### Deliverables
+- `docs/FINANCEBOT_DATABASE_DESIGN.md` — storage contract: typed ULID-ish keys,
+  append-only channel/run/audit event streams, tasks/transitions/runs model,
+  approval + tool-call audit surface, provider connections (metadata only,
+  `credential_ref` indirection, no secret values), research notes with
+  evidence links and fact/inference labelling. JSON-file persistence stays
+  authoritative until each table ships.
+- `docs/FINANCEBOT_API_DESIGN.md` — documents existing reused endpoints
+  (`/api/agent-runtime/*`, provider routes, market/risk/orders, SSE) with the
+  test files that prove them, plus the planned `/api/financebot/*` namespaces
+  (workspaces/channels/tasks/runs/handoffs/approvals/scheduler) with status
+  transition and cursor-replay contracts. No placeholder endpoints registered.
+- `docs/FINANCEBOT_SECURITY.md` — trust boundaries, what is enforced today
+  (secret redaction, `keyPresent`-only renderer views, health gating, 7-stage
+  pipeline, LoopGuard, archive-guarded built-ins, contextIsolation) and the
+  Stage-6 gating list (session token, CSP, IPC allowlist, signed updates),
+  with honest current limits (loopback-unauthenticated, env-based secrets).
+- `docs/FINANCEBOT_ARCHITECTURE.md` (existing from PR #58) reviewed and kept:
+  its module map covers the nine FinanceBot modules; Coworker Registry =
+  `coworkers/` + agent CRUD, Agent Runtime = `llm/agent-runtime.ts`,
+  Provider Registry = `llm/registry.ts` + catalog/connections,
+  Task Orchestrator = `orchestrator/`, Agent Communication + Channel Manager =
+  `chat/` + planned channel events, Memory Manager = `memory/agent-memory.ts`,
+  Finance Tool Registry = `llm/finance-tool-registry.ts`, Audit & Permission
+  Manager = `audit/` + permission enforcement in `agent-runtime.ts`.
+
+### Constraint compliance
+- Trading engine untouched; exclusive runtime lock in place (concurrency design
+  = future `runs`/`run_events` rows only, no lock change).
+- No fake APIs or placeholders written.
+
+### Verification (baseline)
+- `pnpm test`: packages/core 3 files passed; @finance/server **45 files / 594
+  tests passed** (includes Phase-4 provider/secret-redaction tests and the
+  #60 flake fixes).
+- No production source files changed in this phase (docs + progress notes only).
+
