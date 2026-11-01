@@ -376,14 +376,18 @@ Workflows (`.github/workflows/`):
 | `pages.yml` | push → `main` | builds dashboard, deploys to GitHub Pages |
 | `release.yml` | tag `v*` | Electron desktop builds for Windows/macOS/Linux |
 
-Recent work: [#26 Markdown instruction system](https://github.com/namana843-bit/finance-agent-os/pull/26) · [#27 OpenCode orchestrator config](https://github.com/namana843-bit/finance-agent-os/pull/27) · [#29 CLI adapter layer + sandbox](https://github.com/namana843-bit/finance-agent-os/pull/29) · [#30 opencode gateway prompt fix](https://github.com/namana843-bit/finance-agent-os/pull/30) · [#55 unified multi-agent coding workspace](https://github.com/namana843-bit/finance-agent-os/pull/55)
+Recent work: [#55 unified multi-agent coding workspace](https://github.com/namana843-bit/finance-agent-os/pull/55) · [#56 Finance Lead teammate + docs reconciliation](https://github.com/namana843-bit/finance-agent-os/pull/56) · [#59 FinanceBot desktop workspace + multi-provider engine](https://github.com/namana843-bit/finance-agent-os/pull/59) · [#60 CI flake fix](https://github.com/namana843-bit/finance-agent-os/pull/60)
 
 ## 🔮 Future (single-user, in-process — no per-bot Docker, no multi-user auth)
 
-- **Policy UI** — `/admin/boundaries` deny-before-allow per-tool rules (2–3 days)
-- **Encrypted credentials** — `/admin/credentials` at rest, never logged (1–2 days)
-- **Audit UI** — `/admin/audit` permitted/refused/failed + rule name (2 days)
-- **Postgres** — replace `.data/*.json` when multi-process needed (3–5 days, optional solo)
+Delivered so far: desktop workspace shell (Home / AI Workspace / Coworkers / Channels / Tasks / Finance Terminal), coworker management, persistent conversations, and the multi-provider engine layer with catalog, routing, fallbacks, health-check gating and secret redaction ([PR #56](https://github.com/namana843-bit/finance-agent-os/pull/56) · [#59](https://github.com/namana843-bit/finance-agent-os/pull/59) · [#60](https://github.com/namana843-bit/finance-agent-os/pull/60)). Remaining, per the [FinanceBot roadmap](docs/FINANCEBOT_ROADMAP.md):
+
+- **Provider settings UI** — desktop screen wiring connection setup, model discovery, health state and per-coworker model selection onto the already-merged engine layer (2–3 days)
+- **Finance-native collaboration** — research channels, evidence packets (source, freshness, fact-vs-inference labels), strategy review and paper-trade proposal preparation (Stage 5, ~1 week)
+- **Production readiness** — local API authentication, secure IPC, CSP, signed desktop builds, observability, and export/deletion controls (Stage 6, ~2 weeks)
+- **Policy + audit UI** — `/admin/boundaries` deny-before-allow per-tool rules and `/admin/audit` permitted/refused/failed with rule attribution (3–5 days)
+- **Encrypted credentials at rest** — OS credential storage in Electron builds; already nothing is ever rendered, logged or persisted in the clear (2–3 days)
+- **Postgres** — replace `.data/*.json` persistence only when multi-process is needed (3–5 days, optional)
 - **AG-UI endpoint** — LangGraph/Mastra/CrewAI as bots (1 week, only if external agents wanted)
 
 ## 🔒 License
