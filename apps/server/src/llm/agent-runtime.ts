@@ -102,6 +102,8 @@ export class AgentRuntime {
   private readonly activeRuns = new Map<string, AbortController>();
   /** Per-agent persistent conversations: agentId -> conversationId -> record. */
   private readonly conversations = new Map<string, Map<string, ConversationRecord>>();
+  /** Hydration of saved agents/conversations; awaited before reads. */
+  private readonly ready: Promise<void>;
 
   constructor(opts: AgentRuntimeOptions) {
     this.engineManager = opts.engineManager;
@@ -109,29 +111,34 @@ export class AgentRuntime {
     this.bus = opts.bus;
     this.persistence = opts.persistence ?? new AgentPersistence();
     this.ensureDefaultAgents();
-    void this.init();
+    this.ready = this.init();
   }
 
   private async init(): Promise<void> {
     const saved = await this.persistence.loadAgents();
     for (const a of saved) {
       this.agentConfigs.set(a.id, a);
-      const loaded = await this.persistence.loadConversations(a.id);
-      const convos = new Map<string, ConversationRecord>();
-      const now = new Date();
-      for (const [conversationId, messages] of loaded) {
-        convos.set(conversationId, {
-          id: conversationId,
-          agentId: a.id,
-          createdAt: messages.length > 0 ? new Date(messages[0].timestamp ?? now.getTime()).toISOString() : now.toISOString(),
-          updatedAt: messages.length > 0 ? new Date(messages[messages.length - 1].timestamp ?? now.getTime()).toISOString() : now.toISOString(),
-          messages,
-        });
-      }
-      this.conversations.set(a.id, convos);
+      this.conversations.set(a.id, await this.loadConversationRecords(a.id));
     }
     this.ensureDefaultAgents();
     this.ensureConversationDefaults();
+  }
+
+  /** Read a coworker's persisted conversations into in-memory records. */
+  private async loadConversationRecords(agentId: string): Promise<Map<string, ConversationRecord>> {
+    const loaded = await this.persistence.loadConversations(agentId);
+    const convos = new Map<string, ConversationRecord>();
+    const now = new Date();
+    for (const [conversationId, messages] of loaded) {
+      convos.set(conversationId, {
+        id: conversationId,
+        agentId,
+        createdAt: messages.length > 0 ? new Date(messages[0].timestamp ?? now.getTime()).toISOString() : now.toISOString(),
+        updatedAt: messages.length > 0 ? new Date(messages[messages.length - 1].timestamp ?? now.getTime()).toISOString() : now.toISOString(),
+        messages,
+      });
+    }
+    return convos;
   }
 
   private ensureConversationDefaults(): void {
@@ -142,7 +149,14 @@ export class AgentRuntime {
 
   /** All conversations for one coworker, most recently updated first. */
   async listConversations(agentId: string): Promise<ConversationMeta[]> {
-    const map = this.conversations.get(agentId) ?? new Map<string, ConversationRecord>();
+    await this.ready;
+    let map = this.conversations.get(agentId);
+    if (!map || map.size === 0) {
+      // Runtime started after this coworker's conversations were written:
+      // hydrate them from disk instead of reporting an empty list.
+      map = await this.loadConversationRecords(agentId);
+      this.conversations.set(agentId, map);
+    }
     const metas: ConversationMeta[] = [];
     for (const record of map.values()) {
       metas.push({
@@ -265,7 +279,12 @@ export class AgentRuntime {
 
   /** Search prior conversation messages for one coworker. */
   async searchConversations(agentId: string, query: string): Promise<Array<{ conversationId: string; messageId: string; role: string; content: string; timestamp: string }>> {
-    const map = this.conversations.get(agentId) ?? new Map<string, ConversationRecord>();
+    await this.ready;
+    let map = this.conversations.get(agentId);
+    if (!map || map.size === 0) {
+      map = await this.loadConversationRecords(agentId);
+      this.conversations.set(agentId, map);
+    }
     const needle = query.trim().toLowerCase();
     const hits: Array<{ conversationId: string; messageId: string; role: string; content: string; timestamp: string }> = [];
     if (!needle) return hits;

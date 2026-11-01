@@ -77,11 +77,10 @@ class MockChatProvider implements LLMProvider {
   async *chat(_request: ChatRequest, _opts?: LLMProviderOptions): AsyncIterable<LLMEvent> {
     this.turn += 1;
     const messageId = `msg-${Date.now()}-${this.turn}`;
+    const text = "Risk reviewed: position sizing looks acceptable.";
     yield { type: "message_start", messageId, model: "mock-chat-model", timestamp: Date.now() };
-    if (this.turn === 1) {
-      yield { type: "text_delta", messageId, delta: "Risk reviewed: position sizing looks acceptable.", timestamp: Date.now() };
-      yield { type: "message_complete", messageId, text: "Risk reviewed: position sizing looks acceptable.", timestamp: Date.now() };
-    }
+    yield { type: "text_delta", messageId, delta: text, timestamp: Date.now() };
+    yield { type: "message_complete", messageId, text, timestamp: Date.now() };
   }
 }
 
@@ -98,6 +97,11 @@ class BlockingProvider implements LLMProvider {
     return [{ id: "mock-block-model", name: "Mock Block", provider: this.id }];
   }
   async *chat(_request: ChatRequest, opts?: LLMProviderOptions): AsyncIterable<LLMEvent> {
+    const messageId = "msg-block";
+    yield { type: "message_start", messageId, model: "mock-block-model", timestamp: Date.now() };
+    yield { type: "text_delta", messageId, delta: "Working", timestamp: Date.now() };
+    // Block until the run is aborted; the stream must not finish on its own.
+    if (opts?.signal?.aborted) return;
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => resolve(), 30_000);
       opts?.signal?.addEventListener("abort", () => {
@@ -105,9 +109,6 @@ class BlockingProvider implements LLMProvider {
         resolve();
       }, { once: true });
     });
-    const messageId = "msg-block";
-    yield { type: "message_start", messageId, model: "mock-block-model", timestamp: Date.now() };
-    yield { type: "message_complete", messageId, text: "", timestamp: Date.now() };
   }
 }
 
@@ -126,6 +127,20 @@ function buildEngineManager(provider: LLMProvider, engineId: string, model: stri
 }
 
 describe("Phase 5 — FinanceBot coworker chat", () => {
+  let prevDataDir: string | undefined;
+  let sandboxDir: string;
+
+  beforeAll(() => {
+    prevDataDir = process.env.FINANCE_DATA_DIR;
+    sandboxDir = mkdtempSync(join(tmpdir(), "coworker-phase5-runtime-"));
+    process.env.FINANCE_DATA_DIR = sandboxDir;
+  });
+
+  afterAll(() => {
+    if (prevDataDir === undefined) delete process.env.FINANCE_DATA_DIR;
+    else process.env.FINANCE_DATA_DIR = prevDataDir;
+  });
+
   it("creates conversations, streams replies, and persists history per conversation", async () => {
     const engineManager = buildEngineManager(new MockChatProvider(), "mock-chat-engine", "mock-chat-model");
     const toolRegistry = new FinanceToolRegistry();
@@ -185,7 +200,8 @@ describe("Phase 5 — FinanceBot coworker chat", () => {
   });
 
   it("stops an in-flight agent run and ends the stream", async () => {
-    const engineManager = buildEngineManager(new BlockingProvider(), "mock-block-engine", "mock-block-model");
+    const provider = new BlockingProvider();
+    const engineManager = buildEngineManager(provider, "mock-block-engine", "mock-block-model");
     const runtime = new AgentRuntime({
       engineManager,
       toolRegistry: new FinanceToolRegistry(),
@@ -202,11 +218,16 @@ describe("Phase 5 — FinanceBot coworker chat", () => {
     const conversationId = await runtime.createConversation("phase5-block-agent");
     const stream = runtime.runAgentStream("phase5-block-agent", "hold", [], { conversationId });
     const iterator = stream[Symbol.asyncIterator]();
+    // The provider streams a little then blocks, so the first event arrives
+    // while the run is still in flight and can be stopped.
     const first = await iterator.next();
     expect(first.done).toBe(false);
     expect(runtime.stopAgent("phase5-block-agent")).toBe(true);
-    const second = await iterator.next();
-    expect(second.done).toBe(true);
+    let ended = false;
+    for (let i = 0; i < 10 && !ended; i += 1) {
+      ended = (await iterator.next()).done === true;
+    }
+    expect(ended).toBe(true);
   });
 
   it("regenerates a conversation reply from the last user message", async () => {

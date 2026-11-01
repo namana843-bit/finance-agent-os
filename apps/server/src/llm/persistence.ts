@@ -1,6 +1,7 @@
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { DATA_DIR } from "../config.js";
+import { writeFileAtomic } from "../atomic.js";
 import type { AgentConfig } from "./agent-runtime.js";
 import type { EngineConfig, LLMMessage } from "@finance/shared";
 
@@ -10,6 +11,8 @@ function defaultDataDir(): string {
 
 export class AgentPersistence {
   private readonly dataDir: string;
+  /** Per-file write chains so concurrent saves never race on the same atomic rename. */
+  private readonly writeQueues = new Map<string, Promise<void>>();
 
   constructor(dataDir?: string) {
     this.dataDir = dataDir ?? defaultDataDir();
@@ -43,13 +46,31 @@ export class AgentPersistence {
     }
   }
 
+  /** Serialize writes to one path: concurrent writers chain behind the previous save. */
+  private enqueueWrite(path: string, write: () => void): Promise<void> {
+    const chain = (this.writeQueues.get(path) ?? Promise.resolve()).then(
+      () => {
+        write();
+      },
+      () => {
+        write();
+      },
+    );
+    const tail = chain.catch(() => undefined);
+    this.writeQueues.set(path, tail);
+    void tail.then(() => {
+      const current = this.writeQueues.get(path);
+      if (current === tail) this.writeQueues.delete(path);
+    });
+    return chain;
+  }
+
   async saveAgents(agents: AgentConfig[]): Promise<void> {
     try {
       await mkdir(this.dataDir, { recursive: true });
-      const filePath = this.agentsFilePath();
-      const tmpPath = `${filePath}.${process.pid}.tmp`;
-      await writeFile(tmpPath, JSON.stringify(agents, null, 2), "utf-8");
-      await rename(tmpPath, filePath);
+      await this.enqueueWrite(this.agentsFilePath(), () => {
+        writeFileAtomic(this.agentsFilePath(), JSON.stringify(agents, null, 2));
+      });
     } catch (err) {
       console.error("[AgentPersistence] Failed to save agents:", err);
     }
@@ -98,9 +119,9 @@ export class AgentPersistence {
       const dir = join(this.conversationsDir(), agentId.replace(/[^a-zA-Z0-9_-]/g, "_"));
       await mkdir(dir, { recursive: true });
       const filePath = this.conversationFilePath(agentId, conversationId);
-      const tmpPath = `${filePath}.${process.pid}.tmp`;
-      await writeFile(tmpPath, JSON.stringify(messages, null, 2), "utf-8");
-      await rename(tmpPath, filePath);
+      await this.enqueueWrite(filePath, () => {
+        writeFileAtomic(filePath, JSON.stringify(messages, null, 2));
+      });
     } catch (err) {
       console.error(`[AgentPersistence] Failed to save conversation for ${agentId}/${conversationId}:`, err);
     }
