@@ -86,34 +86,27 @@ describe("AgentRuntime — Parallel Tool Execution via Promise.all", () => {
 
     const toolRegistry = new FinanceToolRegistry();
     
-    // Each tool takes 100ms
-    toolRegistry.registerTool({
-      name: "slow_tool_1",
-      description: "slow 1",
-      parameters: { type: "object", properties: {} },
-      execute: async () => {
-        await new Promise((r) => setTimeout(r, 100));
-        return { tool: 1, ok: true };
-      },
-    });
-    toolRegistry.registerTool({
-      name: "slow_tool_2",
-      description: "slow 2",
-      parameters: { type: "object", properties: {} },
-      execute: async () => {
-        await new Promise((r) => setTimeout(r, 100));
-        return { tool: 2, ok: true };
-      },
-    });
-    toolRegistry.registerTool({
-      name: "slow_tool_3",
-      description: "slow 3",
-      parameters: { type: "object", properties: {} },
-      execute: async () => {
-        await new Promise((r) => setTimeout(r, 100));
-        return { tool: 3, ok: true };
-      },
-    });
+    // Each tool takes 100ms. Track starts/ends so concurrency is proven
+    // by real overlap, not a wall-clock upper bound (flaky on loaded CI runners).
+    const starts: number[] = [];
+    const ends: number[] = [];
+    const instrumented = (id: number) => {
+      toolRegistry.registerTool({
+        name: `slow_tool_${id}`,
+        description: `slow ${id}`,
+        parameters: { type: "object", properties: {} },
+        execute: async () => {
+          const t0 = Date.now();
+          await new Promise((r) => setTimeout(r, 100));
+          starts.push(t0);
+          ends.push(Date.now());
+          return { tool: id, ok: true };
+        },
+      });
+    };
+    instrumented(1);
+    instrumented(2);
+    instrumented(3);
 
     const runtime = new AgentRuntime({
       engineManager,
@@ -128,20 +121,32 @@ describe("AgentRuntime — Parallel Tool Execution via Promise.all", () => {
       permissions: { execution: true },
     });
 
-    const start = Date.now();
     const stream = runtime.runAgentStream("parallel-test-agent", "run all tools");
 
     const events: LLMEvent[] = [];
     for await (const evt of stream) {
       events.push(evt);
     }
-    const elapsed = Date.now() - start;
 
     const toolResultEvents = events.filter((e) => e.type === "tool_result");
     expect(toolResultEvents).toHaveLength(3);
 
-    // If serial, 3 x 100ms = 300ms+. In parallel, ~100ms - 220ms.
-    expect(elapsed).toBeLessThan(280);
+    // Concurrency proof: at least two tool executions overlapped in time.
+    // If serial, the i-th start is >= the (i-1)-th end and overlap is impossible.
+    const maxConcurrent = (() => {
+      let count = 0;
+      let peak = 0;
+      const marks = [
+        ...starts.map((t) => ({ t, d: 1 })),
+        ...ends.map((t) => ({ t, d: -1 })),
+      ].sort((a, b) => a.t - b.t || a.d - b.d);
+      for (const mark of marks) {
+        count += mark.d;
+        peak = Math.max(peak, count);
+      }
+      return peak;
+    })();
+    expect(maxConcurrent).toBeGreaterThanOrEqual(2);
 
     const messageComplete = events.find((e) => e.type === "message_complete");
     expect(messageComplete).toBeDefined();
