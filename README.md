@@ -380,7 +380,7 @@ Recent work: [#55 unified multi-agent coding workspace](https://github.com/naman
 
 ## 🔮 Future (single-user, in-process — no per-bot Docker, no multi-user auth)
 
-Delivered so far: desktop workspace shell (Home / AI Workspace / Coworkers / Channels / Tasks / Finance Terminal), coworker management, persistent conversations, and the multi-provider engine layer with catalog, routing, fallbacks, health-check gating and secret redaction ([PR #56](https://github.com/namana843-bit/finance-agent-os/pull/56) · [#59](https://github.com/namana843-bit/finance-agent-os/pull/59) · [#60](https://github.com/namana843-bit/finance-agent-os/pull/60)). Remaining, per the [FinanceBot roadmap](docs/FINANCEBOT_ROADMAP.md):
+Delivered so far: desktop workspace shell (Home / AI Workspace / Coworkers / Channels / Tasks / Settings), coworker management, persistent conversations, and the multi-provider engine layer with catalog, routing, fallbacks, health-check gating and secret redaction ([PR #56](https://github.com/namana843-bit/finance-agent-os/pull/56) · [#59](https://github.com/namana843-bit/finance-agent-os/pull/59) · [#60](https://github.com/namana843-bit/finance-agent-os/pull/60)). Remaining, per the [FinanceBot roadmap](docs/FINANCEBOT_ROADMAP.md):
 
 - **Provider settings UI** — desktop screen wiring connection setup, model discovery, health state and per-coworker model selection onto the already-merged engine layer (2–3 days)
 - **Finance-native collaboration** — research channels, evidence packets (source, freshness, fact-vs-inference labels), strategy review and paper-trade proposal preparation (Stage 5, ~1 week)
