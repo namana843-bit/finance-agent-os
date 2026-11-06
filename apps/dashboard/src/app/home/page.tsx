@@ -1,4 +1,4 @@
-﻿import { useMemo } from "react";
+import { useMemo } from "react";
 import {
   ArrowUpRight,
   Briefcase,
@@ -233,7 +233,7 @@ export default function HomePage() {
             <SectionHeading
               title="Portfolio summary"
               description="Paper portfolio snapshot from the local risk and portfolio services."
-              action={<GhostLink onClick={() => navigate("/terminal")}>Terminal</GhostLink>}
+              action={<GhostLink onClick={() => navigate("/team")}>Agent Team</GhostLink>}
             />
             {portfolioState === "loading" ? (
               <LoadingBlock rows={2} label="Loading portfolio" />
@@ -259,10 +259,10 @@ export default function HomePage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => navigate("/terminal")}
+                    onClick={() => navigate("/team")}
                     className="rounded-md border border-white/10 px-2.5 py-1.5 text-[11px] text-neutral-400 hover:bg-white/5"
                   >
-                    Open terminal
+                    Open Team
                   </button>
                 </div>
               </div>

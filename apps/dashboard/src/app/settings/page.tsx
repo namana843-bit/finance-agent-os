@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertTriangle, ArrowUpRight, Check, Cpu, Database, KeyRound, Plug, Server, ShieldCheck, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { API_BASE, fetchEnginesApi, fetchOpencodeModelsApi, type EngineApiStatus, type OpencodeModelsResponse } from "../../lib/api";
@@ -336,7 +336,6 @@ export default function SettingsPage() {
               { label: "Agent Team", route: "/team" },
               { label: "Model Engines", route: "/engines" },
               { label: "Coding Agents", route: "/coding" },
-              { label: "Finance Terminal", route: "/terminal" },
             ].map((item) => (
               <button
                 key={item.route}
