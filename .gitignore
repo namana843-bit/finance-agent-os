@@ -27,3 +27,4 @@ prisma/prisma/
 *.db-journal
 *.sqlite
 dashboard_screenshot.png
+opencode.json

@@ -24,13 +24,6 @@ export const PRIMARY_NAV: NavItem[] = [
   { route: "/coworkers", label: "Coworkers", icon: Users, description: "Agent directory, models and status" },
   { route: "/channels", label: "Channels", icon: Radio, description: "Persistent research threads" },
   { route: "/tasks", label: "Tasks", icon: Briefcase, description: "Workflow runs and approvals" },
-  {
-    route: "/terminal",
-    label: "Finance Terminal",
-    icon: SquareTerminal,
-    description: "Portfolio, risk, orders and telemetry",
-    aliases: ["/dashboard"],
-  },
   { route: "/settings", label: "Settings", icon: Settings, description: "Providers, engines and safety" },
 ];
 

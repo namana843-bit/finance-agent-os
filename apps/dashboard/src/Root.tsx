@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import App from "./App";
 import EnginesPage from "./app/engines/page";
 import TeamPage from "./app/team/page";
 import CodingPage from "./app/coding/page";
@@ -75,7 +74,11 @@ function renderRoute(path: string) {
         </ShellRoute>
       );
     case "/terminal":
-      return <App />;
+      return (
+        <ShellRoute route="/home">
+          <NotFound route={path} />
+        </ShellRoute>
+      );
     case "/team":
       return <TeamPage />;
     case "/engines":

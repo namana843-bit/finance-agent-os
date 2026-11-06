@@ -161,7 +161,6 @@ export function buildOpencodeDaemonArgs(
   pure: boolean,
 ): string[] {
   const args = ["serve", "--port", String(port), "--hostname", hostname];
-  if (pure) args.push("--pure");
   return args;
 }
 
