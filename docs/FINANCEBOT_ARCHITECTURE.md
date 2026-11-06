@@ -26,7 +26,6 @@ flowchart TB
     Agents["Agent directory & profiles"]
     Channels["Research channels"]
     Tasks["Task queue & run timeline"]
-    Terminal["Finance terminal"]
     Settings["Provider & security settings"]
   end
 
@@ -34,7 +33,6 @@ flowchart TB
   Shell --> Agents
   Shell --> Channels
   Shell --> Tasks
-  Shell --> Terminal
   Shell --> Settings
 
   subgraph API["Local Fastify service"]
@@ -85,7 +83,6 @@ flowchart TB
 | Agents | Agent identity, role, instructions, provider/model, allowed tools and memory scope |
 | Channels | Persistent topic rooms such as `#market-briefing`, `#btc-research`, `#quant-lab`, `#risk-review` |
 | Tasks | Durable task queue, assignment, dependencies, status, cancellation and result |
-| Finance Terminal | Existing portfolio, charts, risk, paper orders, strategies and telemetry |
 | Settings | Provider connections, model defaults, permissions, retention and security |
 
 Agent profile fields: stable ID, display name, role, description, system instructions, provider ID, model ID, tool allowlist, execution permission, risk permissions, memory scope, status, and timestamps.
@@ -181,7 +178,7 @@ All writes require schema validation and authorization. Task/run events should b
 
 ## Acceptance criteria for the first usable release
 
-- Desktop opens into a FinanceBot workspace, with the current Team and Terminal surfaces still reachable.
+- Desktop opens into a FinanceBot workspace, with the current Team and workspace surfaces still reachable.
 - User can inspect existing agents and model engines without losing current configuration.
 - Provider settings show configured/unconfigured status without exposing secret values.
 - A Supervisor task can be created, observed and cancelled with a unique task/run ID.
