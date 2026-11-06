@@ -73,12 +73,6 @@ function renderRoute(path: string) {
           <SettingsPage />
         </ShellRoute>
       );
-    case "/terminal":
-      return (
-        <ShellRoute route="/home">
-          <NotFound route={path} />
-        </ShellRoute>
-      );
     case "/team":
       return <TeamPage />;
     case "/engines":
