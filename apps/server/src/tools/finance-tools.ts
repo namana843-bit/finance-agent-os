@@ -37,7 +37,6 @@ import { createExchangeProvider } from "../providers/index.js";
 import type { MarketDataProvider } from "../providers/types.js";
 import { macd } from "../agents/quant/strategies.js";
 import { websearchTool, executeWebsearch } from "./websearch.js";
-import { opencodeTool, executeOpencodeRun } from "./opencode.js";
 import { clineTool, executeClineRun } from "./cline.js";
 import { cliRunTool, executeCliRun } from "./cli.js";
 
@@ -395,16 +394,6 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
     }
   };
 
-  const getOpencodeGateway = (): { run: (req: { command: string; args?: string[]; agentId?: string }) => Promise<unknown> } | undefined => {
-    try {
-      const svc = (runtime as unknown as { getService?: (id: string) => unknown }).getService?.("opencode-gateway") as
-        | { getInstance?: () => { run: (req: { command: string; args?: string[]; agentId?: string }) => Promise<unknown> } }
-        | undefined;
-      return svc?.getInstance?.() as never;
-    } catch {
-      return undefined;
-    }
-  };
 
   // Generic CLI adapter layer — works with any registered CLI adapter.
   const getCliManager = () => {
@@ -446,7 +435,6 @@ export function registerAllTools(runtime: import("@finance/core").FinanceRuntime
     [indicatorTool(), (input) => executeIndicator(input)],
     [supertrendTool(), (input) => executeSupertrend(input)],
     [clineTool(), (input) => executeClineRun(getClineGateway, input)],
-    [opencodeTool(), (input) => executeOpencodeRun(getOpencodeGateway, input)],
     [cliRunTool(), (input) => executeCliRun(getCliManager, input)],
   ];
 

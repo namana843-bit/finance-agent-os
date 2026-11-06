@@ -13,7 +13,6 @@ import { v4 as uuidv4 } from "uuid";
 import type { TypedEventBus } from "@finance/core";
 import type { RiskAgent, RiskDecision } from "../agents/risk/index.js";
 import type { FinanceGateway } from "../gateway/finance-gateway.js";
-import type { PaperBroker } from "../broker/paper-broker.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import type { OrderManager } from "../order-manager/order-manager.js";
 import { validateSignal, validateNotional } from "./validation.js";
@@ -30,7 +29,7 @@ export interface ExecutionPipelineDeps {
   bus: TypedEventBus;
   riskAgent: RiskAgent;
   gateway?: FinanceGateway;
-  paperBroker: PaperBroker;
+  paperBroker?: any;
   orderManager?: OrderManager;
   auditLogger?: AuditLogger;
   pipelineAudit?: PipelineAuditLog;
@@ -48,7 +47,7 @@ export class ExecutionPipeline {
   private bus: TypedEventBus;
   private riskAgent: RiskAgent;
   private gateway?: FinanceGateway;
-  private paperBroker: PaperBroker;
+  private paperBroker?: any;
   private orderManager?: OrderManager;
   private auditLogger?: AuditLogger;
   private audit: PipelineAuditLog;

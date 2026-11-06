@@ -26,7 +26,7 @@ import {
   StrategyRegistry,
   registerDefaultStrategies,
 } from "../strategies/strategy-registry.js";
-import { PaperBroker } from "../broker/paper-broker.js";
+
 import { OrderManager } from "../order-manager/order-manager.js";
 import { TradeEngine } from "../trade-engine/trade-engine.js";
 import { AgentMemory } from "../memory/agent-memory.js";
@@ -42,9 +42,7 @@ import { LlmServiceWrapper } from "../llm/service.js";
 import { UsageTracker } from "../llm/usage.js";
 import type { LlmService } from "../llm/llm-service.js";
 
-import { OpencodeCliGateway } from "../gateway/opencode-cli-gateway.js";
 import { ClineCliGateway } from "../gateway/cline-cli-gateway.js";
-import { OpencodeDaemonManager } from "../gateway/opencode-daemon.js";
 import { CliManager, getDefaultCliManager } from "../cli/index.js";
 import { TradeWorkflowService, type AgentRunner, type MarketFreshness, type PortfolioReader, type PipelineRunner } from "../orchestrator/orchestrator.js";
 
@@ -56,7 +54,6 @@ export const SERVICE_IDS = {
   GATEWAY: "gateway",
   AUDIT_LOGGER: "audit-logger",
   MARKET_STATE: "market-state",
-  PAPER_BROKER: "paper-broker",
   STATE_RECOVERY: "state-recovery",
   PORTFOLIO_HISTORY: "portfolio-history",
   ORDER_MANAGER: "order-manager",
@@ -66,7 +63,6 @@ export const SERVICE_IDS = {
   FINANCE_ENVIRONMENT: "finance-environment",
   STRATEGY_LAB: "strategy-lab",
   EXECUTION_PIPELINE: "execution-pipeline",
-  OPENCODE_GATEWAY: "opencode-gateway",
   CLINE_GATEWAY: "cline-gateway",
   CLI_MANAGER: "cli-manager",
   CHAT: "chat",
@@ -108,15 +104,6 @@ class MarketStateServiceWrapper extends BaseServiceWrapper<MarketStateService> {
       { id: SERVICE_IDS.MARKET_STATE, name: "Market State Service", description: "Maintains real-time market state from live data" },
       svc,
       { onStart: (s) => s.start(), onStop: (s) => s.stop() }
-    );
-  }
-}
-
-class PaperBrokerService extends BaseServiceWrapper<PaperBroker> {
-  constructor(bus: import("@finance/core").TypedEventBus) {
-    super(
-      { id: SERVICE_IDS.PAPER_BROKER, name: "Paper Broker", description: "Realistic paper trading simulation" },
-      new PaperBroker(bus)
     );
   }
 }
@@ -206,35 +193,6 @@ class ClineGatewayService extends BaseServiceWrapper<ClineCliGateway> {
     (this as unknown as { info: ServiceInfo }).info.status = "stopped";
     console.log(`[service:${SERVICE_IDS.CLINE_GATEWAY}] stopped`);
   }
-}
-
-class OpencodeGatewayService extends BaseServiceWrapper<OpencodeCliGateway> {
-  // Daemon lifecycle is owned by the OpenCode adapter (adapter layer), not by
-  // this service — the gateway only routes permissioned runs.
-  private daemon: OpencodeDaemonManager;
-  constructor(bus: import("@finance/core").TypedEventBus) {
-    super(
-      { id: SERVICE_IDS.OPENCODE_GATEWAY, name: "OpenCode CLI Gateway", description: "Permissioned gateway for opencode CLI path + execution (path gateways)" },
-      new OpencodeCliGateway(bus)
-    );
-    this.daemon = getCliManager().get("opencode")?.daemon
-      ? (getCliManager().get("opencode")!.daemon as OpencodeDaemonManager)
-      : new OpencodeDaemonManager();
-  }
-  override async start(): Promise<void> {
-    await this.inner.getCliInfo().catch(() => {});
-    await this.daemon.start().catch((err) => console.warn(`[opencode:daemon] background start failed:`, err));
-    (this as unknown as { info: ServiceInfo }).info.status = "active";
-    const cli = await this.inner.getCliInfo().catch(() => null);
-    const daemonUrl = this.daemon.getDaemonUrl();
-    console.log(`[service:${SERVICE_IDS.OPENCODE_GATEWAY}] started cli=${cli?.cliPath ?? "not found"} exists=${cli?.exists ?? false}${daemonUrl ? ` daemon=${daemonUrl}` : ""}`);
-  }
-  override async stop(): Promise<void> {
-    this.daemon.stop();
-    (this as unknown as { info: ServiceInfo }).info.status = "stopped";
-    console.log(`[service:${SERVICE_IDS.OPENCODE_GATEWAY}] stopped`);
-  }
-  getDaemon(): OpencodeDaemonManager { return this.daemon; }
 }
 
 // ---------------------------------------------------------------------------
@@ -385,9 +343,6 @@ const riskAgent = new RiskAgent(bus);
   runtime.registerService(marketStateService);
 
   // Paper Broker
-  const paperBrokerService = new PaperBrokerService(bus);
-  runtime.registerService(paperBrokerService);
-
   // State Recovery
   const stateRecoveryService = new StateRecoveryService(bus);
   runtime.registerService(stateRecoveryService);
@@ -411,10 +366,6 @@ const riskAgent = new RiskAgent(bus);
   // Cline CLI Path Gateway (PRIMARY) — permissioned path gateways for cline binary
   const clineGatewayService = new ClineGatewayService(bus);
   runtime.registerService(clineGatewayService);
-
-  // OpenCode CLI Path Gateway (deprecated) — kept so existing consumers work
-  const opencodeGatewayService = new OpencodeGatewayService(bus);
-  runtime.registerService(opencodeGatewayService);
 
   // Dialogue Engine — OpenMausBot Conversational Dialogue Layer (from main)
   const dialogueEngineService = new DialogueEngineService(bus);
@@ -444,7 +395,7 @@ const riskAgent = new RiskAgent(bus);
     bus,
     riskAgent,
     gateway: gatewayService.getInstance(),
-    paperBroker: paperBrokerService.getInstance(),
+
     auditLogger: auditLoggerService.getInstance(),
   });
   runtime.registerService(executionPipelineService);
@@ -482,19 +433,7 @@ const riskAgent = new RiskAgent(bus);
       getLastUpdate: (symbol) => getMarketState()?.getEntry(symbol)?.lastUpdate,
     } satisfies MarketFreshness,
     portfolio: {
-      snapshot: () => {
-        const broker = getPaperBroker();
-        if (!broker) return undefined;
-        const pf = broker.getPortfolio();
-        return {
-          timestamp: Date.now(),
-          equity: pf.equity,
-          cash: pf.cash,
-          realizedPnl: pf.realizedPnl,
-          unrealizedPnl: pf.unrealizedPnl,
-          positions: pf.positions.map((pos) => ({ symbol: pos.symbol, side: pos.side, quantity: pos.quantity, entryPrice: pos.entryPrice, currentPrice: pos.currentPrice })),
-        };
-      },
+      snapshot: () => undefined,
     } satisfies PortfolioReader,
   });
   runtime.registerService(tradeWorkflowService);
@@ -581,10 +520,6 @@ export function getStrategyRegistry(): StrategyRegistry | undefined {
   return getService<StrategyRegistryService>(SERVICE_IDS.STRATEGY_REGISTRY)?.getInstance();
 }
 
-export function getPaperBroker(): PaperBroker | undefined {
-  return getService<PaperBrokerService>(SERVICE_IDS.PAPER_BROKER)?.getInstance();
-}
-
 export function getOrderManager(): OrderManager | undefined {
   return getService<OrderManagerService>(SERVICE_IDS.ORDER_MANAGER)?.getInstance();
 }
@@ -627,11 +562,6 @@ export function getLlm(): LlmService | undefined {
 
 export function getClineGateway(): ClineCliGateway | undefined {
   return getService<ClineGatewayService>(SERVICE_IDS.CLINE_GATEWAY)?.getInstance();
-}
-
-/** @deprecated Use getClineGateway() instead. */
-export function getOpencodeGateway(): OpencodeCliGateway | undefined {
-  return getService<OpencodeGatewayService>(SERVICE_IDS.OPENCODE_GATEWAY)?.getInstance();
 }
 
 /**

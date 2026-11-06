@@ -7,7 +7,6 @@ import type { TypedEventBus } from "@finance/core";
 import type { ServiceLifecycle, ServiceInfo } from "@finance/core";
 import type { RiskAgent } from "../agents/risk/index.js";
 import type { FinanceGateway } from "../gateway/finance-gateway.js";
-import type { PaperBroker } from "../broker/paper-broker.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import type { OrderManager } from "../order-manager/order-manager.js";
 import { ExecutionPipeline } from "./pipeline.js";
@@ -28,7 +27,7 @@ export class ExecutionPipelineService implements ServiceLifecycle {
     bus: TypedEventBus;
     riskAgent: RiskAgent;
     gateway: FinanceGateway;
-    paperBroker: PaperBroker;
+    paperBroker?: any;
     orderManager?: OrderManager;
     auditLogger?: AuditLogger;
     config?: Partial<PipelineConfig>;

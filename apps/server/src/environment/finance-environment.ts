@@ -3,7 +3,7 @@
 // OpenMausBot-inspired Environment: agents interact with market/portfolio/
 // backtesting/paper trading only through this abstraction.
 // Composition: marketDataPort + portfolioPort + paperTradingPort + backtestPort
-// No live orders — trading port delegates exclusively to PaperBroker.
+// No live orders — trading port is paper-only.
 // ============================================================================
 
 import type {

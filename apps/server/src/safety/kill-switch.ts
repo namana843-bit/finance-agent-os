@@ -6,7 +6,6 @@
 
 import type { TypedEventBus } from "@finance/core";
 import type { OrderManager } from "../order-manager/order-manager.js";
-import type { PaperBroker } from "../broker/paper-broker.js";
 
 export type KillSwitchState = "ARMED" | "TRIGGERED" | "DISARMED";
 
@@ -61,12 +60,12 @@ export class KillSwitch {
   private overrideKey: string;
   private bus?: TypedEventBus;
   private orderManager?: OrderManager;
-  private broker?: PaperBroker;
+  private broker?: any;
 
   constructor(deps?: {
     bus?: TypedEventBus;
     orderManager?: OrderManager;
-    broker?: PaperBroker;
+    broker?: any;
     config?: KillSwitchConfig;
   }) {
     this.bus = deps?.bus;
@@ -91,7 +90,7 @@ export class KillSwitch {
     this.orderManager = om;
   }
 
-  setBroker(broker: PaperBroker): void {
+  setBroker(broker: any): void {
     this.broker = broker;
   }
 

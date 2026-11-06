@@ -6,7 +6,6 @@
 // ============================================================================
 
 import type { PriceResult, OHLCVBar, OrderBookSnapshot, BalanceMap, ProviderPosition, ProviderPortfolio } from "../providers/types.js";
-import type { PaperOrder } from "../broker/paper-broker.js";
 import type { BacktestResult, BacktestCandle } from "../backtesting/backtest-engine.js";
 
 export type EnvironmentMode = "paper" | "backtest";
@@ -37,10 +36,10 @@ export interface PortfolioPort {
 
 export interface PaperTradingPort {
   /** Create a paper order — never touches live exchange */
-  createOrder(params: CreateOrderParams): Promise<PaperOrder>;
+  createOrder(params: CreateOrderParams): Promise<any>;
   cancelOrder(orderId: string): Promise<{ orderId: string; status: string }>;
-  getOrders(): Promise<PaperOrder[]>;
-  getOpenOrders(): Promise<PaperOrder[]>;
+  getOrders(): Promise<any[]>;
+  getOpenOrders(): Promise<any[]>;
   getPortfolio(): Promise<ProviderPortfolio>;
 }
 

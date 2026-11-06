@@ -5,7 +5,6 @@
 // ============================================================================
 
 import type { RiskDecision } from "../agents/risk/index.js";
-import type { PaperOrder } from "../broker/paper-broker.js";
 
 export interface PipelineSignal {
   id?: string;
@@ -69,7 +68,7 @@ export interface PipelineResult {
   reason: string;
   correlationId: string;
   signalId: string;
-  order?: PaperOrder;
+  order?: any;
   riskDecision?: RiskDecision;
   durationMs: number;
   auditIds: string[];

@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import { TypedEventBus, type EventBusOptions } from "@finance/core";
 import type { FinanceEvent, HistoryFilter } from "@finance/shared";
-import { getRuntime, getGateway, getAuditLogger, getMarketState, getPortfolioHistory, getStrategyRegistry, getPaperBroker, getClineGateway, getOpencodeGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory, getCliManager, getTradeWorkflow } from "./runtime.js";
+import { getRuntime, getGateway, getAuditLogger, getMarketState, getPortfolioHistory, getStrategyRegistry, getClineGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory, getCliManager, getTradeWorkflow } from "./runtime.js";
 import { ApprovalError } from "../approvals/types.js";
 import { getCodingWorkspace } from "../coding/index.js";
 import { registerCodingRoutes } from "../coding/routes.js";
@@ -221,7 +221,7 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/portfolio — single truth: PaperBroker (cash/positions), fallback PortfolioAgent
+  // GET /api/portfolio — cash/positions (PaperBroker removed), fallback PortfolioAgent
   // -------------------------------------------------------------------------
   app.get("/api/portfolio", async (_request, reply) => {
     const runtime = getRuntime();
@@ -229,9 +229,6 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       return reply.status(503).send({ error: "runtime not available", code: "RUNTIME_NOT_READY" });
     }
 
-    // Single source of truth: PaperBroker owns cash + positions (real fills).
-    // PortfolioAgent tracks derived PnL/allocation but duplicates cash — prefer broker.
-    const broker = getPaperBroker();
     const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
     const riskAgent = runtime.getAgentRegistry().get("risk");
     const riskMetrics = riskAgent && typeof (riskAgent as any).getRiskMetrics === "function"
@@ -242,17 +239,17 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     let holdings: Array<{ symbol: string; qty: number; avgPrice: number; price: number; value: number; pnl: number }>;
     let positions: Array<{ symbol: string; side: "long" | "short"; qty: number; entry: number; mark: number; unrealizedPnl: number; leverage: number }>;
 
-    if (broker) {
-      const pf = broker.getPortfolio();
+    if (false) {
+      const pf = null as any;
       totalValue = pf.equity;
       availableCash = pf.cash;
       realizedPnL = pf.realizedPnl;
       unrealizedPnL = pf.unrealizedPnl;
-      holdings = pf.positions.map((p) => ({
+      holdings = pf.positions.map((p: any) => ({
         symbol: p.symbol, qty: p.quantity, avgPrice: p.entryPrice, price: p.currentPrice,
         value: p.quantity * p.currentPrice, pnl: p.unrealizedPnl,
       }));
-      positions = pf.positions.map((p) => ({
+      positions = pf.positions.map((p: any) => ({
         symbol: p.symbol, side: p.side, qty: p.quantity, entry: p.entryPrice, mark: p.currentPrice,
         unrealizedPnl: p.unrealizedPnl, leverage: 1,
       }));
@@ -339,12 +336,10 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/orders — single truth: PaperBroker (real orders), fallback PortfolioAgent
-  // GET /api/trades — single truth: PaperBroker fills + ExecutionAgent, fallback PortfolioAgent
+  // GET /api/orders — fallback PortfolioAgent
+  // GET /api/trades — execution agent fills, fallback PortfolioAgent
   // -------------------------------------------------------------------------
   app.get("/api/orders", async () => {
-    const broker = getPaperBroker();
-    if (broker) return { orders: broker.getOrderHistory(), source: "paper-broker" };
     const runtime = getRuntime();
     if (!runtime) return { orders: [] };
     const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
@@ -355,21 +350,13 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   app.get("/api/trades", async () => {
-    const broker = getPaperBroker();
-    // Prefer broker history would be trades, but broker tracks orders; execution agent tracks fills
+    // Execution agent tracks fills
     const runtime = getRuntime();
     const execAgent = runtime?.getAgentRegistry().get("execution");
     if (execAgent && typeof (execAgent as any).getFills === "function") {
       return { trades: (execAgent as any).getFills(100), source: "execution-agent" };
     }
-    if (broker) {
-      // broker.getOrderHistory includes filled orders with filledPrice/fee — map to trades shape
-      const filled = broker.getOrderHistory().filter((o: any) => o.status === "filled").map((o: any) => ({
-        symbol: o.symbol, side: o.side, qty: o.quantity, price: o.filledPrice ?? o.price,
-        fee: o.fee ?? 0, timestamp: o.filledAt ?? o.createdAt, orderId: o.id,
-      }));
-      return { trades: filled, source: "paper-broker" };
-    }
+    // Broker removed — no trades source from paper broker
     if (!runtime) return { trades: [] };
     const portfolioAgent = runtime.getAgentRegistry().get("portfolio");
     if (!portfolioAgent || typeof (portfolioAgent as any).getFillHistory !== "function") {
@@ -674,24 +661,18 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   // -------------------------------------------------------------------------
-  // OpenCode CLI Path Gateways (deprecated — kept for backward compatibility)
+  // OpenCode CLI Path Gateways (removed — OpenCode Gateway deleted)
   // -------------------------------------------------------------------------
   app.get("/api/opencode/cli-path", async () => {
-    const gw = getOpencodeGateway();
-    if (!gw) return { cliPath: null, error: "opencode gateway not available" };
-    const info = await gw.getCliInfo();
-    return { ...info, gateway: "opencode-cli" };
+    return { cliPath: null, error: "opencode gateway removed" };
   });
 
   app.get("/api/opencode/gateway/stats", async () => {
-    const gw = getOpencodeGateway();
-    return { gateway: gw ? gw.getStats() : null };
+    return { gateway: null };
   });
 
   app.get("/api/opencode/paths", async () => {
-    const gw = getOpencodeGateway();
-    if (!gw) return { error: "opencode gateway not available" };
-    return gw.listPathGateways();
+    return { error: "opencode gateway removed" };
   });
 
   app.get<{
@@ -717,41 +698,22 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   app.get("/api/gateways", async () => {
     const gw = getGateway();
     const cgw = getClineGateway();
-    const ogw = getOpencodeGateway();
     return {
       financeGateway: gw ? { stats: gw.getStats(), config: gw.getConfig() } : null,
       clineGateway: cgw ? cgw.listPathGateways() : null,
-      opencodeGateway: ogw ? ogw.listPathGateways() : null,
+      opencodeGateway: null,
       paths: {
         finance: ["/api/gateway/trade", "/api/gateway/stats"],
         cline: ["/api/cline/cli-path", "/api/cline/paths", "/api/cline/run", "/api/cline/gateway/stats"],
-        opencode: ["/api/opencode/cli-path", "/api/opencode/paths", "/api/opencode/models", "/api/opencode/run", "/api/opencode/gateway/stats"],
+        opencode: [],
       },
     };
   });
 
   app.post<{
     Body: { command?: string; args?: string[]; agentId?: string; correlationId?: string };
-  }>("/api/opencode/run", async (request, reply) => {
-    const ogw = getOpencodeGateway();
-    if (!ogw) return reply.status(503).send({ error: "opencode gateway not available" });
-    const body = request.body ?? {};
-    const args = body.args ?? (body.command ? body.command.trim().split(/\s+/).filter(Boolean) : []);
-    if (args.length === 0) {
-      return reply.status(400).send({ error: "command or args required (e.g. {\"args\":[\"--version\"]})" });
-    }
-    try {
-      const result = await ogw.run({
-        command: body.command ?? args.join(" "),
-        args,
-        agentId: body.agentId ?? "api",
-        correlationId: body.correlationId,
-      });
-      const status = result.gated.allowed ? (result.ok ? 200 : 500) : 403;
-      return reply.status(status).send({ result });
-    } catch (err) {
-      return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
-    }
+  }>("/api/opencode/run", async (_request, reply) => {
+    return reply.status(503).send({ error: "opencode gateway removed" });
   });
 
   // -------------------------------------------------------------------------
@@ -1121,14 +1083,9 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/portfolio/positions — single truth: PaperBroker
+  // GET /api/portfolio/positions — fallback PortfolioAgent
   // -------------------------------------------------------------------------
   app.get("/api/portfolio/positions", async () => {
-    const broker = getPaperBroker();
-    if (broker) {
-      const pf = broker.getPortfolio();
-      return { positions: pf.positions.map((p) => ({ symbol: p.symbol, qty: p.quantity, entryPrice: p.entryPrice, currentPrice: p.currentPrice, unrealizedPnl: p.unrealizedPnl })), source: "paper-broker" };
-    }
     const runtime = getRuntime();
     if (!runtime) return { positions: [] };
     const portfolioAgent = runtime.getAgentRegistry().get("portfolio");

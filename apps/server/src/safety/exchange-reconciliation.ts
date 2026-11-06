@@ -8,7 +8,6 @@ import { v4 as uuidv4 } from "uuid";
 import type { TypedEventBus } from "@finance/core";
 import type { KillSwitch } from "./kill-switch.js";
 import type { OrderManager } from "../order-manager/order-manager.js";
-import type { PaperBroker } from "../broker/paper-broker.js";
 
 export type DiscrepancyType =
   | "POSITION_MISMATCH"
@@ -247,7 +246,7 @@ export class ExchangeReconciliation {
     report: ReconciliationReport,
     deps: {
       killSwitch?: KillSwitch;
-      broker?: PaperBroker;
+      broker?: any;
       orderManager?: OrderManager;
     }
   ): Promise<{ mitigated: boolean; actionsTaken: string[] }> {

@@ -5,7 +5,6 @@
 
 import type { TypedEventBus } from "@finance/core";
 import type { OrderManager } from "../order-manager/order-manager.js";
-import type { PaperBroker } from "../broker/paper-broker.js";
 import type { KillSwitch } from "./kill-switch.js";
 
 export type LifecycleState = "INITIALIZED" | "RUNNING" | "DRAINING" | "STOPPED";
@@ -25,7 +24,7 @@ export class LifecycleManager {
   private config: LifecycleConfig;
   private bus?: TypedEventBus;
   private orderManager?: OrderManager;
-  private broker?: PaperBroker;
+  private broker?: any;
   private killSwitch?: KillSwitch;
   private inflightPromises = new Set<Promise<unknown>>();
   private cleanupHandlers: Array<() => Promise<void> | void> = [];
@@ -33,7 +32,7 @@ export class LifecycleManager {
   constructor(deps?: {
     bus?: TypedEventBus;
     orderManager?: OrderManager;
-    broker?: PaperBroker;
+    broker?: any;
     killSwitch?: KillSwitch;
     config?: Partial<LifecycleConfig>;
   }) {
