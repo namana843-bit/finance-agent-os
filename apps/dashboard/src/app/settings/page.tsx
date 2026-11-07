@@ -317,7 +317,6 @@ export default function SettingsPage() {
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/[0.05] pt-3">
             <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-neutral-600">Original screens</span>
             {[
-              { label: "Agent Team", route: "/team" },
               { label: "Coding Agents", route: "/coding" },
             ].map((item) => (
               <button
