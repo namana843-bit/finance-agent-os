@@ -16,6 +16,7 @@ import type {
   CliValidationResult,
 } from "../types.js";
 import { CliAdapterBase } from "../adapter-base.js";
+import { execFile } from "node:child_process";
 import {
   OPENCODE_ALLOWED_COMMANDS,
   OPENCODE_DEFAULT_RUN_ARGS,
@@ -113,6 +114,32 @@ export class OpenCodeAdapter extends CliAdapterBase {
     return super.parseLine(line);
   }
 
+  /** OpenCode auth: `opencode providers` checks authenticated providers. */
+  async authenticate(): Promise<{ ok: boolean; status: "unknown" | "required" | "authenticated" | "error"; message?: string }> {
+    const resolved = await this.resolveExecutable();
+    if (!resolved) {
+      return { ok: false, status: "required", message: "OpenCode executable not found" };
+    }
+    try {
+      const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+        execFile(resolved, ["providers"], { timeout: 10_000, windowsHide: true }, (error, stdout, stderr) => {
+          if (error) resolve({ stdout: stdout ?? "", stderr: stderr ?? "" });
+          else resolve({ stdout: stdout ?? "", stderr: stderr ?? "" });
+        });
+      });
+      const combined = `${stdout} ${stderr}`.toLowerCase();
+      if (combined.includes("authenticated") || combined.includes("configured") || combined.includes("valid") || combined.includes("active")) {
+        return { ok: true, status: "authenticated", message: "OpenCode has authenticated providers" };
+      }
+      if (combined.includes("not authenticated") || combined.includes("no providers") || combined.includes("login required") || combined.includes("unauthenticated")) {
+        return { ok: false, status: "required", message: "OpenCode authentication required — run `opencode` interactively to sign in" };
+      }
+      return { ok: true, status: "unknown", message: "Could not determine OpenCode auth status" };
+    } catch (err) {
+      return { ok: false, status: "error", message: err instanceof Error ? err.message : "Auth check failed" };
+    }
+  }
+
   /** Rich validation: resolver candidates + `--version` (incl. `npx` fallback). */
   override async validateInstallation(): Promise<CliValidationResult> {
     const meta = this.getMetadata();
@@ -122,12 +149,16 @@ export class OpenCodeAdapter extends CliAdapterBase {
       2500,
     );
     const ok = resolved !== null || version !== null;
+    const auth = await this.authenticate();
     return {
       adapterId: meta.id,
       ok,
       executable: meta.executable,
       resolvedPath: resolved,
       version,
+      authStatus: auth.status,
+      lifecycleStatus: resolved ? (auth.status === "authenticated" ? "ready" : auth.status === "required" ? "auth_required" : "installed") : "not_installed",
+      authMessage: auth.message,
       ...(ok
         ? {}
         : {

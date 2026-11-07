@@ -63,6 +63,20 @@ export interface CliValidationResult {
   version: string | null;
   error?: string;
   checkedAt: number;
+  /** Authentication status: "unknown" | "required" | "authenticated" | "error". */
+  authStatus: "unknown" | "required" | "authenticated" | "error";
+  /** Detailed CLI lifecycle status. */
+  lifecycleStatus:
+    | "not_installed"
+    | "installed"
+    | "auth_required"
+    | "authenticated"
+    | "connected"
+    | "ready"
+    | "execution_failed"
+    | "unavailable";
+  /** Auth diagnostic message (never contains credentials). */
+  authMessage?: string;
 }
 
 export interface CliStartOptions {
@@ -213,6 +227,8 @@ export interface CliAdapter extends CliAdapterHooks {
   getMetadata(): CliMetadata;
   /** Validate installation: executable present + optional version probe. */
   validateInstallation(): Promise<CliValidationResult>;
+  /** Authenticate: check credentials/auth status without exposing secrets. */
+  authenticate(): Promise<{ ok: boolean; status: "unknown" | "required" | "authenticated" | "error"; message?: string }>;
   /** Resolve the executable to an absolute path when possible. */
   resolveExecutable(command?: string): Promise<string | null>;
   /** Base argv for a managed session (before per-task prompt substitution). */

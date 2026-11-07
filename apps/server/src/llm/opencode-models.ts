@@ -34,9 +34,45 @@ export interface OpencodeModelsResponse {
   error?: string;
 }
 
+export interface PythonDiscoveryOptions {
+  /** Preferred Python executable (defaults to "python3", falls back to "python"). */
+  pythonExecutable?: string;
+  /** Enable Python-based model discovery (default: true). */
+  enabled?: boolean;
+}
+
 let inMemoryCache: OpencodeModelsResponse | null = null;
 let inMemoryCacheTime = 0;
 const CACHE_TTL_MS = 120_000; // 2 minutes in memory
+
+/** Discover the Python executable to use: prefer python3, then python. */
+export function resolvePythonExecutable(opts?: PythonDiscoveryOptions): string | null {
+  if (opts?.pythonExecutable) return opts.pythonExecutable;
+  if (opts?.enabled === false) return null;
+  // Prefer python3 on POSIX, fall back to python
+  return process.platform === "win32" ? "python" : "python3";
+}
+
+/** Check whether a Python executable is available on PATH. */
+export async function isPythonAvailable(pythonExecutable = "python3"): Promise<boolean> {
+  try {
+    const { stdout } = await promisify(execFile)(pythonExecutable, ["--version"], {
+      timeout: 5_000,
+      windowsHide: true,
+    });
+    return Boolean(stdout?.trim());
+  } catch {
+    try {
+      const { stdout } = await promisify(execFile)("python", ["--version"], {
+        timeout: 5_000,
+        windowsHide: true,
+      });
+      return Boolean(stdout?.trim());
+    } catch {
+      return false;
+    }
+  }
+}
 
 function findWorkspaceRoot(): string {
   let cur = process.cwd();
@@ -54,13 +90,20 @@ function findWorkspaceRoot(): string {
 /**
  * Executes list_opencode_models.py or reads the cached data to return
  * all available OpenCode models for Finance Agent OS.
+ *
+ * Prefers python3 over python, supports configurable Python executable,
+ * handles missing Python gracefully, and never crashes the server.
  */
-export async function getOpencodeModels(options: { refresh?: boolean } = {}): Promise<OpencodeModelsResponse> {
+export async function getOpencodeModels(options: {
+  refresh?: boolean;
+  pythonDiscovery?: PythonDiscoveryOptions;
+} = {}): Promise<OpencodeModelsResponse> {
   const now = Date.now();
   if (!options.refresh && inMemoryCache && now - inMemoryCacheTime < CACHE_TTL_MS) {
     return inMemoryCache;
   }
 
+  const pythonExec = resolvePythonExecutable(options.pythonDiscovery);
   const workspaceRoot = findWorkspaceRoot();
   const cacheFilePath = path.join(workspaceRoot, ".data", "opencode-models-cache.json");
   const scriptPath = path.join(workspaceRoot, "list_opencode_models.py");
@@ -90,13 +133,44 @@ export async function getOpencodeModels(options: { refresh?: boolean } = {}): Pr
   }
 
   // Execute python list_opencode_models.py --json
+  // Prefer python3; handle missing Python gracefully.
+  if (!pythonExec || !(await isPythonAvailable(pythonExec))) {
+    // If execution fails but disk cache exists, fallback to disk cache
+    if (existsSync(cacheFilePath)) {
+      try {
+        const raw = readFileSync(cacheFilePath, "utf8");
+        const parsed = JSON.parse(raw);
+        return {
+          available: Boolean(parsed.available),
+          cliPath: parsed.cliPath ?? null,
+          total: parsed.total ?? (parsed.models ? parsed.models.length : 0),
+          models: parsed.models ?? [],
+          grouped: parsed.grouped ?? {},
+          projectConfig: parsed.projectConfig,
+          cachedAt: parsed.cached_at ? Math.round(parsed.cached_at * 1000) : now,
+          error: "Python executable not found — model discovery unavailable",
+        };
+      } catch {
+        // Fall through
+      }
+    }
+    return {
+      available: false,
+      cliPath: null,
+      total: 0,
+      models: [],
+      grouped: {},
+      error: "Python executable not found — install python3 or set OPencode_PYTHON_EXECUTABLE",
+    };
+  }
+
   try {
     const args = [scriptPath, "--json"];
     if (options.refresh) {
       args.push("--refresh");
     }
 
-    const { stdout } = await execFileAsync("python", args, {
+    const { stdout } = await execFileAsync(pythonExec, args, {
       cwd: workspaceRoot,
       timeout: 60_000,
       windowsHide: true,
@@ -131,6 +205,7 @@ export async function getOpencodeModels(options: { refresh?: boolean } = {}): Pr
           grouped: parsed.grouped ?? {},
           projectConfig: parsed.projectConfig,
           cachedAt: parsed.cached_at ? Math.round(parsed.cached_at * 1000) : now,
+          error: err instanceof Error ? err.message : String(err),
         };
       } catch {
         // Fall through
@@ -156,6 +231,7 @@ export async function updateOpencodeProjectModel(opts: {
   model: string;
   agentId?: string;
   applyToAll?: boolean;
+  pythonDiscovery?: PythonDiscoveryOptions;
 }): Promise<OpencodeModelsResponse> {
   const workspaceRoot = findWorkspaceRoot();
   const configPath = path.join(workspaceRoot, "opencode.json");
@@ -207,6 +283,5 @@ export async function updateOpencodeProjectModel(opts: {
     }
   }
 
-  return getOpencodeModels({ refresh: true });
+  return getOpencodeModels({ refresh: true, pythonDiscovery: opts.pythonDiscovery });
 }
-

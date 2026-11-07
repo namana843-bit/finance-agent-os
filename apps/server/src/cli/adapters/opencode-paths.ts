@@ -85,6 +85,10 @@ export function opencodeCandidatePaths(): string[] {
   );
   // Unix global
   candidates.push("/usr/local/bin/opencode", "/usr/bin/opencode", "/opt/homebrew/bin/opencode");
+  // Custom provider-runtime directory (VPS deployments)
+  candidates.push(
+    path.join(home, ".config", "OpenBot", "provider-runtimes", "opencode", "bin", "opencode"),
+  );
   return candidates;
 }
 

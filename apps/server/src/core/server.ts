@@ -3,6 +3,8 @@ import cors from "@fastify/cors";
 import { TypedEventBus, type EventBusOptions } from "@finance/core";
 import type { FinanceEvent, HistoryFilter } from "@finance/shared";
 import { getRuntime, getGateway, getAuditLogger, getMarketState, getPortfolioHistory, getStrategyRegistry, getClineGateway, getChat, getApprovals, getLlm, getDialogueEngine, getProviderRegistry, getEngineManager, getFinanceToolRegistry, getAgentRuntime, getAgentMemory, getCliManager, getTradeWorkflow } from "./runtime.js";
+import { runCliProcess } from "../cli/process-runner.js";
+import type { CliValidationResult } from "../cli/types.js";
 import { ApprovalError } from "../approvals/types.js";
 import { getCodingWorkspace } from "../coding/index.js";
 import { registerCodingRoutes } from "../coding/routes.js";
@@ -2387,6 +2389,143 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       status: runtime.getStatus(agent.id),
     }));
     return { defaultProvider, assignments };
+  });
+
+  // -------------------------------------------------------------------------
+  // CLI Diagnostic Report — production hardening
+  //
+  // Runs the full CLI validation pipeline for every adapter:
+  //   1. Executable detection
+  //   2. Version detection
+  //   3. Authentication validation
+  //   4. Model discovery where supported (OpenCode)
+  //   5. Real non-interactive test prompt (timeout-bounded)
+  //   6. Response capture + exit-code validation
+  // Returns a diagnostic report — never fabricates successful results.
+  // -------------------------------------------------------------------------
+  app.get("/api/cli/diagnostic", async (request, reply) => {
+    const cli = getCliManager();
+    const adapters = cli.listMetadata();
+    const results: Array<{
+      adapterId: string;
+      name: string;
+      executable: string;
+      installation: CliValidationResult;
+      authentication: { ok: boolean; status: string; message?: string } | null;
+      modelDiscovery: { available: boolean; total: number; models: string[]; error?: string } | null;
+      executionTest: { ok: boolean; exitCode: number | null; output: string; error?: string; durationMs: number } | null;
+      overall: "not_installed" | "installed" | "auth_required" | "authenticated" | "connected" | "ready" | "execution_failed" | "unavailable";
+    }> = [];
+
+    for (const meta of adapters) {
+      const installation = await cli.validate(meta.id, { force: true });
+
+      // Authentication check
+      let authentication: { ok: boolean; status: string; message?: string } | null = null;
+      try {
+        authentication = await cli.get(meta.id)?.authenticate() ?? { ok: false, status: "unknown", message: "adapter not found" };
+      } catch (err) {
+        authentication = { ok: false, status: "error", message: err instanceof Error ? err.message : String(err) };
+      }
+
+      // Model discovery (OpenCode only)
+      let modelDiscovery: { available: boolean; total: number; models: string[]; error?: string } | null = null;
+      if (meta.id === "opencode") {
+        try {
+          const { getOpencodeModels } = await import("../llm/opencode-models.js");
+          const models = await getOpencodeModels({ refresh: false });
+          modelDiscovery = {
+            available: models.available,
+            total: models.total,
+            models: models.models,
+            error: models.error,
+          };
+        } catch (err) {
+          modelDiscovery = {
+            available: false,
+            total: 0,
+            models: [],
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }
+
+      // Real execution test (timeout-bounded, non-interactive)
+      let executionTest: { ok: boolean; exitCode: number | null; output: string; error?: string; durationMs: number } | null = null;
+      if (installation.resolvedPath) {
+        const start = Date.now();
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30_000);
+          const result = await runCliProcess(
+            {
+              command: installation.resolvedPath,
+              args: meta.defaultArgs.map((a) => a.split("{prompt}").join("diagnostic test")),
+              timeoutMs: 30_000,
+              signal: controller.signal,
+            },
+            { onStdoutChunk: () => {}, onStderrChunk: () => {} },
+          );
+          clearTimeout(timeoutId);
+          executionTest = {
+            ok: result.exitCode === 0 && !result.timedOut && !result.cancelled,
+            exitCode: result.exitCode,
+            output: result.stdout,
+            error: result.spawnError || (result.timedOut ? "execution timed out" : result.cancelled ? "execution cancelled" : undefined),
+            durationMs: Date.now() - start,
+          };
+        } catch (err) {
+          executionTest = {
+            ok: false,
+            exitCode: null,
+            output: "",
+            error: err instanceof Error ? err.message : String(err),
+            durationMs: Date.now() - start,
+          };
+        }
+      }
+
+      // Overall status
+      let overall: "not_installed" | "installed" | "auth_required" | "authenticated" | "connected" | "ready" | "execution_failed" | "unavailable";
+      if (!installation.resolvedPath) {
+        overall = "not_installed";
+      } else if (authentication.status === "required") {
+        overall = "auth_required";
+      } else if (authentication.status === "authenticated" && executionTest?.ok) {
+        overall = "ready";
+      } else if (authentication.status === "authenticated") {
+        overall = "authenticated";
+      } else if (authentication.status === "error") {
+        overall = "execution_failed";
+      } else {
+        overall = "installed";
+      }
+
+      results.push({
+        adapterId: meta.id,
+        name: meta.name,
+        executable: meta.executable,
+        installation,
+        authentication,
+        modelDiscovery,
+        executionTest,
+        overall,
+      });
+    }
+
+    return {
+      timestamp: Date.now(),
+      results,
+      summary: {
+        total: results.length,
+        ready: results.filter((r) => r.overall === "ready").length,
+        installed: results.filter((r) => r.overall === "installed").length,
+        authRequired: results.filter((r) => r.overall === "auth_required").length,
+        notInstalled: results.filter((r) => r.overall === "not_installed").length,
+        executionFailed: results.filter((r) => r.overall === "execution_failed").length,
+        unavailable: results.filter((r) => r.overall === "unavailable").length,
+      },
+    };
   });
 
   /** Override a single agent's provider (built-ins cannot be changed). */

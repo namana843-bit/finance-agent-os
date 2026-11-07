@@ -14,6 +14,7 @@
 
 import type { CliStreamChunk, CliValidationResult } from "../types.js";
 import { CliAdapterBase } from "../adapter-base.js";
+import { execFile } from "node:child_process";
 
 export const CODEX_DEFAULT_ARGS = ["exec", "--json", "{prompt}"] as const;
 
@@ -156,6 +157,32 @@ export class CodexAdapter extends CliAdapterBase {
     return next;
   }
 
+  /** Codex auth: `codex` with no args or `codex whoami` checks auth status. */
+  async authenticate(): Promise<{ ok: boolean; status: "unknown" | "required" | "authenticated" | "error"; message?: string }> {
+    const resolved = await this.resolveExecutable();
+    if (!resolved) {
+      return { ok: false, status: "required", message: "Codex executable not found" };
+    }
+    try {
+      const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+        execFile(resolved, ["whoami"], { timeout: 10_000, windowsHide: true }, (error, stdout, stderr) => {
+          if (error) resolve({ stdout: stdout ?? "", stderr: stderr ?? "" });
+          else resolve({ stdout: stdout ?? "", stderr: stderr ?? "" });
+        });
+      });
+      const combined = `${stdout} ${stderr}`.toLowerCase();
+      if (combined.includes("authenticated") || combined.includes("logged in") || combined.includes("valid") || combined.includes("@")) {
+        return { ok: true, status: "authenticated", message: "Codex is authenticated" };
+      }
+      if (combined.includes("not authenticated") || combined.includes("login required") || combined.includes("unauthenticated") || combined.includes("sign in")) {
+        return { ok: false, status: "required", message: "Codex authentication required — run `codex` interactively or set CODEX_API_KEY" };
+      }
+      return { ok: true, status: "unknown", message: "Could not determine Codex auth status" };
+    } catch (err) {
+      return { ok: false, status: "error", message: err instanceof Error ? err.message : "Auth check failed" };
+    }
+  }
+
   override parseLine(line: string): CliStreamChunk | null {
     const chunks = parseCodexJsonLine(line);
     if (chunks.length === 0) return super.parseLine(line);
@@ -174,10 +201,16 @@ export class CodexAdapter extends CliAdapterBase {
 
   override async validateInstallation(): Promise<CliValidationResult> {
     const base = await super.validateInstallation();
+    const auth = await this.authenticate();
     if (!base.ok && base.error) {
-      return { ...base, error: `${base.error}. ${this.getMetadata().authHint ?? ""}`.trim() };
+      return { ...base, error: `${base.error}. ${this.getMetadata().authHint ?? ""}`.trim(), authStatus: auth.status, lifecycleStatus: "not_installed", authMessage: auth.message };
     }
-    return base;
+    return {
+      ...base,
+      authStatus: auth.status,
+      lifecycleStatus: auth.status === "authenticated" ? "ready" : auth.status === "required" ? "auth_required" : "installed",
+      authMessage: auth.message,
+    };
   }
 }
 

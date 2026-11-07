@@ -193,6 +193,9 @@ export class CodingProviderRegistry {
         executable: this.cli.get(id)?.getMetadata().executable ?? "",
         resolvedPath: null,
         version: null,
+        authStatus: "error",
+        lifecycleStatus: "execution_failed",
+        authMessage: err instanceof Error ? err.message : String(err),
         error: err instanceof Error ? err.message : String(err),
         checkedAt: Date.now(),
       };

@@ -33,6 +33,7 @@
 
 import type { CliStreamChunk, CliValidationResult } from "../types.js";
 import { CliAdapterBase } from "../adapter-base.js";
+import { execFile } from "node:child_process";
 import {
   CLINE_ALLOWED_COMMANDS,
   CLINE_DEFAULT_RUN_ARGS,
@@ -161,18 +162,48 @@ export class ClineAdapter extends CliAdapterBase {
     return null;
   }
 
+  /** Cline auth: `cline auth` returns exit code 0 when authenticated. */
+  async authenticate(): Promise<{ ok: boolean; status: "unknown" | "required" | "authenticated" | "error"; message?: string }> {
+    const resolved = await this.resolveExecutable();
+    if (!resolved) {
+      return { ok: false, status: "required", message: "Cline executable not found" };
+    }
+    try {
+      const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+        execFile(resolved, ["auth", "--status"], { timeout: 10_000, windowsHide: true }, (error, stdout, stderr) => {
+          if (error) resolve({ stdout: stdout ?? "", stderr: stderr ?? "" });
+          else resolve({ stdout: stdout ?? "", stderr: stderr ?? "" });
+        });
+      });
+      const combined = `${stdout} ${stderr}`.toLowerCase();
+      if (combined.includes("authenticated") || combined.includes("logged in") || combined.includes("valid")) {
+        return { ok: true, status: "authenticated", message: "Cline is authenticated" };
+      }
+      if (combined.includes("not authenticated") || combined.includes("login required") || combined.includes("unauthenticated")) {
+        return { ok: false, status: "required", message: "Cline authentication required — run `cline auth`" };
+      }
+      return { ok: true, status: "unknown", message: "Could not determine Cline auth status" };
+    } catch (err) {
+      return { ok: false, status: "error", message: err instanceof Error ? err.message : "Auth check failed" };
+    }
+  }
+
   /** Rich validation: resolver candidates + `--version` via PATH fallback. */
   override async validateInstallation(): Promise<CliValidationResult> {
     const meta = this.getMetadata();
     const resolved = await this.resolveExecutable();
     const version = await probeClineVersion(resolved ?? meta.executable, 2500);
     const ok = resolved !== null || version !== null;
+    const auth = await this.authenticate();
     return {
       adapterId: meta.id,
       ok,
       executable: meta.executable,
       resolvedPath: resolved,
       version,
+      authStatus: auth.status,
+      lifecycleStatus: resolved ? (auth.status === "authenticated" ? "ready" : auth.status === "required" ? "auth_required" : "installed") : "not_installed",
+      authMessage: auth.message,
       ...(ok
         ? {}
         : {

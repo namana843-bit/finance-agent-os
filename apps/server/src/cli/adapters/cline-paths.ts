@@ -89,6 +89,10 @@ export function clineCandidatePaths(): string[] {
   );
   // Unix global
   candidates.push("/usr/local/bin/cline", "/usr/bin/cline", "/opt/homebrew/bin/cline");
+  // Custom provider-runtime directory (VPS deployments)
+  candidates.push(
+    path.join(home, ".config", "OpenBot", "provider-runtimes", "cline", "bin", "cline"),
+  );
   return candidates;
 }
 

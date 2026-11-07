@@ -141,9 +141,15 @@ export abstract class CliAdapterBase implements CliAdapter {
     });
   }
 
+  /** Default auth check: unknown until an adapter overrides it. */
+  async authenticate(): Promise<{ ok: boolean; status: "unknown" | "required" | "authenticated" | "error"; message?: string }> {
+    return { ok: true, status: "unknown", message: "Auth check not implemented for this adapter" };
+  }
+
   async validateInstallation(): Promise<CliValidationResult> {
     const meta = this.metadata;
     const resolved = await this.resolveExecutable();
+    const auth = await this.authenticate();
     if (!resolved) {
       return {
         adapterId: meta.id,
@@ -151,6 +157,9 @@ export abstract class CliAdapterBase implements CliAdapter {
         executable: meta.executable,
         resolvedPath: null,
         version: null,
+        authStatus: auth.status,
+        lifecycleStatus: "not_installed",
+        authMessage: auth.message,
         error: `Executable '${meta.executable}' not found (PATH, env override, or adapter candidates)`,
         checkedAt: Date.now(),
       };
@@ -162,6 +171,9 @@ export abstract class CliAdapterBase implements CliAdapter {
       executable: meta.executable,
       resolvedPath: resolved,
       version,
+      authStatus: auth.status,
+      lifecycleStatus: auth.status === "authenticated" ? "ready" : auth.status === "required" ? "auth_required" : "installed",
+      authMessage: auth.message,
       checkedAt: Date.now(),
     };
   }

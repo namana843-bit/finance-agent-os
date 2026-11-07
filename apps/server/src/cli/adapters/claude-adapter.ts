@@ -14,6 +14,7 @@
 
 import type { CliStreamChunk, CliValidationResult } from "../types.js";
 import { CliAdapterBase } from "../adapter-base.js";
+import { execFile } from "node:child_process";
 
 export const CLAUDE_DEFAULT_ARGS = [
   "-p",
@@ -169,12 +170,42 @@ export class ClaudeAdapter extends CliAdapterBase {
     return false;
   }
 
+  /** Claude auth: `claude` with no args or `claude whoami` checks auth status. */
+  async authenticate(): Promise<{ ok: boolean; status: "unknown" | "required" | "authenticated" | "error"; message?: string }> {
+    const resolved = await this.resolveExecutable();
+    if (!resolved) {
+      return { ok: false, status: "required", message: "Claude Code executable not found" };
+    }
+    try {
+      const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+        execFile(resolved, ["--version"], { timeout: 10_000, windowsHide: true }, (error, stdout, stderr) => {
+          if (error) resolve({ stdout: stdout ?? "", stderr: stderr ?? "" });
+          else resolve({ stdout: stdout ?? "", stderr: stderr ?? "" });
+        });
+      });
+      const combined = `${stdout} ${stderr}`.toLowerCase();
+      if (combined.includes("not authenticated") || combined.includes("login required") || combined.includes("unauthenticated") || combined.includes("sign in")) {
+        return { ok: false, status: "required", message: "Claude Code authentication required — run `claude` interactively" };
+      }
+      // If --version works, the binary is present; auth status unknown but executable works
+      return { ok: true, status: "unknown", message: "Claude Code binary found; auth status unknown" };
+    } catch (err) {
+      return { ok: false, status: "error", message: err instanceof Error ? err.message : "Auth check failed" };
+    }
+  }
+
   override async validateInstallation(): Promise<CliValidationResult> {
     const base = await super.validateInstallation();
+    const auth = await this.authenticate();
     if (!base.ok && base.error) {
-      return { ...base, error: `${base.error}. ${this.getMetadata().authHint ?? ""}`.trim() };
+      return { ...base, error: `${base.error}. ${this.getMetadata().authHint ?? ""}`.trim(), authStatus: auth.status, lifecycleStatus: "not_installed", authMessage: auth.message };
     }
-    return base;
+    return {
+      ...base,
+      authStatus: auth.status,
+      lifecycleStatus: auth.status === "authenticated" ? "ready" : auth.status === "required" ? "auth_required" : "installed",
+      authMessage: auth.message,
+    };
   }
 }
 

@@ -532,6 +532,8 @@ export class CliManager extends EventEmitter {
         executable: "",
         resolvedPath: null,
         version: null,
+        authStatus: "unknown",
+        lifecycleStatus: "not_installed",
         error: `Unknown CLI adapter '${id}'`,
         checkedAt: Date.now(),
       };
@@ -550,6 +552,9 @@ export class CliManager extends EventEmitter {
         executable: adapter.getMetadata().executable,
         resolvedPath: null,
         version: null,
+        authStatus: "error",
+        lifecycleStatus: "execution_failed",
+        authMessage: err instanceof Error ? err.message : String(err),
         error: err instanceof Error ? err.message : String(err),
         checkedAt: Date.now(),
       };

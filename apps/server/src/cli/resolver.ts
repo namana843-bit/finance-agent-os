@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { stat, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 
@@ -13,6 +13,17 @@ import { isAbsolute, join, resolve as resolvePath } from "node:path";
  *
  * Performance: results are cached in-memory (60s positive, 10s negative) so
  * per-chat resolution does not spawn `where/which` + dozens of `stat` calls.
+ *
+ * VPS hardening (per root-cause fix):
+ *   • Resolves symlinks to their actual executable path (never trusts a
+ *     symlink alone).
+   • Validates executable permissions (must be executable by the service user).
+ *   • Searches the PATH inherited by the running service (systemd may inherit
+     a restricted PATH).
+ *   • Supports custom provider-runtime directories
+     (`/home/ubuntu/.config/OpenBot/provider-runtimes/<cli>/bin/<cli>`).
+ *   • Never reports installed=true based only on a symlink existing — must
+     stat the resolved target and confirm it's an executable file.
  */
 const resolveCache = new Map<string, { path: string | null; at: number }>();
 const POSITIVE_TTL_MS = 60_000;
@@ -23,6 +34,8 @@ export interface ResolveCliPathOptions {
   extraCandidates?: string[];
   /** Explicit env var holding a path override (defaults to `<COMMAND>_CLI_PATH`). */
   envVar?: string;
+  /** Extra directories to search for provider-runtime installations. */
+  providerRuntimeDirs?: string[];
 }
 
 export interface CliPathResolution {
@@ -82,6 +95,8 @@ function commonCandidates(command: string): string[] {
     `${userHome}/.cargo/bin/${command}`,
     `${userHome}/.local/bin/${command}`,
     `${userHome}/.npm-global/bin/${command}`,
+    // Custom provider-runtime directories (VPS deployments)
+    `${userHome}/.config/OpenBot/provider-runtimes/${command}/bin/${command}`,
   ];
 }
 
@@ -99,8 +114,6 @@ async function probePath(command: string): Promise<string | null> {
         .filter((line) => line.length > 0);
 
       if (process.platform === "win32") {
-        // Prefer native .exe over .cmd/.bat/.ps1 shims: .exe runs via execFile
-        // directly, shims need shell:true (cmd.exe startup overhead per chat).
         const exe = lines.find((l) => /\.exe$/i.test(l));
         if (exe) {
           resolve(exe);
@@ -115,22 +128,26 @@ async function probePath(command: string): Promise<string | null> {
   });
 }
 
-async function scanPathEnv(command: string): Promise<string | null> {
-  const pathDirs = (process.env.PATH || "").split(process.platform === "win32" ? ";" : ":");
-  const extensions = process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
-  for (const dir of pathDirs) {
-    if (!dir || dir.trim() === "") continue;
-    for (const ext of extensions) {
-      const fullPath = join(dir.trim(), `${command}${ext}`);
-      try {
-        const st = await stat(fullPath);
-        if (st.isFile()) return fullPath;
-      } catch {
-        // Continue
-      }
-    }
+/** Verify a path resolves to a real, executable file (symlink-safe). */
+async function isExecutableFile(filePath: string): Promise<boolean> {
+  try {
+    const st = await stat(filePath);
+    if (!st.isFile()) return false;
+    // Check execute permission for owner/group/other
+    const mode = st.mode;
+    return (mode & 0o111) !== 0;
+  } catch {
+    return false;
   }
-  return null;
+}
+
+/** Resolve symlinks to their actual target path, validating it exists. */
+async function resolveSymlinkSafe(filePath: string): Promise<string | null> {
+  try {
+    return await realpath(filePath);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -152,56 +169,133 @@ export async function resolveCliExecutable(
 
   const raw = command.trim().replace(/^"(.*)"$/, "$1");
   const envOverride = cliPathEnvOverride(raw, opts?.envVar);
-  const candidates = [...(opts?.extraCandidates ?? []), ...commonCandidates(raw)];
+  const extraCandidates = opts?.extraCandidates ?? [];
+  const runtimeDirs = opts?.providerRuntimeDirs ?? [];
+  const candidates = [...extraCandidates, ...commonCandidates(raw)];
 
+  // 1. Env override first — must resolve to a real executable file
   if (envOverride) {
     try {
       const st = await stat(resolvePath(envOverride));
       if (st.isFile()) {
-        return { ...base, resolvedPath: resolvePath(envOverride), envOverride, candidates };
+        const resolved = await resolveSymlinkSafe(envOverride);
+        const finalPath = resolved ?? envOverride;
+        if (await isExecutableFile(finalPath)) {
+          return { ...base, resolvedPath: finalPath, envOverride, candidates };
+        }
       }
     } catch {
       // Fall through to normal resolution
     }
   }
 
+  // 2. Absolute or relative path specified directly
   if (isAbsolute(raw) || raw.includes("/") || raw.includes("\\") || raw.startsWith(".")) {
     try {
       const st = await stat(resolvePath(raw));
-      if (st.isFile()) return { ...base, resolvedPath: resolvePath(raw), envOverride, candidates };
+      if (st.isFile()) {
+        const resolved = await resolveSymlinkSafe(resolvePath(raw));
+        const finalPath = resolved ?? resolvePath(raw);
+        if (await isExecutableFile(finalPath)) {
+          return { ...base, resolvedPath: finalPath, envOverride, candidates };
+        }
+      }
     } catch {
       // Continue auto-discovery
     }
   }
 
-  // On Windows, prefer candidate .exe binaries over .cmd/.bat/.ps1 shims
+  // 3. On Windows, prefer candidate .exe binaries over .cmd/.bat/.ps1 shims
   if (process.platform === "win32") {
     for (const candidate of candidates) {
       if (candidate.toLowerCase().endsWith(".exe")) {
         try {
           const st = await stat(candidate);
-          if (st.isFile()) return { ...base, resolvedPath: candidate, envOverride, candidates };
+          if (st.isFile()) {
+            const resolved = await resolveSymlinkSafe(candidate);
+            const finalPath = resolved ?? candidate;
+            if (await isExecutableFile(finalPath)) {
+              return { ...base, resolvedPath: finalPath, envOverride, candidates };
+            }
+          }
         } catch {}
       }
     }
   }
 
-  const fromProbe = await probePath(raw);
-  if (fromProbe) return { ...base, resolvedPath: fromProbe, envOverride, candidates };
+  // 4. Custom provider-runtime directories (VPS deployments)
+  for (const runtimeDir of runtimeDirs) {
+    const runtimeBin = join(runtimeDir, raw, "bin", raw);
+    try {
+      const st = await stat(runtimeBin);
+      if (st.isFile()) {
+        const resolved = await resolveSymlinkSafe(runtimeBin);
+        const finalPath = resolved ?? runtimeBin;
+        if (await isExecutableFile(finalPath)) {
+          return { ...base, resolvedPath: finalPath, envOverride, candidates };
+        }
+      }
+    } catch {
+      // Continue checking next runtime dir
+    }
+  }
 
+  // 5. PATH probe (where/which)
+  const fromProbe = await probePath(raw);
+  if (fromProbe) {
+    const resolved = await resolveSymlinkSafe(fromProbe);
+    const finalPath = resolved ?? fromProbe;
+    if (await isExecutableFile(finalPath)) {
+      return { ...base, resolvedPath: finalPath, envOverride, candidates };
+    }
+  }
+
+  // 6. Candidate stat scan
   for (const candidate of candidates) {
     try {
       const st = await stat(candidate);
-      if (st.isFile()) return { ...base, resolvedPath: candidate, envOverride, candidates };
+      if (st.isFile()) {
+        const resolved = await resolveSymlinkSafe(candidate);
+        const finalPath = resolved ?? candidate;
+        if (await isExecutableFile(finalPath)) {
+          return { ...base, resolvedPath: finalPath, envOverride, candidates };
+        }
+      }
     } catch {
       // Continue checking next candidate
     }
   }
 
+  // 7. PATH env fallback (direct stat per directory)
   const fromPath = await scanPathEnv(raw);
-  if (fromPath) return { ...base, resolvedPath: fromPath, envOverride, candidates };
+  if (fromPath) {
+    const resolved = await resolveSymlinkSafe(fromPath);
+    const finalPath = resolved ?? fromPath;
+    if (await isExecutableFile(finalPath)) {
+      return { ...base, resolvedPath: finalPath, envOverride, candidates };
+    }
+  }
 
   return { ...base, resolvedPath: null, envOverride, candidates };
+}
+
+/** Scan PATH directories directly for the executable. */
+async function scanPathEnv(command: string): Promise<string | null> {
+  const pathDirs = (process.env.PATH || "").split(process.platform === "win32" ? ";" : ":");
+  const extensions = process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
+  for (const dir of pathDirs) {
+    if (!dir || dir.trim() === "") continue;
+    for (const ext of extensions) {
+      const fullPath = join(dir.trim(), `${command}${ext}`);
+      try {
+        const st = await stat(fullPath);
+        if (st.isFile()) return fullPath;
+      } catch {
+        // Continue
+      }
+    }
+  }
+  return null;
 }
 
 /**
