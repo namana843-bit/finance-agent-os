@@ -13,6 +13,7 @@ export interface CoworkerInput {
   description?: string;
   role?: string;
   engine?: string;
+  providerId?: string;
   model?: string;
   systemPrompt?: string;
   tools?: string[];
@@ -29,6 +30,7 @@ export interface NormalizedCoworker {
   description?: string;
   role?: string;
   engine: string;
+  providerId?: string;
   model?: string;
   systemPrompt: string;
   tools?: string[];
@@ -39,6 +41,8 @@ export interface NormalizedCoworker {
 export interface CoworkerValidationDeps {
   /** Returns true when the engine id can serve a coworker. */
   engineExists: (engineId: string) => Promise<boolean> | boolean;
+  /** Returns true when the provider id is registered. */
+  providerExists?: (providerId: string) => Promise<boolean> | boolean;
   /** Tool names the runtime can execute. */
   validTools: string[];
   /** Returns true when the id is already taken. */
@@ -170,6 +174,20 @@ export async function validateCoworkerInput(
   if (!(await deps.engineExists(engineDirty))) {
     return { ok: false, errors: [`unknown engine '${engineDirty}' (no provider registered for it)`] };
   }
+  // Validate providerId if provided (must reference a registered provider).
+  const providerId = typeof input.providerId === "string" ? input.providerId.trim() : undefined;
+  if (providerId) {
+    let providerOk = false;
+    try {
+      await deps.providerExists?.(providerId);
+      providerOk = true;
+    } catch {
+      providerOk = false;
+    }
+    if (!providerOk) {
+      return { ok: false, errors: [`unknown provider '${providerId}' (no provider registered for it)`] };
+    }
+  }
   if (deps.idTaken && (await deps.idTaken(id))) {
     return { ok: false, errors: [`id '${id}' is already taken`] };
   }
@@ -180,6 +198,7 @@ export async function validateCoworkerInput(
     engine: engineDirty,
     systemPrompt: withSafetyRails(systemPrompt),
   };
+  if (providerId) normalized.providerId = providerId;
   const description = cleanString(input.description, 500);
   if (description) normalized.description = description;
   const role = cleanString(input.role, 120);

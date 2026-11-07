@@ -16,6 +16,8 @@ import { GeminiProvider } from "./providers/gemini.js";
 import { OpenAIProvider } from "./providers/openai.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compat.js";
 import { OllamaProvider } from "./providers/ollama.js";
+import { CliProvider } from "./providers/cli-engine.js";
+import { getDefaultCliManager } from "../cli/index.js";
 
 export type ProviderFamily =
   | "openai"
@@ -23,7 +25,11 @@ export type ProviderFamily =
   | "gemini"
   | "openai-compatible"
   | "ollama"
-  | "cli";
+  | "cli"
+  | "codex"
+  | "claude-code"
+  | "google-gemini-cli"
+  | "opencode";
 
 export interface ProviderCapabilities {
   streaming: boolean;
@@ -37,6 +43,10 @@ export interface ProviderPreset {
   kind: "api" | "cli";
   family: ProviderFamily;
   baseUrl?: string;
+  /** CLI executable name for CLI-kind presets (e.g. "codex", "claude"). */
+  cliCommand?: string;
+  /** Default CLI args for CLI-kind presets (prompt token {prompt} is substituted). */
+  cliArgs?: string[];
   /** Env var that holds the credential. The value never leaves the server. */
   apiKeyEnv?: string;
   keyRequired: boolean;
@@ -146,6 +156,57 @@ export const API_PRESETS: ProviderPreset[] = [
     docsUrl: "https://docs.vllm.ai",
     capabilities: { streaming: true, tools: true, reasoning: false },
   },
+  // ── CLI provider presets ──────────────────────────────────────────────
+  // These are local CLI executables (not HTTP APIs). `keyRequired: false`
+  // because auth is reused from the user's local CLI sign-in.
+  {
+    id: "codex-cli",
+    name: "OpenAI Codex CLI",
+    kind: "cli",
+    family: "codex",
+    cliCommand: "codex",
+    cliArgs: ["exec", "--json", "{prompt}"],
+    keyRequired: false,
+    defaultModel: "gpt-5",
+    docsUrl: "https://developers.openai.com/codex/cli/reference",
+    capabilities: { streaming: true, tools: true, reasoning: true },
+  },
+  {
+    id: "claude-code-cli",
+    name: "Anthropic Claude Code CLI",
+    kind: "cli",
+    family: "claude-code",
+    cliCommand: "claude",
+    cliArgs: ["-p", "{prompt}", "--output-format", "stream-json", "--verbose"],
+    keyRequired: false,
+    defaultModel: "claude-sonnet-4-20250514",
+    docsUrl: "https://code.claude.com/docs/en/cli-reference",
+    capabilities: { streaming: true, tools: true, reasoning: true },
+  },
+  {
+    id: "gemini-cli",
+    name: "Google Gemini CLI",
+    kind: "cli",
+    family: "google-gemini-cli",
+    cliCommand: "gemini",
+    cliArgs: ["-p", "{prompt}", "--output-format", "stream-json"],
+    keyRequired: false,
+    defaultModel: "gemini-2.0-flash",
+    docsUrl: "https://geminicli.com/docs/cli/headless",
+    capabilities: { streaming: true, tools: true, reasoning: true },
+  },
+  {
+    id: "opencode-cli",
+    name: "OpenCode CLI",
+    kind: "cli",
+    family: "opencode",
+    cliCommand: "opencode",
+    cliArgs: ["run", "--auto", "{prompt}"],
+    keyRequired: false,
+    defaultModel: "default",
+    docsUrl: "https://opencode.ai",
+    capabilities: { streaming: true, tools: true, reasoning: true },
+  },
 ];
 
 export function getPreset(id: string): ProviderPreset | undefined {
@@ -182,6 +243,20 @@ export function buildProvider(
     fetchImpl: opts.fetchImpl,
     timeoutMs: opts.timeoutMs,
   };
+
+  // ── CLI-kind presets: build a CliProvider backed by the CLI adapter ──
+  if (preset.kind === "cli") {
+    const cliManager = getDefaultCliManager();
+    return new CliProvider({
+      id: opts.providerId ?? preset.id,
+      name: opts.providerName ?? preset.name,
+      command: preset.cliCommand ?? preset.id,
+      args: preset.cliArgs,
+      timeoutMs: opts.timeoutMs,
+      cliManager,
+      botId: opts.providerId ?? preset.id,
+    });
+  }
 
   switch (preset.family) {
     case "anthropic":

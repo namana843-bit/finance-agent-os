@@ -16,6 +16,7 @@ import {
   providerForConnection,
   type ConnectionInput,
 } from "../llm/connections.js";
+import { getCliDefaultProviderStore } from "../llm/cli-default-provider.js";
 import { presetSummary } from "../llm/provider-catalog.js";
 import { redactSecrets, redactText } from "../llm/redact.js";
 import type { LlmConfig } from "../llm/types.js";
@@ -2340,6 +2341,101 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       return reply.status(403).send({ error: `Agent '${request.params.id}' is a built-in safety-critical agent and cannot switch models` });
     }
     return { ok: true, agent };
+  });
+
+  // -------------------------------------------------------------------------
+  // CLI-to-Agent Assignment — Phase: Universal CLI Connection
+  //
+  // Any CLI provider can connect to any number of agents (no 1:1 restriction).
+  // Global default → agent override → task override (three levels).
+  // -------------------------------------------------------------------------
+
+  /** Get the global default CLI provider ID. */
+  app.get("/api/cli/default-provider", async () => {
+    const store = getCliDefaultProviderStore();
+    return { providerId: store.get() };
+  });
+
+  /** Set the global default CLI provider ID. */
+  app.post<{ Body: { providerId?: string } }>("/api/cli/default-provider", async (request, reply) => {
+    const { providerId } = request.body ?? {};
+    if (providerId !== undefined && typeof providerId !== "string") {
+      return reply.status(400).send({ error: "providerId must be a string" });
+    }
+    const registry = getProviderRegistry();
+    if (providerId !== undefined && !registry.get(providerId)) {
+      return reply.status(400).send({ error: `provider '${providerId}' is not registered` });
+    }
+    const store = getCliDefaultProviderStore();
+    store.set(providerId ?? null);
+    return { ok: true, providerId: store.get() };
+  });
+
+  /** List which agents use which CLI provider (for the management dashboard). */
+  app.get("/api/cli/agent-assignments", async () => {
+    const runtime = getAgentRuntime();
+    const defaultProvider = getCliDefaultProviderStore().get();
+    const agents = runtime.listAgents();
+    const assignments = agents.map((agent) => ({
+      agentId: agent.id,
+      agentName: agent.name,
+      providerId: agent.providerId ?? defaultProvider ?? null,
+      engine: agent.engine,
+      model: agent.model ?? null,
+      isBuiltIn: isBuiltInAgent(agent.id),
+      archived: agent.archived ?? false,
+      status: runtime.getStatus(agent.id),
+    }));
+    return { defaultProvider, assignments };
+  });
+
+  /** Override a single agent's provider (built-ins cannot be changed). */
+  app.patch<{ Params: { id: string } }>("/api/agent-runtime/agents/:id/provider", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const id = request.params.id;
+    const agent = runtime.getAgent(id);
+    if (!agent) return reply.status(404).send({ error: `Agent '${id}' not found` });
+    if (isBuiltInAgent(id)) {
+      return reply.status(403).send({ error: `Agent '${id}' is a built-in safety-critical agent and cannot be reassigned` });
+    }
+    const body = (request.body ?? {}) as { providerId?: string };
+    const providerId = typeof body.providerId === "string" ? body.providerId.trim() : undefined;
+    const registry = getProviderRegistry();
+    if (providerId !== undefined && !registry.get(providerId)) {
+      return reply.status(400).send({ error: `provider '${providerId}' is not registered` });
+    }
+    const updated = { ...agent, providerId, updatedAt: new Date().toISOString() };
+    runtime.updateAgent(id, updated);
+    return { ok: true, agent: runtime.getAgent(id) };
+  });
+
+  /** Bulk assign a CLI provider to agents. Body: { providerId, agentIds?: string[] }.
+   * If agentIds omitted, assigns to all non-built-in, non-archived agents. */
+  app.post<{ Body: { providerId?: string; agentIds?: string[] } }>("/api/agent-runtime/agents/bulk-provider", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const { providerId, agentIds } = request.body ?? {};
+    if (!providerId || typeof providerId !== "string") {
+      return reply.status(400).send({ error: "providerId is required" });
+    }
+    const registry = getProviderRegistry();
+    if (!registry.get(providerId)) {
+      return reply.status(400).send({ error: `provider '${providerId}' is not registered` });
+    }
+    const allAgents = runtime.listAgents({ includeArchived: true });
+    const targets = agentIds && agentIds.length > 0
+      ? allAgents.filter((a) => agentIds.includes(a.id))
+      : allAgents.filter((a) => !isBuiltInAgent(a.id) && !(a.archived ?? false));
+    const results: Array<{ agentId: string; ok: boolean; error?: string }> = [];
+    for (const target of targets) {
+      try {
+        const updated = { ...target, providerId, updatedAt: new Date().toISOString() };
+        runtime.updateAgent(target.id, updated);
+        results.push({ agentId: target.id, ok: true });
+      } catch (err) {
+        results.push({ agentId: target.id, ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return { ok: true, providerId, results };
   });
 
   // -------------------------------------------------------------------------

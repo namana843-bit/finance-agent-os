@@ -53,6 +53,7 @@ export interface AgentApiConfig {
   description?: string;
   role?: string;
   engine: string;
+  providerId?: string;
   model?: string;
   systemPrompt?: string;
   tools?: string[];
@@ -139,6 +140,52 @@ export function importAgentApi(agentJson: unknown): Promise<{ ok: boolean; agent
   return fetchJson<{ ok: boolean; agent: AgentApiConfig }>("/api/agent-runtime/agents/import", {
     method: "POST",
     body: JSON.stringify({ agentJson }),
+  });
+}
+
+// CLI-to-Agent Assignment API
+export interface AgentAssignment {
+  agentId: string;
+  agentName: string;
+  providerId: string | null;
+  engine: string;
+  model: string | null;
+  isBuiltIn: boolean;
+  archived: boolean;
+  status: string;
+}
+
+export interface AgentAssignmentsResponse {
+  defaultProvider: string | null;
+  assignments: AgentAssignment[];
+}
+
+export function fetchDefaultProvider(): Promise<{ providerId: string | null }> {
+  return fetchJson<{ providerId: string | null }>("/api/cli/default-provider");
+}
+
+export function setDefaultProvider(providerId: string | null): Promise<{ ok: boolean; providerId: string | null }> {
+  return fetchJson<{ ok: boolean; providerId: string | null }>("/api/cli/default-provider", {
+    method: "POST",
+    body: JSON.stringify({ providerId }),
+  });
+}
+
+export function fetchAgentAssignments(): Promise<AgentAssignmentsResponse> {
+  return fetchJson<AgentAssignmentsResponse>("/api/cli/agent-assignments");
+}
+
+export function setAgentProvider(agentId: string, providerId: string | null): Promise<{ ok: boolean; agent: AgentApiConfig }> {
+  return fetchJson<{ ok: boolean; agent: AgentApiConfig }>(`/api/agent-runtime/agents/${encodeURIComponent(agentId)}/provider`, {
+    method: "PATCH",
+    body: JSON.stringify({ providerId }),
+  });
+}
+
+export function bulkSetAgentProvider(body: { providerId: string; agentIds?: string[] }): Promise<{ ok: boolean; providerId: string; results: Array<{ agentId: string; ok: boolean; error?: string }> }> {
+  return fetchJson<{ ok: boolean; providerId: string; results: Array<{ agentId: string; ok: boolean; error?: string }> }>("/api/agent-runtime/agents/bulk-provider", {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 }
 
