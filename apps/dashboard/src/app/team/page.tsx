@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { fetchAgents, fetchHealth, fetchPortfolio, streamAgentChat, fetchWorkflows, startWorkflow, approveWorkflow, rejectWorkflow, fmtCurrency, type AgentApiConfig, type Portfolio, type WorkflowRun } from "../../lib/api";
 import "./team.css";
+import "../shell/terminal-dark.css";
 
 type AgentKey = "quant" | "risk" | "market" | "execution" | "finance";
 type TeamAgent = {

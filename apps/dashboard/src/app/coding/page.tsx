@@ -14,6 +14,7 @@ import {
   Plug,
   Plus,
   RefreshCw,
+  Search,
   Send,
   Sparkles,
   Square,
@@ -43,6 +44,7 @@ import {
 } from "../../lib/coding-api";
 import "./coding.css";
 import { ProviderSelect } from "./ProviderSelect";
+import "../shell/terminal-dark.css";
 
 type Message = { id: string; role: "user" | "assistant"; content: string; cancelled?: boolean };
 
@@ -79,6 +81,7 @@ export default function CodingPage() {
   const [projects, setProjects] = useState<CodingProject[]>([]);
   const [sessions, setSessions] = useState<CodingSession[]>([]);
   const [providerId, setProviderId] = useState<string>("");
+  const [providerSearch, setProviderSearch] = useState<string>("");
   const [projectId, setProjectId] = useState<string>("");
   const [sessionId, setSessionId] = useState<string>("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -370,6 +373,57 @@ export default function CodingPage() {
       : { label: "Not installed", tone: "bad" as const }
     : { label: "No provider", tone: "muted" as const };
 
+  const providerQuery = providerSearch.trim().toLowerCase();
+  const providerMatches = (provider: CodingProvider) =>
+    providerQuery.length === 0 ||
+    provider.name.toLowerCase().includes(providerQuery) ||
+    provider.providerId.toLowerCase().includes(providerQuery);
+  const connectedProviders = providers.filter(
+    (provider) => provider.status.installed && providerMatches(provider),
+  );
+  const availableProviders = providers.filter(
+    (provider) => !provider.status.installed && providerMatches(provider),
+  );
+
+  const renderProviderCard = (provider: CodingProvider) => {
+    const selected = provider.providerId === providerId;
+    return (
+      <button
+        key={provider.providerId}
+        className={`coding-provider-card ${selected ? "chosen" : ""}`}
+        onClick={() => { setProviderId(provider.providerId); setSessionId(""); setMessages([]); setToolLog([]); setTerminalLog([]); }}
+      >
+        <div className="coding-provider-top">
+          <span className="coding-provider-name">{provider.name}</span>
+          <span className={`coding-provider-state ${provider.status.installed ? "good" : "bad"}`}>
+            {provider.status.installed ? <CheckCircle2 size={12} /> : <CircleSlash size={12} />}
+            {provider.status.installed ? "installed" : "missing"}
+          </span>
+        </div>
+        <p>{provider.description}</p>
+        <div className="coding-provider-meta">
+          <span>{provider.status.version ? `v${provider.status.version}` : "version unknown"}</span>
+          <span>auth: {provider.status.auth}</span>
+        </div>
+        {!provider.status.installed && provider.installHint && (
+          <p className="coding-provider-hint">{provider.installHint}</p>
+        )}
+        <div className="coding-provider-actions">
+          <span>{Object.values(provider.capabilities).filter((capability) => capability.supported).length} capabilities</span>
+          <span
+            className="coding-provider-refresh"
+            role="button"
+            tabIndex={0}
+            onClick={(event) => { event.stopPropagation(); void refreshOne(provider.providerId); }}
+            onKeyDown={(event) => { if (event.key === "Enter") { event.stopPropagation(); void refreshOne(provider.providerId); } }}
+          >
+            <RefreshCw size={11} /> re-probe
+          </span>
+        </div>
+      </button>
+    );
+  };
+
   return (
     <div className="team-shell coding-shell">
       <aside className="team-sidebar">
@@ -475,49 +529,43 @@ export default function CodingPage() {
             </div>
           )}
 
-          <div className="coding-provider-grid">
-            {loading && <div className="coding-empty">Probing installed providers…</div>}
-            {!loading && providers.length === 0 && <div className="coding-empty">No providers are registered on this server.</div>}
-            {providers.map((provider) => {
-              const selected = provider.providerId === providerId;
-              return (
-                <button
-                  key={provider.providerId}
-                  className={`coding-provider-card ${selected ? "chosen" : ""}`}
-                  onClick={() => { setProviderId(provider.providerId); setSessionId(""); setMessages([]); setToolLog([]);
-      setTerminalLog([]); }}
-                >
-                  <div className="coding-provider-top">
-                    <span className="coding-provider-name">{provider.name}</span>
-                    <span className={`coding-provider-state ${provider.status.installed ? "good" : "bad"}`}>
-                      {provider.status.installed ? <CheckCircle2 size={12} /> : <CircleSlash size={12} />}
-                      {provider.status.installed ? "installed" : "missing"}
-                    </span>
-                  </div>
-                  <p>{provider.description}</p>
-                  <div className="coding-provider-meta">
-                    <span>{provider.status.version ? `v${provider.status.version}` : "version unknown"}</span>
-                    <span>auth: {provider.status.auth}</span>
-                  </div>
-                  {!provider.status.installed && provider.installHint && (
-                    <p className="coding-provider-hint">{provider.installHint}</p>
-                  )}
-                  <div className="coding-provider-actions">
-                    <span>{Object.values(provider.capabilities).filter((capability) => capability.supported).length} capabilities</span>
-                    <span
-                      className="coding-provider-refresh"
-                      role="button"
-                      tabIndex={0}
-                      onClick={(event) => { event.stopPropagation(); void refreshOne(provider.providerId); }}
-                      onKeyDown={(event) => { if (event.key === "Enter") { event.stopPropagation(); void refreshOne(provider.providerId); } }}
-                    >
-                      <RefreshCw size={11} /> re-probe
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
+          <div className="coding-providers-search">
+            <Search size={13} />
+            <input
+              value={providerSearch}
+              onChange={(event) => setProviderSearch(event.target.value)}
+              placeholder="Filter providers by name or id"
+              aria-label="Search providers"
+            />
           </div>
+
+          {loading && <div className="coding-provider-grid"><div className="coding-empty">Probing installed providers…</div></div>}
+          {!loading && providers.length === 0 && (
+            <div className="coding-provider-grid"><div className="coding-empty">No providers are registered on this server.</div></div>
+          )}
+          {!loading && providers.length > 0 && connectedProviders.length === 0 && availableProviders.length === 0 && (
+            <div className="coding-provider-grid"><div className="coding-empty">No providers match the current filter.</div></div>
+          )}
+
+          {!loading && connectedProviders.length > 0 && (
+            <div className="coding-provider-section">
+              <div className="coding-provider-section-heading">
+                CONNECTED PROVIDERS
+                <span className="coding-provider-section-count">{connectedProviders.length}</span>
+              </div>
+              <div className="coding-provider-grid">{connectedProviders.map(renderProviderCard)}</div>
+            </div>
+          )}
+
+          {!loading && availableProviders.length > 0 && (
+            <div className="coding-provider-section">
+              <div className="coding-provider-section-heading">
+                AVAILABLE PROVIDERS
+                <span className="coding-provider-section-count">{availableProviders.length}</span>
+              </div>
+              <div className="coding-provider-grid">{availableProviders.map(renderProviderCard)}</div>
+            </div>
+          )}
 
           <div className="coding-workbench">
             <section className="team-chat-panel">
