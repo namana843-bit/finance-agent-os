@@ -42,6 +42,7 @@ import {
   type CodingTurn,
 } from "../../lib/coding-api";
 import "./coding.css";
+import { ProviderSelect } from "./ProviderSelect";
 
 type Message = { id: string; role: "user" | "assistant"; content: string; cancelled?: boolean };
 
@@ -347,6 +348,16 @@ export default function CodingPage() {
     }
   }, []);
 
+  /** Connect to a provider from the dropdown: select it and re-probe install status. */
+  const connectProvider = useCallback(async (id: string) => {
+    setProviderId(id);
+    setSessionId("");
+    setMessages([]);
+    setToolLog([]);
+    setTerminalLog([]);
+    await refreshAll();
+  }, [refreshAll]);
+
   useEffect(() => {
     setShowPatch(false);
     if (projectId) void loadDiff(projectId);
@@ -370,7 +381,7 @@ export default function CodingPage() {
         <a className="team-nav-item" href="#/team"><Sparkles size={17} /> Agent team <span className="team-nav-count">4</span></a>
         <a className="team-nav-item" href="#/home"><LayoutDashboard size={17} /> Workspace home</a>
         <a className="team-nav-item" href="#/engines"><Terminal size={17} /> Model engines</a>
-        <a className="team-nav-item active" href="#/coding"><Code2 size={17} /> Coding agents</a>
+        <a className="team-nav-item active" href="#/coding"><Code2 size={17} /> Providers</a>
         <div className="team-divider" />
 
         <div className="team-workspace-label">PROJECTS <span>{String(projects.length).padStart(2, "0")}</span></div>
@@ -431,7 +442,7 @@ export default function CodingPage() {
 
       <main className="team-main">
         <header className="team-topbar">
-          <div className="team-breadcrumb">Workspace <span>/</span> <strong>Coding agents</strong></div>
+          <div className="team-breadcrumb">Workspace <span>/</span> <strong>Providers</strong></div>
           <div className="team-topbar-right">
             <span className={`team-connection ${serverStatus}`}><span className="team-status-dot" /> {serverStatus === "online" ? "API connected" : serverStatus === "offline" ? "API offline" : "Connecting…"}</span>
             <span className={`coding-connection-pill ${connection.tone}`}><Plug size={13} /> {connection.label}</span>
@@ -441,12 +452,20 @@ export default function CodingPage() {
         <div className="team-content coding-content">
           <div className="team-heading-row">
             <div>
-              <div className="team-eyebrow"><span className="team-eyebrow-line" /> CODING WORKSPACE</div>
-              <h1>Run your coding agents <span>side by side</span></h1>
+              <div className="team-eyebrow"><span className="team-eyebrow-line" /> PROVIDER WORKSPACE</div>
+              <h1>Run your providers <span>side by side</span></h1>
               <p className="team-subtitle">Each provider keeps its own session and project context. Nothing is merged.</p>
             </div>
             <button className="team-icon-button" onClick={() => void refreshAll()} title="Refresh"><RefreshCw size={15} /></button>
           </div>
+
+          <ProviderSelect
+            providers={providers}
+            value={providerId}
+            onConnect={connectProvider}
+            onChange={(id) => { setProviderId(id); setSessionId(""); setMessages([]); setToolLog([]); setTerminalLog([]); }}
+            onRefresh={() => void refreshAll()}
+          />
 
           {error && (
             <div className="team-error">
@@ -457,8 +476,8 @@ export default function CodingPage() {
           )}
 
           <div className="coding-provider-grid">
-            {loading && <div className="coding-empty">Probing installed coding agents…</div>}
-            {!loading && providers.length === 0 && <div className="coding-empty">No coding providers are registered on this server.</div>}
+            {loading && <div className="coding-empty">Probing installed providers…</div>}
+            {!loading && providers.length === 0 && <div className="coding-empty">No providers are registered on this server.</div>}
             {providers.map((provider) => {
               const selected = provider.providerId === providerId;
               return (

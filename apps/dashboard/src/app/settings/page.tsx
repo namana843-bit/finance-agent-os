@@ -335,7 +335,7 @@ export default function SettingsPage() {
             {[
               { label: "Agent Team", route: "/team" },
               { label: "Model Engines", route: "/engines" },
-              { label: "Coding Agents", route: "/coding" },
+              { label: "Providers", route: "/coding" },
             ].map((item) => (
               <button
                 key={item.route}

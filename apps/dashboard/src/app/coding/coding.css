@@ -1,8 +1,57 @@
 @import "../team/team.css";
 
-/* Coding Agent Workspace — layered on the shared team shell (same tokens). */
+/* Provider Workspace — layered on the shared team shell (same tokens). */
 
 .coding-content { padding-bottom: 8px; }
+
+/* Dynamic provider dropdown — options come from the backend registry. */
+.coding-provider-select { position: relative; margin-bottom: 14px; max-width: 380px; }
+.coding-provider-select-button {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%;
+  background: #fff;
+  border: 1px solid #e6e9ee;
+  border-radius: 11px;
+  padding: 10px 12px;
+  text-align: left;
+  transition: border-color .15s, box-shadow .15s;
+}
+.coding-provider-select-button:hover { border-color: #cbd4c9; box-shadow: 0 4px 14px #17251b0a; }
+.coding-provider-select-button.connected { border-color: #93ad92; box-shadow: 0 0 0 1px #93ad9233; }
+.coding-provider-select-button:disabled { opacity: .55; cursor: default; }
+.coding-provider-select-label { flex: 1; font: 700 12.5px Manrope, sans-serif; color: #23282f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.coding-provider-select-button svg.open { transform: rotate(180deg); }
+.coding-provider-select-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0; right: 0;
+  z-index: 40;
+  background: #fff;
+  border: 1px solid #e6e9ee;
+  border-radius: 11px;
+  box-shadow: 0 12px 30px #17251b14;
+  overflow: hidden;
+}
+.coding-provider-select-refresh {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  font: 9px 'DM Mono', monospace;
+  color: #737a86;
+  border-bottom: 1px solid #eef0f4;
+  text-align: left;
+}
+.coding-provider-select-refresh:hover { background: #f6f8f5; color: #438a5b; }
+.coding-provider-select-empty { padding: 10px 12px; font-size: 10.5px; color: #9aa0aa; }
+.coding-provider-select-option {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  text-align: left;
+}
+.coding-provider-select-option:hover { background: #f6f8f5; }
+.coding-provider-select-option.selected { background: #f2f6f1; }
+.coding-provider-select-name { font: 700 12px Manrope, sans-serif; color: #23282f; }
 
 .coding-hint { font-size: 10px; color: #9aa0aa; padding: 6px 10px; margin: 0; line-height: 1.5; }
 
