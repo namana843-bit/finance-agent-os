@@ -191,14 +191,6 @@ export default function SettingsPage() {
               <KeyRound className="h-3 w-3 text-neutral-600" />
               {installedProviders.length} usable connections · no secrets exposed
             </span>
-            <button
-              type="button"
-              onClick={() => navigate("/engines")}
-              className="inline-flex items-center gap-1 text-[10.5px] text-emerald-400 hover:text-emerald-300"
-            >
-              Open engine registry
-              <ArrowUpRight className="h-2.5 w-2.5" />
-            </button>
           </div>
         </Panel>
 
@@ -282,14 +274,6 @@ export default function SettingsPage() {
               </div>
               <div className="flex items-center justify-between text-[10px] text-neutral-600">
                 <span>{models.total} models discovered</span>
-                <button
-                  type="button"
-                  onClick={() => navigate("/engines")}
-                  className="inline-flex items-center gap-1 text-emerald-400 hover:text-emerald-300"
-                >
-                  Change defaults
-                  <ArrowUpRight className="h-2.5 w-2.5" />
-                </button>
               </div>
             </div>
           )}
@@ -334,7 +318,6 @@ export default function SettingsPage() {
             <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-neutral-600">Original screens</span>
             {[
               { label: "Agent Team", route: "/team" },
-              { label: "Model Engines", route: "/engines" },
               { label: "Coding Agents", route: "/coding" },
             ].map((item) => (
               <button

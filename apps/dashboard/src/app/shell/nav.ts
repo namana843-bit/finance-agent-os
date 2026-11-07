@@ -30,7 +30,6 @@ export const PRIMARY_NAV: NavItem[] = [
 /** Screens that keep the original standalone layouts and are linked from the shell. */
 export const LEGACY_SCREENS: NavItem[] = [
   { route: "/team", label: "Agent Team", icon: Users, description: "Original team workbench" },
-  { route: "/engines", label: "Model Engines", icon: SquareTerminal, description: "CLI engines and model registry" },
   { route: "/coding", label: "Coding Agents", icon: SquareTerminal, description: "Coding sessions and worktrees" },
 ];
 
