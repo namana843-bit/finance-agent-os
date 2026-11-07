@@ -175,10 +175,6 @@ export default function CoworkersPage() {
             >
               <Plus className="h-3 w-3" /> Add coworker
             </button>
-            <TextButton onClick={() => navigate("/team")}>
-              <Users className="h-3.5 w-3.5" />
-              Manage team
-            </TextButton>
           </div>
         }
       />
@@ -378,13 +374,6 @@ export default function CoworkersPage() {
           description="Use Add coworker above to create one, or seed the built-in finance teammates, and it will appear here with its provider and model."
           action={
             <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => navigate("/team")}
-                className="rounded-md bg-emerald-500 px-3 py-1.5 text-[11.5px] font-semibold text-emerald-950 hover:bg-emerald-400"
-              >
-                Open Agent Team
-              </button>
               <button
                 type="button"
                 onClick={() => navigate("/settings")}

@@ -15,7 +15,6 @@ import {
   Plus,
   RefreshCw,
   Send,
-  Sparkles,
   Square,
   Terminal,
   Wrench,
@@ -362,14 +361,12 @@ export default function CodingPage() {
   return (
     <div className="team-shell coding-shell">
       <aside className="team-sidebar">
-        <a className="team-brand" href="#/team">
+        <a className="team-brand" href="#/coworkers">
           <span className="team-brand-mark"><Activity size={19} /></span>
           <span><strong>FINANCE OS</strong><small>AGENT WORKSPACE</small></span>
         </a>
         <div className="team-workspace-label">WORKSPACE</div>
-        <a className="team-nav-item" href="#/team"><Sparkles size={17} /> Agent team <span className="team-nav-count">4</span></a>
         <a className="team-nav-item" href="#/home"><LayoutDashboard size={17} /> Workspace home</a>
-        <a className="team-nav-item" href="#/engines"><Terminal size={17} /> Model engines</a>
         <a className="team-nav-item active" href="#/coding"><Code2 size={17} /> Coding agents</a>
         <div className="team-divider" />
 
