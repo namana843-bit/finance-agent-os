@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Command,
   LayoutPanelLeft,
+  Menu,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -128,7 +129,7 @@ function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void 
   );
 }
 
-export function TopBar({ activeRoute }: { activeRoute: string }) {
+export function TopBar({ activeRoute, onSidebarToggle }: { activeRoute: string; onSidebarToggle?: () => void }) {
   const { activity, agents, runs, serverState, refreshing, refresh, lastUpdated } = useWorkspace();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -156,6 +157,16 @@ export function TopBar({ activeRoute }: { activeRoute: string }) {
     <>
       <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] bg-[#0b0c10]/80 px-5 backdrop-blur">
         <div className="flex min-w-0 items-center gap-2 text-[11.5px] text-neutral-600">
+          {onSidebarToggle && (
+            <button
+              type="button"
+              onClick={onSidebarToggle}
+              className="lg:hidden rounded-lg p-1.5 text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200 transition-colors"
+              aria-label="Open menu"
+            >
+              <Menu className="h-4 w-4" />
+            </button>
+          )}
           <LayoutPanelLeft className="h-3.5 w-3.5" />
           <span>FinanceBot</span>
           <ChevronRight className="h-3 w-3 text-neutral-700" />

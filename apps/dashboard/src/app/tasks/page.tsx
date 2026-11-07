@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowUpRight, Briefcase, ChevronDown, ChevronRight, ShieldAlert, Workflow } from "lucide-react";
+import { Briefcase, ChevronDown, ShieldAlert, Workflow } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { fmtCurrency } from "../../lib/api";
 import { currentHashQuery, navigate } from "../shell/nav";
@@ -149,14 +149,6 @@ function RunDetail({ run, coworker }: { run: WorkflowRun; coworker?: string }) {
           {run.auditIds?.length ?? 0} audit records
         </span>
         <span className="text-[10px] text-neutral-600">Run {run.id}</span>
-        <button
-          type="button"
-          onClick={() => navigate("/team")}
-          className="ml-auto inline-flex items-center gap-1 text-[10.5px] text-emerald-400 transition-colors hover:text-emerald-300"
-        >
-          Approve or reject in Agent Team
-          <ArrowUpRight className="h-3 w-3" />
-        </button>
       </div>
     </div>
   );
@@ -246,10 +238,10 @@ export default function TasksPage() {
           action={
             <button
               type="button"
-              onClick={() => navigate("/team")}
+              onClick={() => navigate("/coworkers")}
               className="rounded-md bg-emerald-500 px-3 py-1.5 text-[11.5px] font-semibold text-emerald-950 hover:bg-emerald-400"
             >
-              Start a workflow in Agent Team
+              Create a coworker
             </button>
           }
         />
@@ -321,15 +313,14 @@ export default function TasksPage() {
         <Panel className="flex flex-wrap items-center gap-3 px-4 py-3">
           <ShieldAlert className="h-4 w-4 text-amber-400/80" />
           <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-neutral-500">
-            This screen is read-only. Approvals happen in Agent Team, where the risk ticket and confirmation are checked.
+            This screen is read-only. Approvals happen in the Coworkers directory.
           </p>
           <button
             type="button"
-            onClick={() => navigate("/team")}
+            onClick={() => navigate("/coworkers")}
             className="inline-flex items-center gap-1 rounded-md border border-white/10 px-2.5 py-1.5 text-[11px] text-neutral-300 transition-colors hover:bg-white/5"
           >
-            Open Agent Team
-            <ChevronRight className="h-3 w-3" />
+            Open Coworkers directory
           </button>
         </Panel>
       </div>

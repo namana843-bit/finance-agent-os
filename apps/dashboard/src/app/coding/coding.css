@@ -1,6 +1,9 @@
-@import "../team/team.css";
+/* Coding Agent Workspace — standalone styles. */
 
-/* Coding Agent Workspace — layered on the shared team shell (same tokens). */
+@keyframes team-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 
 .coding-content { padding-bottom: 8px; }
 
