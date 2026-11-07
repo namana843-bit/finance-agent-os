@@ -1,5 +1,5 @@
 // ============================================================================
-// Finance Agent OS — Coding Agent Workspace API client.
+// Finance Agent OS — Provider Workspace API client.
 // Consumes /api/coding/* only. No provider names are hard-coded here: the
 // workspace renders whatever the backend discovers.
 // ============================================================================
