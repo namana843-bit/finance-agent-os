@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { MessageSquare, Search, Users, Zap } from "lucide-react";
+import { MessageSquare, Search, Users, Plus, X, Zap } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { navigate } from "../shell/nav";
 import {
@@ -9,10 +9,13 @@ import {
   MonoLabel,
   PageHeader,
   Panel,
+  PrimaryButton,
+  SectionHeading,
   StatusPill,
   TextButton,
 } from "../shell/ui";
 import { avatarTone, agentInitials, useWorkspace } from "../shell/workspace-data";
+import { createAgent, fetchAgents, type AgentApiConfig } from "../../lib/api";
 
 type CoworkerStatus = "working" | "waiting" | "ready" | "unknown";
 
@@ -29,9 +32,44 @@ function statusStyle(status: CoworkerStatus) {
   }
 }
 
+type NewCoworker = {
+  name: string;
+  role: string;
+  description: string;
+  engine: string;
+  model: string;
+  systemPrompt: string;
+  tools: string;
+  execution: boolean;
+  allowTradeProposals: boolean;
+  avatar: string;
+  personality: string;
+  memoryScope: string;
+  maxConcurrent: string;
+};
+
 export default function CoworkersPage() {
   const { agents, agentsState, agentsError, runs, runsState, refresh } = useWorkspace();
   const [query, setQuery] = useState("");
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState("");
+
+  const [form, setForm] = useState<NewCoworker>({
+    name: "",
+    role: "Finance coworker",
+    description: "",
+    engine: "cline-cli",
+    model: "",
+    systemPrompt: "",
+    tools: "",
+    execution: false,
+    allowTradeProposals: false,
+    avatar: "AI",
+    personality: "steady",
+    memoryScope: "",
+    maxConcurrent: "1",
+  });
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -63,6 +101,65 @@ export default function CoworkersPage() {
       });
   }, [agents, runs, query, agentsState]);
 
+  const slugify = (name: string) =>
+    name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-+$)/g, "") || "coworker";
+
+  const handleAdd = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setAdding(true);
+    setAddError("");
+    try {
+      const id = form.name.trim() ? `bot-${slugify(form.name)}-${Date.now().toString(36).slice(4)}` : "";
+      const tools = form.tools
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
+      const body: AgentApiConfig & {
+        avatar?: string;
+        personality?: string;
+        memoryScope?: string;
+        concurrency?: { maxConcurrent?: number };
+      } = {
+        id,
+        name: form.name.trim(),
+        role: form.role.trim() || undefined,
+        description: form.description.trim() || undefined,
+        engine: form.engine.trim(),
+        model: form.model.trim() || undefined,
+        systemPrompt: form.systemPrompt.trim() || undefined,
+        tools: tools.length ? tools : undefined,
+        permissions: { execution: form.execution },
+        riskPermissions: { allowTradeProposals: form.allowTradeProposals },
+        avatar: form.avatar.trim() || undefined,
+        personality: form.personality.trim() || undefined,
+        memoryScope: form.memoryScope.trim() || undefined,
+        concurrency: { maxConcurrent: form.maxConcurrent ? Number(form.maxConcurrent) : 1 },
+      };
+      await createAgent(body);
+      setShowAddForm(false);
+      setForm({
+        name: "",
+        role: "Finance coworker",
+        description: "",
+        engine: "cline-cli",
+        model: "",
+        systemPrompt: "",
+        tools: "",
+        execution: false,
+        allowTradeProposals: false,
+        avatar: "AI",
+        personality: "steady",
+        memoryScope: "",
+        maxConcurrent: "1",
+      });
+      await refresh();
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAdding(false);
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -70,12 +167,186 @@ export default function CoworkersPage() {
         title="Coworkers"
         description="Every agent the runtime has configured, with its provider, model and the task it currently owns."
         actions={
-          <TextButton onClick={() => navigate("/team")}>
-            <Users className="h-3.5 w-3.5" />
-            Manage team
-          </TextButton>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowAddForm(true)}
+              className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-1.5 text-[11.5px] font-semibold text-emerald-950 transition-colors hover:bg-emerald-400"
+            >
+              <Plus className="h-3 w-3" /> Add coworker
+            </button>
+            <TextButton onClick={() => navigate("/team")}>
+              <Users className="h-3.5 w-3.5" />
+              Manage team
+            </TextButton>
+          </div>
         }
       />
+
+      {showAddForm && (
+        <Panel className="p-5 mb-5">
+          <SectionHeading
+            title="Add coworker"
+            description="Create a new FinanceBot coworker. Built-in safety rules apply — execution and trade-proposal
+            permissions are enforced on the backend."
+            action={
+              <button
+                type="button"
+                onClick={() => setShowAddForm(false)}
+                className="rounded-md border border-white/10 px-2.5 py-1.5 text-[11px] text-neutral-400 hover:bg-white/5"
+              >
+                <X className="h-3 w-3" /> Cancel
+              </button>
+            }
+          />
+          {addError && (
+            <ErrorBanner title="Could not create coworker" message={addError} />
+          )}
+          <form onSubmit={handleAdd} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="lg:col-span-2">
+              <MonoLabel>Name</MonoLabel>
+              <input
+                required
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="e.g. Market Scanner"
+                className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+              />
+            </div>
+            <div>
+              <MonoLabel>Role</MonoLabel>
+              <input
+                value={form.role}
+                onChange={(e) => setForm({ ...form, role: e.target.value })}
+                placeholder="e.g. Researcher"
+                className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+              />
+            </div>
+            <div className="lg:col-span-2">
+              <MonoLabel>Description</MonoLabel>
+              <input
+                value={form.description}
+                onChange={(e) => setForm({ ...form, description: e.target.value })}
+                placeholder="What this coworker does"
+                className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+              />
+            </div>
+            <div>
+              <MonoLabel>Engine</MonoLabel>
+              <input
+                value={form.engine}
+                onChange={(e) => setForm({ ...form, engine: e.target.value })}
+                placeholder="cline-cli"
+                className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+              />
+            </div>
+            <div>
+              <MonoLabel>Model</MonoLabel>
+              <input
+                value={form.model}
+                onChange={(e) => setForm({ ...form, model: e.target.value })}
+                placeholder="default model"
+                className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+              />
+            </div>
+            <div className="lg:col-span-2">
+              <MonoLabel>System prompt</MonoLabel>
+              <textarea
+                value={form.systemPrompt}
+                onChange={(e) => setForm({ ...form, systemPrompt: e.target.value })}
+                rows={3}
+                placeholder="Instructions for this coworker"
+                className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+              />
+            </div>
+            <div className="lg:col-span-2">
+              <MonoLabel>Tools (comma-separated)</MonoLabel>
+              <input
+                value={form.tools}
+                onChange={(e) => setForm({ ...form, tools: e.target.value })}
+                placeholder="get_market_price, get_ohlcv"
+                className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                id="execution"
+                type="checkbox"
+                checked={form.execution}
+                onChange={(e) => setForm({ ...form, execution: e.target.checked })}
+                className="h-4 w-4 rounded border-white/10 bg-white/[0.02] text-emerald-500 focus:ring-emerald-500"
+              />
+              <label htmlFor="execution" className="text-[11px] text-neutral-300">
+                Execution permission
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                id="allowTradeProposals"
+                type="checkbox"
+                checked={form.allowTradeProposals}
+                onChange={(e) => setForm({ ...form, allowTradeProposals: e.target.checked })}
+                className="h-4 w-4 rounded border-white/10 bg-white/[0.02] text-emerald-500 focus:ring-emerald-500"
+              />
+              <label htmlFor="allowTradeProposals" className="text-[11px] text-neutral-300">
+                Allow trade proposals
+              </label>
+            </div>
+            <div>
+              <MonoLabel>Avatar (1-2 chars)</MonoLabel>
+              <input
+                maxLength={2}
+                value={form.avatar}
+                onChange={(e) => setForm({ ...form, avatar: e.target.value })}
+                placeholder="AI"
+                className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+              />
+            </div>
+            <div>
+              <MonoLabel>Personality</MonoLabel>
+              <input
+                value={form.personality}
+                onChange={(e) => setForm({ ...form, personality: e.target.value })}
+                placeholder="steady"
+                className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+              />
+            </div>
+            <div>
+              <MonoLabel>Memory scope</MonoLabel>
+              <input
+                value={form.memoryScope}
+                onChange={(e) => setForm({ ...form, memoryScope: e.target.value })}
+                placeholder="coworker:general"
+                className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+              />
+            </div>
+            <div>
+              <MonoLabel>Max concurrent runs</MonoLabel>
+              <input
+                type="number"
+                min="1"
+                value={form.maxConcurrent}
+                onChange={(e) => setForm({ ...form, maxConcurrent: e.target.value })}
+                placeholder="1"
+                className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+              />
+            </div>
+            <div className="lg:col-span-2 flex items-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowAddForm(false)}
+                disabled={adding}
+                className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11.5px] font-medium text-neutral-200 transition-colors disabled:opacity-50 hover:border-white/20"
+              >
+                Cancel
+              </button>
+              <PrimaryButton disabled={adding || !form.name.trim()}>
+                {adding ? "Creating…" : "Create coworker"}
+              </PrimaryButton>
+            </div>
+          </form>
+        </Panel>
+      )}
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative w-full max-w-xs">
@@ -104,7 +375,7 @@ export default function CoworkersPage() {
         <EmptyState
           icon={<Users className="h-4 w-4" />}
           title="No coworkers configured"
-          description="The runtime has no agents yet. Create one in Agent Team, or seed the built-in finance teammates, and it will appear here with its provider and model."
+          description="Use Add coworker above to create one, or seed the built-in finance teammates, and it will appear here with its provider and model."
           action={
             <div className="flex gap-2">
               <button
