@@ -223,7 +223,12 @@ export class CliProvider implements LLMProvider {
 
   async *chat(request: ChatRequest, opts?: LLMProviderOptions): AsyncIterable<LLMEvent> {
     const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const model = request.model || this.command;
+    const model =
+      request.model && request.model !== "default" && request.model !== "opencode" && request.model !== "opencode-cli"
+        ? request.model
+        : this.command === "opencode"
+          ? "opencode/deepseek-v4.1-flash-free"
+          : this.command;
     const botId = opts?.botId ?? this.botId;
     yield { type: "message_start", messageId, model, timestamp: Date.now() };
 

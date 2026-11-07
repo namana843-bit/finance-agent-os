@@ -110,7 +110,6 @@ export class AgentRuntime {
     this.toolRegistry = opts.toolRegistry;
     this.bus = opts.bus;
     this.persistence = opts.persistence ?? new AgentPersistence();
-    this.ensureDefaultAgents();
     this.ready = this.init();
   }
 
@@ -691,6 +690,7 @@ export class AgentRuntime {
     history: LLMMessage[] = [],
     opts?: { signal?: AbortSignal; conversationId?: string },
   ): AsyncIterable<LLMEvent> {
+    await this.ready;
     let config: AgentConfig;
     let agentId: string;
     if (typeof agentIdOrConfig === "string") {

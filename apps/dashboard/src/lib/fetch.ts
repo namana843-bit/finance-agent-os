@@ -1,6 +1,8 @@
 export const API_BASE =
   (typeof process !== "undefined" && (process as unknown as { env?: Record<string, string> }).env?.NEXT_PUBLIC_API_BASE) ||
-  "http://localhost:4132";
+  (typeof window !== "undefined" && window.location && window.location.hostname
+    ? `${window.location.protocol}//${window.location.hostname}:4132`
+    : "http://localhost:4132");
 
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const url = path.startsWith("http") ? path : `${API_BASE}${path}`;

@@ -170,6 +170,32 @@ def get_cline_models(cline_bin: str, data_dir: str | None) -> dict:
 
     payload["available"] = True
     payload["providers"] = provider_rows
+
+    # Also include OpenCode Free Models so OpenCode models populate the interface
+    opencode_models = [
+        "opencode/deepseek-v4.1-flash-free",
+        "opencode/beam-free",
+        "opencode/big-pickle",
+        "opencode/flint-40b-free",
+        "opencode/glm-5.3-flash-free",
+        "opencode/mimo-v2.6-flash-free",
+        "opencode/nemotron-3.5-lightning-free",
+        "opencode/nemotron-3.5-super-vl-free",
+    ]
+    for oc_m in opencode_models:
+        if oc_m not in models:
+            models.append(oc_m)
+
+    provider_rows.append({
+        "id": "opencode",
+        "model": "opencode/deepseek-v4.1-flash-free",
+        "tokenSource": "free",
+        "updatedAt": "2026-11-07T12:00:00.000Z",
+        "reasoning": None,
+        "authConfigured": True,
+        "isLastUsed": False,
+    })
+
     payload["models"] = sorted(models)
     payload["total"] = len(models)
     grouped: dict[str, list[str]] = {}

@@ -75,7 +75,9 @@ export class OpenCodeAdapter extends CliAdapterBase {
       if (
         ctx.model !== undefined &&
         ctx.model !== "" &&
-        ctx.model !== "default"
+        ctx.model !== "default" &&
+        ctx.model !== "opencode" &&
+        ctx.model !== "opencode-cli"
       ) {
         flags.push("--model", ctx.model);
       }
