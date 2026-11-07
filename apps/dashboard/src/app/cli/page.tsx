@@ -56,7 +56,6 @@ export default function CliManagementPage() {
   const { agents, agentsState, agentsError, refresh } = useWorkspace();
   const [assignments, setAssignments] = useState<AgentAssignment[]>([]);
   const [defaultProvider, setDefaultProviderState] = useState<string | null>(null);
-  [assignments, defaultProvider];
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -94,6 +93,34 @@ export default function CliManagementPage() {
     }
     return counts;
   }, [assignments]);
+
+  // Discovered provider inventory. Declared before any conditional return so
+  // the hook order is identical on every render (React error #310 otherwise).
+  const providers = useMemo(() => {
+    const seen = new Set<string>();
+    const list: Array<{ id: string; name: string; count: number; status: string }> = [];
+    // Collect from assignments first
+    for (const a of assignments) {
+      const pid = a.providerId ?? "default";
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      list.push({
+        id: pid,
+        name: pid === "default" ? "Default (inherited)" : pid,
+        count: providerCounts[pid] ?? 0,
+        status: "ok",
+      });
+    }
+    // Also include any provider connections that have zero agents
+    return list;
+  }, [assignments, providerCounts]);
+
+  // Explicit provider ids across agents, deduplicated — several agents may
+  // share one provider, and ids must not repeat as React keys in <option>s.
+  const assignedProviderIds = useMemo(
+    () => [...new Set(assignments.flatMap((a) => (a.providerId ? [a.providerId] : [])))],
+    [assignments],
+  );
 
   const handleToggleSelect = (agentId: string) => {
     setSelectedAgentIds((prev) => {
@@ -168,25 +195,6 @@ export default function CliManagementPage() {
   if (loading) return <LoadingBlock rows={4} label="Loading CLI management" />;
   if (error) return <ErrorBanner title="CLI management unavailable" message={error} onRetry={() => void load()} />;
 
-  const providers = useMemo(() => {
-    const seen = new Set<string>();
-    const list: Array<{ id: string; name: string; count: number; status: string }> = [];
-    // Collect from assignments first
-    for (const a of assignments) {
-      const pid = a.providerId ?? "default";
-      if (seen.has(pid)) continue;
-      seen.add(pid);
-      list.push({
-        id: pid,
-        name: pid === "default" ? "Default (inherited)" : pid,
-        count: providerCounts[pid] ?? 0,
-        status: "ok",
-      });
-    }
-    // Also include any provider connections that have zero agents
-    return list;
-  }, [assignments, providerCounts]);
-
   return (
     <div>
       <PageHeader
@@ -222,9 +230,9 @@ export default function CliManagementPage() {
             className="rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
           >
             <option value="">None (agents choose their own)</option>
-            {assignments.map((a) => (
-              <option key={a.providerId ?? "none"}>
-                {a.providerId ?? "default"}
+            {assignedProviderIds.map((id) => (
+              <option key={id} value={id}>
+                {id}
               </option>
             ))}
           </select>
@@ -400,11 +408,11 @@ export default function CliManagementPage() {
                         className="rounded-lg border border-white/[0.07] bg-white/[0.02] pl-2 pr-2 text-[10px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
                       >
                         <option value="">Default</option>
-                        {assignments
-                          .filter((x) => x.providerId)
-                          .map((x) => (
-                            <option key={x.providerId}>{x.providerId}</option>
-                          ))}
+                        {assignedProviderIds.map((id) => (
+                          <option key={id} value={id}>
+                            {id}
+                          </option>
+                        ))}
                       </select>
                     </td>
                   </tr>
