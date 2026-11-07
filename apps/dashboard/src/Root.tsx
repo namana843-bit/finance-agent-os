@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import EnginesPage from "./app/engines/page";
-import TeamPage from "./app/team/page";
+import CliPage from "./app/cli/page";
 import CodingPage from "./app/coding/page";
 import HomePage from "./app/home/page";
 import WorkspacePage from "./app/workspace/page";
@@ -73,10 +72,8 @@ function renderRoute(path: string) {
           <SettingsPage />
         </ShellRoute>
       );
-    case "/team":
-      return <TeamPage />;
-    case "/engines":
-      return <EnginesPage />;
+    case "/cli":
+      return <ShellRoute route="/cli"><CliPage /></ShellRoute>;
     case "/coding":
       return <CodingPage />;
     default:

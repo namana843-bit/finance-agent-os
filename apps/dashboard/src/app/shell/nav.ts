@@ -5,6 +5,7 @@ import {
   Radio,
   Settings,
   SquareTerminal,
+  Terminal,
   Users,
   type LucideIcon,
 } from "lucide-react";
@@ -24,13 +25,12 @@ export const PRIMARY_NAV: NavItem[] = [
   { route: "/coworkers", label: "Coworkers", icon: Users, description: "Agent directory, models and status" },
   { route: "/channels", label: "Channels", icon: Radio, description: "Persistent research threads" },
   { route: "/tasks", label: "Tasks", icon: Briefcase, description: "Workflow runs and approvals" },
+  { route: "/cli", label: "CLI Management", icon: Terminal, description: "CLI providers and agent assignments" },
   { route: "/settings", label: "Settings", icon: Settings, description: "Providers, engines and safety" },
 ];
 
 /** Screens that keep the original standalone layouts and are linked from the shell. */
 export const LEGACY_SCREENS: NavItem[] = [
-  { route: "/team", label: "Agent Team", icon: Users, description: "Original team workbench" },
-  { route: "/engines", label: "Model Engines", icon: SquareTerminal, description: "CLI engines and model registry" },
   { route: "/coding", label: "Providers", icon: SquareTerminal, description: "Provider sessions and worktrees" },
 ];
 

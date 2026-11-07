@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { MessageSquare, Search, Users, Plus, X, Zap } from "lucide-react";
+import { ArrowRight, MessageSquare, Search, Users, Plus, X, Zap, Terminal, Copy } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { navigate } from "../shell/nav";
 import {
@@ -15,7 +15,7 @@ import {
   TextButton,
 } from "../shell/ui";
 import { avatarTone, agentInitials, useWorkspace } from "../shell/workspace-data";
-import { createAgent, fetchAgents, type AgentApiConfig } from "../../lib/api";
+import { createAgent, fetchAgents, setAgentProvider, bulkSetAgentProvider, type AgentApiConfig } from "../../lib/api";
 
 type CoworkerStatus = "working" | "waiting" | "ready" | "unknown";
 
@@ -54,6 +54,9 @@ export default function CoworkersPage() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState("");
+  const [providerSaving, setProviderSaving] = useState<Set<string>>(new Set());
+  const [editingProvider, setEditingProvider] = useState<string | null>(null);
+  const [newProviderId, setNewProviderId] = useState("");
 
   const [form, setForm] = useState<NewCoworker>({
     name: "",
@@ -100,6 +103,14 @@ export default function CoworkersPage() {
           .includes(needle);
       });
   }, [agents, runs, query, agentsState]);
+
+  const assignmentsProviderOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const a of agents) {
+      if (a.providerId) seen.add(a.providerId);
+    }
+    return Array.from(seen).sort();
+  }, [agents]);
 
   const slugify = (name: string) =>
     name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-+$)/g, "") || "coworker";
@@ -160,6 +171,42 @@ export default function CoworkersPage() {
     }
   };
 
+  const handleAssignProvider = async (agentId: string, providerId: string | null) => {
+    setProviderSaving((prev) => new Set([...prev, agentId]));
+    try {
+      await setAgentProvider(agentId, providerId);
+      setEditingProvider(null);
+      setNewProviderId("");
+      await refresh();
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setProviderSaving((prev) => {
+        const next = new Set(prev);
+        next.delete(agentId);
+        return next;
+      });
+    }
+  };
+
+  const handleBulkAssign = async (providerId: string) => {
+    setProviderSaving((prev) => new Set([...prev, ...agents.map((a) => a.id)]));
+    try {
+      await bulkSetAgentProvider({ providerId });
+      setEditingProvider(null);
+      setNewProviderId("");
+      await refresh();
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setProviderSaving((prev) => {
+        const next = new Set(prev);
+        for (const a of agents) next.delete(a.id);
+        return next;
+      });
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -175,9 +222,14 @@ export default function CoworkersPage() {
             >
               <Plus className="h-3 w-3" /> Add coworker
             </button>
-            <TextButton onClick={() => navigate("/team")}>
-              <Users className="h-3.5 w-3.5" />
-              Manage team
+            <TextButton
+              onClick={() => {
+                setEditingProvider(null);
+                setNewProviderId("");
+              }}
+              className="rounded-md border border-white/10 px-2.5 py-1.5 text-[11px] text-neutral-400 hover:bg-white/5"
+            >
+              <Terminal className="h-3 w-3" /> CLI management
             </TextButton>
           </div>
         }
@@ -380,13 +432,6 @@ export default function CoworkersPage() {
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => navigate("/team")}
-                className="rounded-md bg-emerald-500 px-3 py-1.5 text-[11.5px] font-semibold text-emerald-950 hover:bg-emerald-400"
-              >
-                Open Agent Team
-              </button>
-              <button
-                type="button"
                 onClick={() => navigate("/settings")}
                 className="rounded-md border border-white/10 px-3 py-1.5 text-[11.5px] text-neutral-300 hover:bg-white/5"
               >
@@ -432,7 +477,35 @@ export default function CoworkersPage() {
                 <div className="mt-3 grid grid-cols-2 gap-2">
                   <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] px-2.5 py-1.5">
                     <MonoLabel>Provider</MonoLabel>
-                    <div className="mt-0.5 truncate font-mono text-[10.5px] text-neutral-300">{agent.engine ?? "—"}</div>
+                    {editingProvider === agent.id ? (
+                      <select
+                        value={newProviderId}
+                        onChange={(e) => setNewProviderId(e.target.value)}
+                        disabled={providerSaving.has(agent.id)}
+                        className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-2 pr-2 text-[10px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+                      >
+                        <option value="">Default</option>
+                        {assignmentsProviderOptions.map((p) => (
+                          <option key={p}>{p}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="mt-0.5 truncate font-mono text-[10.5px] text-neutral-300" title={agent.providerId ?? agent.engine}>
+                        {agent.providerId ?? agent.engine ?? "—"}
+                        {agent.providerId && (
+                          <span className="ml-1 text-emerald-400">●</span>
+                        )}
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        editingProvider === agent.id ? setEditingProvider(null) : setEditingProvider(agent.id)
+                      }
+                      className="rounded-md border border-white/10 px-2 py-1 text-[9px] text-neutral-400 hover:bg-white/5 hover:text-neutral-200 transition-colors"
+                    >
+                      {editingProvider === agent.id ? <X className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                    </button>
                   </div>
                   <div className="rounded-lg border border-white/[0.05] bg-white/[0.02] px-2.5 py-1.5">
                     <MonoLabel>Model</MonoLabel>
@@ -450,22 +523,44 @@ export default function CoworkersPage() {
                 </div>
 
                 <div className="mt-3 flex items-center gap-2 border-t border-white/[0.05] pt-3">
-                  <button
-                    type="button"
-                    onClick={() => navigate("/workspace", { coworker: agent.id })}
-                    className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md bg-emerald-500/90 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-950 transition-colors hover:bg-emerald-400"
-                  >
-                    <MessageSquare className="h-3 w-3" />
-                    Open chat
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => navigate("/tasks", { coworker: agent.id })}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-white/10 px-2.5 py-1.5 text-[11px] text-neutral-300 transition-colors hover:bg-white/5"
-                  >
-                    <Zap className="h-3 w-3" />
-                    Tasks
-                  </button>
+                  {editingProvider === agent.id ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleAssignProvider(agent.id, newProviderId || null)}
+                        disabled={providerSaving.has(agent.id)}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/90 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-950 transition-colors hover:bg-emerald-400 disabled:opacity-50"
+                      >
+                        {providerSaving.has(agent.id) ? "Saving…" : "Save"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingProvider(null)}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] font-medium text-neutral-300 transition-colors hover:bg-white/5"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => navigate("/workspace", { coworker: agent.id })}
+                        className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md bg-emerald-500/90 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-950 transition-colors hover:bg-emerald-400"
+                      >
+                        <MessageSquare className="h-3 w-3" />
+                        Open chat
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => navigate("/tasks", { coworker: agent.id })}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-white/10 px-2.5 py-1.5 text-[11px] text-neutral-300 transition-colors hover:bg-white/5"
+                      >
+                        <Zap className="h-3 w-3" />
+                        Tasks
+                      </button>
+                    </>
+                  )}
                 </div>
               </Panel>
             );
