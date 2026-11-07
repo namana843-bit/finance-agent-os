@@ -12,6 +12,7 @@
  */
 import type { AgentRuntime } from "../llm/agent-runtime.js";
 import type { EngineManager } from "../llm/registry.js";
+import { getProviderRegistry } from "../core/runtime.js";
 import type { FinanceToolRegistry } from "../llm/finance-tool-registry.js";
 import type { CoworkerValidationDeps } from "./coworker-validation.js";
 
@@ -43,6 +44,7 @@ export const ALLOWED_BOT_FIELDS = [
   "description",
   "role",
   "engine",
+  "providerId",
   "model",
   "systemPrompt",
   "tools",
@@ -90,10 +92,19 @@ export function buildCoworkerValidationDeps(
   toolRegistry: FinanceToolRegistry,
   ignoreId?: string,
 ): CoworkerValidationDeps {
+  const providerRegistry = getProviderRegistry();
   return {
     engineExists: async (engineId: string) => {
       try {
         await engineManager.getProviderForEngine(engineId);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    providerExists: async (providerId: string) => {
+      try {
+        providerRegistry.get(providerId);
         return true;
       } catch {
         return false;
