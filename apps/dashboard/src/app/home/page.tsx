@@ -233,7 +233,7 @@ export default function HomePage() {
             <SectionHeading
               title="Portfolio summary"
               description="Paper portfolio snapshot from the local risk and portfolio services."
-              action={<GhostLink onClick={() => navigate("/team")}>Agent Team</GhostLink>}
+              action={<GhostLink onClick={() => navigate("/coworkers")}>Coworkers</GhostLink>}
             />
             {portfolioState === "loading" ? (
               <LoadingBlock rows={2} label="Loading portfolio" />
@@ -259,10 +259,10 @@ export default function HomePage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => navigate("/team")}
+                    onClick={() => navigate("/coworkers")}
                     className="rounded-md border border-white/10 px-2.5 py-1.5 text-[11px] text-neutral-400 hover:bg-white/5"
                   >
-                    Open Team
+                    Open Coworkers
                   </button>
                 </div>
               </div>
@@ -350,14 +350,14 @@ export default function HomePage() {
                 compact
                 icon={<Users className="h-4 w-4" />}
                 title="No coworkers configured"
-                description="Create an agent in the Agent Team screen to populate this workspace."
+                description="Create an agent in the Coworkers screen to populate this workspace."
                 action={
                   <button
                     type="button"
-                    onClick={() => navigate("/team")}
+                    onClick={() => navigate("/coworkers")}
                     className="rounded-md border border-white/10 px-2.5 py-1.5 text-[11px] text-neutral-300 hover:bg-white/5"
                   >
-                    Open Agent Team
+                    Open Coworkers
                   </button>
                 }
               />

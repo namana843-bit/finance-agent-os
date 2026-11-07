@@ -190,13 +190,6 @@ export function updateOpencodeModelApi(opts: {
   });
 }
 
-export function saveEngineCliOverride(id: string, command: string): Promise<{ ok: boolean; engine: EngineApiStatus }> {
-  return fetchJson<{ ok: boolean; engine: EngineApiStatus }>(`/api/llm/engines/${encodeURIComponent(id)}/cli`, {
-    method: "POST",
-    body: JSON.stringify({ command }),
-  });
-}
-
 // Streaming Agent Chat
 export async function streamAgentChat(
   agentId: string,

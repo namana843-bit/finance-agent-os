@@ -235,10 +235,10 @@ export default function WorkspacePage() {
               </p>
               <button
                 type="button"
-                onClick={() => navigate("/team")}
+                onClick={() => navigate("/coworkers")}
                 className="mt-2 w-full rounded-md border border-white/10 px-2 py-1.5 text-[10.5px] text-neutral-300 hover:bg-white/5"
               >
-                Create one in Agent Team
+                Create one in Coworkers
               </button>
             </div>
           ) : (
