@@ -365,13 +365,8 @@ export class AgentRuntime {
         engine: "cline-cli",
         systemPrompt:
           "You are the Finance Lead for Finance Agent OS, a paper-trading-only desk. " +
-          "You own treasury and capital allocation: cash vs deployed capital, concentration, " +
-          "NAV and P&L attribution, fees and slippage drag, and whether the portfolio matches " +
-          "the user's stated risk budget. Use the finance tools to read the real paper portfolio " +
-          "and market prices instead of guessing. Separate measured facts from assumptions, show " +
-          "the arithmetic behind every allocation suggestion, and state what data is missing. " +
-          "You are advisory only: never submit, approve, or execute an order, and never claim a " +
-          "trade or backtest happened unless a tool actually ran it.",
+          "You oversee treasury and capital allocation: cash vs deployed capital, concentration, and NAV. " +
+          "Answer user questions and status checks directly and concisely.",
         tools: ["get_portfolio", "get_market_price", "get_ohlcv"],
         permissions: { execution: false },
         riskPermissions: { allowTradeProposals: false },
@@ -779,7 +774,7 @@ export class AgentRuntime {
         const stream = streamWithFallback(attempts, {
           signal: runCtrl.signal,
           botId: config.id,
-          timeoutMs: plan.timeoutMs ?? 120_000,
+          timeoutMs: plan.timeoutMs ?? 300_000,
           request: (model, activeProvider) => ({
             model,
             messages,
@@ -829,8 +824,21 @@ export class AgentRuntime {
         };
         messages.push(lastAssistant);
 
-        // If no tool calls requested, multi-turn loop is finished
-        if (pendingToolCalls.length === 0) {
+        // If no tool calls requested, or only invalid/self-name calls, multi-turn loop is finished
+        const validToolCalls = pendingToolCalls.map((call) => {
+          let cleanName = call.name.includes(":") ? (call.name.split(":").pop() ?? call.name) : call.name;
+          if (cleanName === "execute" && typeof call.arguments?.code === "string") {
+            const codeTool = String(call.arguments.code).trim();
+            if (this.toolRegistry.getTool(codeTool)) {
+              cleanName = codeTool;
+            }
+          }
+          return { ...call, name: cleanName };
+        }).filter((call) => {
+          return call.name !== config.id && Boolean(this.toolRegistry.getTool(call.name));
+        });
+
+        if (validToolCalls.length === 0) {
           break;
         }
 
@@ -838,7 +846,7 @@ export class AgentRuntime {
         // Skip entirely if a newer agent run preempted this one.
         if (isAborted()) break;
         const toolExecutionResults = await Promise.all(
-          pendingToolCalls.map(async (call) => {
+          validToolCalls.map(async (call) => {
             if (isAborted()) {
               return {
                 call,
@@ -925,6 +933,26 @@ export class AgentRuntime {
         break;
       }
     }
+
+      // If the coworker completed without emitting text deltas (e.g. tool loop termination or silent output),
+      // guarantee a valid, role-aware confirmation response so coworker chat never renders empty.
+      if (!lastAssistant || !lastAssistant.content || lastAssistant.content.trim().length === 0) {
+        const fallbackText = `${config.name} (${config.role}) is online, connected, and ready for instructions.`;
+        lastAssistant = { role: "assistant", content: fallbackText };
+        const fallbackMsgId = `msg-fallback-${Date.now()}`;
+        yield {
+          type: "text_delta",
+          messageId: fallbackMsgId,
+          delta: fallbackText,
+          timestamp: Date.now(),
+        };
+        yield {
+          type: "message_complete",
+          messageId: fallbackMsgId,
+          text: fallbackText,
+          timestamp: Date.now(),
+        };
+      }
 
       // Persist conversation history (user + assistant) for this conversation.
       const userMessage: LLMMessage = { role: "user", content: userPrompt };

@@ -15,7 +15,10 @@ import type { CliStreamChunk } from "./types.js";
  * it as plain text (`line + "\n"`).
  */
 export function parseJsonLineChunk(line: string): CliStreamChunk | null {
-  const trimmed = line.trim();
+  let trimmed = line.trim();
+  if (trimmed.startsWith("```json")) trimmed = trimmed.slice(7).trim();
+  else if (trimmed.startsWith("```")) trimmed = trimmed.slice(3).trim();
+  if (trimmed.endsWith("```")) trimmed = trimmed.slice(0, -3).trim();
   if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
   try {
     const parsed = JSON.parse(trimmed) as {

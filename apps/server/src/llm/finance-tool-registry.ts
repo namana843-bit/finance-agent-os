@@ -76,7 +76,8 @@ export class FinanceToolRegistry {
   }
 
   async executeTool(name: string, input: Record<string, unknown>): Promise<unknown> {
-    const tool = this.tools.get(name);
+    const cleanName = name.includes(":") ? (name.split(":").pop() ?? name) : name;
+    const tool = this.tools.get(cleanName) ?? this.tools.get(name);
     if (!tool) {
       throw new Error(`Tool '${name}' not found in FinanceToolRegistry`);
     }
