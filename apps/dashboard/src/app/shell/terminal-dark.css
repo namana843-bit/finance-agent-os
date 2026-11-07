@@ -1,0 +1,267 @@
+/* ============================================================================
+   Finance Agent OS — Terminal dark re-skin for the legacy team/coding screens.
+
+   These screens keep their own class names (`team-*`, `coding-*`) and structure;
+   this file only maps their light palette onto the shared dark financial
+   terminal identity used by the AppShell (#07080a shell, white/[0.07] borders,
+   emerald accent). Rules are prefixed with `.team-shell` to win specificity
+   over team.css / coding.css regardless of bundle order. Layout is untouched.
+   ========================================================================== */
+
+/* --- Shell frame ---------------------------------------------------------- */
+.team-shell { background: #07080a; color: #e7e9ee; font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
+.team-shell .team-sidebar { background: #0a0b0e; border-right-color: #17181d; }
+.team-shell .team-main { background: transparent; }
+.team-shell .team-topbar { background: rgba(10, 11, 14, 0.88); border-bottom-color: #17181d; }
+.team-shell .team-breadcrumb { color: #8b919c; }
+.team-shell .team-breadcrumb span { color: #43464e; }
+.team-shell .team-breadcrumb strong { color: #e7e9ee; }
+.team-shell .team-divider { background: #17181d; }
+.team-shell .team-workspace-label { color: #6b7280; }
+.team-shell .team-workspace-label span { color: #565b64; }
+
+/* Brand → same emerald mark as the AppShell logo */
+.team-shell .team-brand { color: #e7e9ee; }
+.team-shell .team-brand-mark {
+  background: linear-gradient(to bottom right, #34d399, #0d9488);
+  color: #064e3b;
+  box-shadow: 0 0 20px -6px rgba(52, 211, 153, 0.7);
+}
+.team-shell .team-brand small { color: #6b7280; }
+
+/* --- Navigation ------------------------------------------------------------ */
+.team-shell .team-nav-item { color: #9aa1ac; }
+.team-shell .team-nav-item:hover { background: rgba(255, 255, 255, 0.04); color: #d5d8de; }
+.team-shell .team-nav-item.active { background: rgba(255, 255, 255, 0.07); color: #f4f6f9; }
+.team-shell .team-nav-count { background: rgba(255, 255, 255, 0.07); color: #9aa1ac; }
+.team-shell .team-agent-link,
+.team-shell .coding-project-button { color: inherit; }
+.team-shell .team-agent-link.selected { background: rgba(255, 255, 255, 0.05); border-color: #1d2025; }
+.team-shell .team-agent-link-copy strong { color: #d5d8de; }
+.team-shell .team-agent-link-copy small { color: #6b7280; }
+.team-shell .team-paper-badge { background: rgba(255, 255, 255, 0.03); border-color: #1d2025; }
+.team-shell .team-paper-badge strong { color: #d5d8de; }
+.team-shell .team-paper-badge small { color: #6b7280; }
+.team-shell .team-icon-button { background: #101216; border-color: #23262c; color: #9aa1ac; }
+.team-shell .team-icon-button:hover { border-color: #34d39940; color: #d5d8de; }
+
+/* --- Headers & metric cards ------------------------------------------------ */
+.team-shell .team-heading-row h1 { font-family: 'Inter', sans-serif; font-weight: 600; letter-spacing: -0.5px; color: #f4f6f9; }
+.team-shell .team-heading-row h1 span { color: #6ee7b7; }
+.team-shell .team-eyebrow { color: #6ee7b780; }
+.team-shell .team-eyebrow-line { background: #34d39980; }
+.team-shell .team-subtitle { color: #8b919c; }
+.team-shell .team-metric-card { background: #0d0f13; border-color: #1d2025; }
+.team-shell .team-metric-top { color: #8b919c; }
+.team-shell .team-metric-top svg { color: #565b64; }
+.team-shell .team-metric-card > strong { color: #f4f6f9; }
+.team-shell .team-metric-card > small { color: #6b7280; }
+.team-shell .positive { color: #4ade80 !important; }
+.team-shell .negative { color: #f87171 !important; }
+
+/* --- Panels, cards, chips -------------------------------------------------- */
+.team-shell .team-card,
+.team-shell .coding-provider-card,
+.team-shell .team-chat-panel,
+.team-shell .team-context-panel { background: #0d0f13; border-color: #1d2025; }
+.team-shell .team-card:hover,
+.team-shell .coding-provider-card:hover { border-color: #34d39940; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); }
+.team-shell .team-card.chosen,
+.team-shell .coding-provider-card.chosen { border-color: #34d39966; box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.2); }
+.team-shell .team-card-icon { background: rgba(255, 255, 255, 0.04); }
+.team-shell .team-card-index { color: #565b64; }
+.team-shell .team-card-name,
+.team-shell .coding-provider-name { color: #f4f6f9; }
+.team-shell .team-card-title { color: #6b7280; }
+.team-shell .team-card p,
+.team-shell .coding-provider-card > p { color: #8b919c; }
+.team-shell .team-chip-row span { color: #9aa1ac; background: rgba(255, 255, 255, 0.04); border-color: #23262c; }
+.team-shell .team-card-footer,
+.team-shell .coding-provider-actions { border-top-color: #17181d; }
+.team-shell .team-agent-state { color: #6b7280; }
+.team-shell .team-open-agent { color: #6ee7b7; }
+.team-shell .coding-provider-meta { color: #6b7280; }
+.team-shell .coding-provider-state.good { color: #4ade80; }
+.team-shell .coding-provider-state.bad { color: #f87171; }
+.team-shell .coding-provider-hint { color: #fbbf24 !important; }
+.team-shell .coding-provider-refresh { color: #6ee7b7; }
+.team-shell .coding-empty {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: #2a2d33;
+  color: #6b7280;
+}
+
+/* Avatar / icon tones → glow tones on dark */
+.team-shell .team-agent-avatar.violet, .team-shell .team-card-icon.violet, .team-shell .team-empty-icon.violet { background: #8162c21f; color: #b49bf0; }
+.team-shell .team-agent-avatar.green, .team-shell .team-card-icon.green, .team-shell .team-empty-icon.green { background: #34d3991a; color: #6ee7b7; }
+.team-shell .team-agent-avatar.blue, .team-shell .team-card-icon.blue, .team-shell .team-empty-icon.blue { background: #4b83c51f; color: #8ab6e8; }
+.team-shell .team-agent-avatar.amber, .team-shell .team-card-icon.amber, .team-shell .team-empty-icon.amber { background: #fbbf241a; color: #fcd34d; }
+.team-shell .team-agent-avatar.teal, .team-shell .team-card-icon.teal, .team-shell .team-empty-icon.teal { background: #2f857a22; color: #5eead4; }
+.team-shell .team-message-avatar.assistant { background: #34d3991a; color: #6ee7b7; }
+.team-shell .coding-agent-badge { background: #34d3991a; color: #6ee7b7; }
+.team-shell .coding-project-icon { background: #34d39914; color: #6ee7b7; }
+
+/* --- Chat workbench ---------------------------------------------------------- */
+.team-shell .team-chat-header,
+.team-shell .team-composer,
+.team-shell .team-context-title { border-bottom-color: #17181d; }
+.team-shell .team-context-title { border-bottom-color: #17181d; }
+.team-shell .team-chat-agent-title strong { color: #f4f6f9; }
+.team-shell .team-chat-agent-title span { color: #6b7280; }
+.team-shell .team-session-tag { color: #8b919c; }
+.team-shell .team-empty-state h3 { color: #e7e9ee; }
+.team-shell .team-empty-state > p { color: #8b919c; }
+.team-shell .team-suggested-prompt { background: rgba(255, 255, 255, 0.03); border-color: #1d2025; color: #8fa697; }
+.team-shell .team-suggested-prompt strong { color: #bfe6cf; }
+.team-shell .team-suggested-prompt small { color: #8b919c; }
+.team-shell .team-message-avatar { background: rgba(255, 255, 255, 0.07); color: #9aa1ac; }
+.team-shell .team-message.user .team-message-avatar { background: rgba(255, 255, 255, 0.07); color: #c7cbd3; }
+.team-shell .team-message-role { color: #8b919c; }
+.team-shell .team-message-content p { color: #cfd3da; }
+.team-shell .team-cursor { background: #34d399; }
+.team-shell .team-composer textarea { color: #dfe2e8; }
+.team-shell .team-composer textarea::placeholder { color: #6b7280; }
+.team-shell .team-composer-footer > span { color: #6b7280; }
+.team-shell .team-composer-footer button { background: #34d399; color: #052e19; }
+.team-shell .team-composer-footer button:hover { background: #6ee7b7; color: #052e19; }
+.team-shell .coding-cancel-button { background: #b91c1c !important; color: #fecaca !important; }
+
+/* Context panel */
+.team-shell .team-context-title svg { color: #6ee7b7; }
+.team-shell .team-context-label { color: #6b7280; }
+.team-shell .team-context-value { color: #6ee7b7; }
+.team-shell .team-context-block > p { color: #8b919c; }
+.team-shell .team-runtime-row { color: #8b919c; }
+.team-shell .team-runtime-row strong { color: #c7cbd3; }
+.team-shell .team-quick-task { border-bottom-color: #17181d; color: #9aa1ac; }
+.team-shell .team-quick-task svg { color: #565b64; }
+.team-shell .team-context-note { background: rgba(52, 211, 153, 0.06); border-color: #34d39926; color: #8fa697; }
+.team-shell .team-context-note p { color: #8fa697; }
+.team-shell .team-context-note strong { color: #bfe6cf; }
+.team-shell .coding-note-warn { background: #fbbf2410; border-color: #fbbf2433; color: #fcd34d; }
+.team-shell .coding-note-warn p { color: #e3c98a; }
+.team-shell .coding-note-warn strong { color: #fcd34d; }
+.team-shell .team-note-copy { color: #8b919c; }
+
+/* --- States: error / status pills ------------------------------------------ */
+.team-shell .team-error { background: rgba(248, 113, 113, 0.08); border-color: #f8717133; color: #fca5a5; }
+.team-shell .coding-connection-pill.good { background: #34d39914; color: #4ade80; }
+.team-shell .coding-connection-pill.bad { background: #f8717114; color: #f87171; }
+.team-shell .coding-connection-pill.muted { background: rgba(255, 255, 255, 0.05); color: #8b919c; }
+.team-shell .team-status-dot.good, .team-shell .team-live-dot { background: #4ade80; }
+.team-shell .coding-session-dot.status-running { background: #4ade80; }
+.team-shell .coding-session-dot.status-failed { background: #f87171; }
+.team-shell .coding-session-dot.status-cancelled { background: #fbbf24; }
+.team-shell .coding-session-dot.status-closed { background: #4b5563; }
+
+/* Capability rows */
+.team-shell .coding-capability.on { color: #6ee7b7; }
+.team-shell .coding-capability.off { color: #565b64; }
+.team-shell .coding-capability.off span:last-child { text-decoration-color: #2a2d33; }
+
+/* Terminal + diff patch (already dark — align hue with shell) */
+.team-shell .coding-terminal { background: #0c0e11; border: 1px solid #17181d; color: #a3c2a8; }
+.team-shell .coding-terminal-empty { color: #565b64; }
+.team-shell .coding-terminal-line { color: #7d8f86; }
+.team-shell .coding-diff-patch { background: #0c0e11; border: 1px solid #17181d; color: #a3c2a8; }
+.team-shell .coding-diff-file { color: #9aa1ac; }
+.team-shell .coding-diff-status { background: rgba(255, 255, 255, 0.06); color: #9aa1ac; }
+.team-shell .coding-diff-status.s-M { background: #fbbf241a; color: #fcd34d; }
+.team-shell .coding-diff-status.s-A { background: #34d3991a; color: #4ade80; }
+.team-shell .coding-diff-status.s-D { background: #f871711a; color: #f87171; }
+.team-shell .coding-diff-status.s-uu { background: #2f857a22; color: #5eead4; }
+.team-shell .coding-diff-refresh { color: #8b919c; }
+.team-shell .coding-diff-refresh:hover { color: #6ee7b7; }
+
+/* Sidebar projects + sessions */
+.team-shell .coding-project-row.selected { background: rgba(255, 255, 255, 0.05); }
+.team-shell .coding-project-button { color: inherit; }
+.team-shell .coding-project-copy strong { color: #d5d8de; }
+.team-shell .coding-project-copy small { color: #6b7280; }
+.team-shell .coding-project-remove { color: #565b64; }
+.team-shell .coding-project-remove:hover { color: #f87171; }
+.team-shell .coding-session-row:hover { background: rgba(255, 255, 255, 0.04); }
+.team-shell .coding-session-row.selected { background: rgba(52, 211, 153, 0.08); }
+.team-shell .coding-session-copy strong { color: #c7cbd3; }
+.team-shell .coding-session-copy small { color: #6b7280; }
+.team-shell .coding-add-project input { background: #101216; border-color: #23262c; color: #d5d8de; }
+.team-shell .coding-add-project input::placeholder { color: #4b5563; }
+.team-shell .coding-add-project input:focus { border-color: #34d39966; }
+.team-shell .coding-add-project button { background: #101216; border-color: #23262c; color: #6ee7b7; }
+
+/* Inputs & small buttons */
+.team-shell .team-wf-symbol,
+.team-shell .team-wf-reject-row input,
+.team-shell .coding-diff-toggle,
+.team-shell .coding-worktree-remove { background: #101216; border-color: #23262c; color: #d5d8de; }
+.team-shell .coding-diff-toggle { color: #6ee7b7; }
+.team-shell .coding-diff-toggle:hover { border-color: #34d39966; }
+.team-shell .coding-worktree-remove { color: #f87171; }
+.team-shell .coding-worktree-remove:hover { border-color: #f8717140; background: rgba(248, 113, 113, 0.08); }
+.team-shell .coding-isolate-toggle { color: #8b9c92; }
+.team-shell .coding-isolate-toggle input { accent-color: #34d399; }
+
+/* Workflow (approval) cards */
+.team-shell .team-wf-run { background: #0d0f13; border-color: #1d2025; }
+.team-shell .team-wf-empty { background: rgba(255, 255, 255, 0.02); border-color: #2a2d33; color: #6b7280; }
+.team-shell .team-wf-badge { background: rgba(255, 255, 255, 0.05); color: #9aa1ac; }
+.team-shell .team-wf-badge.awaiting_approval { background: #fbbf241a; color: #fcd34d; }
+.team-shell .team-wf-badge.completed { background: #34d3991a; color: #4ade80; }
+.team-shell .team-wf-badge.failed { background: #f871711a; color: #f87171; }
+.team-shell .team-wf-order { color: #d5d8de; }
+.team-shell .team-wf-time { color: #565b64; }
+.team-shell .team-wf-rationale { color: #cfd3da; }
+.team-shell .team-wf-risk,
+.team-shell .team-wf-portfolio { color: #8b919c; }
+.team-shell .team-wf-error { color: #fca5a5; }
+.team-shell .team-wf-fill { color: #4ade80; }
+.team-shell .team-wf-actions button { background: #101216; border-color: #23262c; color: #d5d8de; }
+.team-shell .team-wf-actions button:first-child { background: #34d399; border-color: #34d399; color: #052e19; }
+
+/* --- Provider select dropdown (dark menu) ----------------------------------- */
+.team-shell .coding-provider-select-button { background: #101216; border-color: #23262c; }
+.team-shell .coding-provider-select-button:hover { border-color: #34d39940; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); }
+.team-shell .coding-provider-select-button.connected { border-color: #34d39966; box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.2); }
+.team-shell .coding-provider-select-label { color: #f4f6f9; }
+.team-shell .coding-provider-select-menu { background: #101216; border-color: #23262c; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55); }
+.team-shell .coding-provider-select-refresh { color: #8b919c; border-bottom-color: #17181d; }
+.team-shell .coding-provider-select-refresh:hover { background: rgba(255, 255, 255, 0.04); color: #6ee7b7; }
+.team-shell .coding-provider-select-empty { color: #6b7280; }
+.team-shell .coding-provider-select-option:hover { background: rgba(255, 255, 255, 0.04); }
+.team-shell .coding-provider-select-option.selected { background: rgba(52, 211, 153, 0.08); }
+.team-shell .coding-provider-select-name { color: #e7e9ee; }
+
+/* --- Provider management section (grouped grid + search) -------------------- */
+.coding-providers-search { display: flex; align-items: center; gap: 8px; max-width: 320px; }
+.coding-providers-search svg { flex-shrink: 0; color: #565b64; }
+.coding-providers-search input {
+  width: 100%;
+  border: 1px solid #23262c;
+  border-radius: 9px;
+  background: #101216;
+  padding: 8px 10px;
+  font: 10px 'DM Mono', monospace;
+  color: #d5d8de;
+  outline: none;
+}
+.coding-providers-search input::placeholder { color: #4b5563; }
+.coding-providers-search input:focus { border-color: #34d39966; }
+
+.coding-provider-section { margin-bottom: 6px; }
+.coding-provider-section-heading {
+  display: flex; align-items: center; gap: 8px;
+  margin: 4px 0 10px;
+  font: 10px 'DM Mono', monospace;
+  letter-spacing: 0.8px;
+  color: #6b7280;
+}
+.coding-provider-section-heading .coding-provider-section-count {
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 2px 6px;
+  color: #9aa1ac;
+}
+
+/* --- Typography standardization --------------------------------------------- */
+.team-shell .team-section-heading h2 { font-family: 'Inter', sans-serif; }
+.team-shell .team-brand strong { font-family: 'Inter', sans-serif; }
