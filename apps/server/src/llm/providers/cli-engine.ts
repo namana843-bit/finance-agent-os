@@ -15,6 +15,7 @@ import type { SpawnFn } from "../cli-driver.js";
 import { CliSessionManager, createCliSessionManager, CliSession } from "../cli-session.js";
 import type { CliAdapter, CliManager } from "../../cli/index.js";
 import { getDefaultCliManager } from "../../cli/index.js";
+import { getOpencodeModels } from "../opencode-models.js";
 
 export interface CliProviderOptions {
   id?: string;
@@ -218,7 +219,31 @@ export class CliProvider implements LLMProvider {
 
   async listModels(): Promise<ModelInfo[]> {
     const resolved = await this.resolvePath(this.command);
-    return resolved ? [{ id: this.command, name: this.name, provider: this.id, supportsTools: true, description: `Local executable: ${resolved}` }] : [];
+    if (!resolved) return [];
+
+    // For the OpenCode CLI, return the dynamically discovered free models
+    // so coworkers can select a specific model. Falls back to the command
+    // name if discovery fails or returns no models.
+    if (this.command === "opencode" || this.id.startsWith("cli-opencode")) {
+      try {
+        const discovered = await getOpencodeModels({ refresh: false });
+        if (discovered.models && discovered.models.length > 0) {
+          return discovered.models.map((m) => ({
+            id: m,
+            name: m,
+            provider: this.id,
+            supportsTools: true,
+            description: `OpenCode free model: ${m}`,
+          }));
+        }
+      } catch {
+        // Fall through to the default single-model entry below.
+      }
+    }
+
+    return resolved
+      ? [{ id: this.command, name: this.name, provider: this.id, supportsTools: true, description: `Local executable: ${resolved}` }]
+      : [];
   }
 
   async *chat(request: ChatRequest, opts?: LLMProviderOptions): AsyncIterable<LLMEvent> {

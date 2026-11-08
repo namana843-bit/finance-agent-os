@@ -12,6 +12,7 @@ import type { ChatRequest, LLMEvent } from "@finance/shared";
 import type { LLMProvider } from "./provider.js";
 import type { EngineManager } from "./registry.js";
 import { getProviderConnections } from "./connections.js";
+import { getCliDefaultModelStore } from "./cli-default-model.js";
 
 export interface RouteTarget {
   providerId: string;
@@ -46,8 +47,15 @@ export async function buildRoutePlan(
   // at a second connection of the same vendor (e.g. `openai-work`).
   if (config.providerId) {
     const connection = store.get(config.providerId);
+    let model = config.model;
+    // For CLI providers (e.g. cli-opencode), fall back to the global default
+    // free model when no model is explicitly set on the coworker.
+    if (!model && config.providerId.startsWith("cli-")) {
+      const defaultModelStore = getCliDefaultModelStore();
+      model = defaultModelStore.get() ?? "default";
+    }
     return {
-      primary: { providerId: config.providerId, model: config.model ?? connection?.defaultModel },
+      primary: { providerId: config.providerId, model },
       fallbacks: (config.fallbacks ?? connection?.fallbackModels ?? []).map((f) => ({
         providerId: f.providerId,
         model: f.model,

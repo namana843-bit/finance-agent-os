@@ -19,6 +19,8 @@ import {
   type ConnectionInput,
 } from "../llm/connections.js";
 import { getCliDefaultProviderStore } from "../llm/cli-default-provider.js";
+import { getCliDefaultModelStore } from "../llm/cli-default-model.js";
+import { getOpencodeModels } from "../llm/opencode-models.js";
 import { presetSummary } from "../llm/provider-catalog.js";
 import { redactSecrets, redactText } from "../llm/redact.js";
 import type { LlmConfig } from "../llm/types.js";
@@ -2575,6 +2577,88 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
       }
     }
     return { ok: true, providerId, results };
+  });
+
+  // -------------------------------------------------------------------------
+  // OpenCode Free Model Discovery & Default Model
+  // -------------------------------------------------------------------------
+
+  /** Discover all genuinely available free models from OpenCode CLI.
+   * Reuses existing OpenCode authentication — never requests a new API key. */
+  app.get<{ Querystring: { refresh?: string } }>("/api/cli/free-models", async (request, reply) => {
+    const refresh = request.query?.refresh === "true" || request.query?.refresh === "1";
+    try {
+      const models = await getOpencodeModels({ refresh });
+      return {
+        available: models.available,
+        cliPath: models.cliPath,
+        total: models.total,
+        models: models.models,
+        grouped: models.grouped,
+        error: models.error,
+      };
+    } catch (err) {
+      return reply.status(500).send({
+        available: false,
+        total: 0,
+        models: [],
+        grouped: {},
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  /** Get the global default free model. */
+  app.get("/api/cli/default-model", async () => {
+    const store = getCliDefaultModelStore();
+    return { model: store.get() };
+  });
+
+  /** Set the global default free model. */
+  app.post<{ Body: { model?: string } }>("/api/cli/default-model", async (request, reply) => {
+    const { model } = request.body ?? {};
+    if (model !== undefined && typeof model !== "string") {
+      return reply.status(400).send({ error: "model must be a string" });
+    }
+    const store = getCliDefaultModelStore();
+    store.set(model ?? null);
+    return { ok: true, model: store.get() };
+  });
+
+  /** Bulk assign a free model to all coworkers.
+   * Body: { model, agentIds?: string[] }.
+   * If agentIds omitted, assigns to all non-built-in, non-archived agents.
+   * Validates that the model is in the discovered free models list. */
+  app.post<{ Body: { model?: string; agentIds?: string[] } }>("/api/agent-runtime/agents/bulk-model", async (request, reply) => {
+    const runtime = getAgentRuntime();
+    const { model, agentIds } = request.body ?? {};
+    if (!model || typeof model !== "string") {
+      return reply.status(400).send({ error: "model is required" });
+    }
+
+    // Validate that the model is a discovered free model
+    const discovered = await getOpencodeModels({ refresh: false });
+    if (discovered.models && discovered.models.length > 0 && !discovered.models.includes(model)) {
+      return reply.status(400).send({
+        error: `Model '${model}' is not a discovered free model. Available: ${discovered.models.join(", ")}`,
+      });
+    }
+
+    const allAgents = runtime.listAgents({ includeArchived: true });
+    const targets = agentIds && agentIds.length > 0
+      ? allAgents.filter((a) => agentIds.includes(a.id))
+      : allAgents.filter((a) => !isBuiltInAgent(a.id) && !(a.archived ?? false));
+    const results: Array<{ agentId: string; ok: boolean; error?: string }> = [];
+    for (const target of targets) {
+      try {
+        const updated = { ...target, model, updatedAt: new Date().toISOString() };
+        runtime.updateAgent(target.id, updated);
+        results.push({ agentId: target.id, ok: true });
+      } catch (err) {
+        results.push({ agentId: target.id, ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return { ok: true, model, results };
   });
 
   // -------------------------------------------------------------------------
