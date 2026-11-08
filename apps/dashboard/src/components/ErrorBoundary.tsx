@@ -10,20 +10,25 @@ interface Props {
 interface State {
   hasError: boolean;
   error: Error | null;
+  componentStack: string | null;
 }
 
 export class ErrorBoundary extends Component<Props, State> {
   public state: State = {
     hasError: false,
     error: null,
+    componentStack: null,
   };
 
-  public static getDerivedStateFromError(error: Error): State {
+  public static getDerivedStateFromError(error: Error): Partial<State> {
     return { hasError: true, error };
   }
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error("ErrorBoundary caught an unhandled error:", error, errorInfo);
+    // Keep the full component stack visible in the fallback UI so render
+    // errors are never hidden behind a generic message.
+    this.setState({ componentStack: errorInfo.componentStack ?? null });
   }
 
   public render() {
@@ -48,6 +53,14 @@ export class ErrorBoundary extends Component<Props, State> {
             <div className="p-3 rounded-lg bg-muted/40 border border-border/50 text-xs font-mono text-muted-foreground break-all">
               {this.state.error?.message || "Unknown runtime error"}
             </div>
+            {this.state.componentStack ? (
+              <details className="text-xs">
+                <summary className="cursor-pointer text-muted-foreground">Component stack</summary>
+                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/40 border border-border/50 p-3 font-mono text-[10px] text-muted-foreground">
+                  {this.state.componentStack}
+                </pre>
+              </details>
+            ) : null}
 
             <div className="flex justify-end gap-2 pt-2">
               <Button

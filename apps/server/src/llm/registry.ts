@@ -168,9 +168,9 @@ export class EngineManager {
     this.engineConfigs.set("opencode", {
       type: "cli",
       provider: "cli",
-      name: "OpenCode (deprecated — use Cline)",
+      name: "OpenCode CLI",
       command: "opencode",
-      args: ["run", "--auto", "{prompt}"],
+      args: ["run", "--format", "json", "--title", "chat", "{prompt}"],
     });
     this.engineConfigs.set("cli", {
       type: "cli",
@@ -183,7 +183,8 @@ export class EngineManager {
     // Register default CLI providers with shared session manager
     this.registerCliProvider("cli-cline", "Cline CLI", "cline", ["--json", "{prompt}"], 300000);
     this.registerCliProvider("cli", "CLI Engine", "cline", ["--json", "{prompt}"], 300000);
-    this.registerCliProvider("cli-opencode", "OpenCode CLI (deprecated)", "opencode", ["run", "--auto", "{prompt}"], 300000);
+    this.registerCliProvider("cli-opencode", "OpenCode CLI", "opencode", ["run", "--format", "json", "--title", "chat", "{prompt}"], 300000);
+    this.registerCliProvider("opencode-cli", "OpenCode CLI", "opencode", ["run", "--format", "json", "--title", "chat", "{prompt}"], 300000);
   }
 
   private registerCliProvider(id: string, name: string, command: string, args: string[], timeoutMs: number): void {
@@ -212,7 +213,7 @@ export class EngineManager {
           args: config.args,
           cwd: config.cwd,
           env: config.env,
-          timeoutMs: (config as any).timeoutMs,
+          timeoutMs: (config as any).timeoutMs ?? 300_000,
           sessionManager: this.cliSessionManager,
         }),
       );

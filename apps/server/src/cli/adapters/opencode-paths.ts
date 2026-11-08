@@ -55,7 +55,7 @@ export const OPENCODE_ALLOWED_COMMANDS = [
 ] as const;
 
 /** Default argv template for one-shot agent runs. */
-export const OPENCODE_DEFAULT_RUN_ARGS = ["run", "--auto", "{prompt}"];
+export const OPENCODE_DEFAULT_RUN_ARGS = ["run", "--format", "json", "--title", "chat", "{prompt}"];
 
 export const OPENCODE_DAEMON_DEFAULT_PORT = 4096;
 export const OPENCODE_DAEMON_DEFAULT_HOSTNAME = "127.0.0.1";

@@ -75,7 +75,9 @@ export class OpenCodeAdapter extends CliAdapterBase {
       if (
         ctx.model !== undefined &&
         ctx.model !== "" &&
-        ctx.model !== "default"
+        ctx.model !== "default" &&
+        ctx.model !== "opencode" &&
+        ctx.model !== "opencode-cli"
       ) {
         flags.push("--model", ctx.model);
       }
@@ -111,6 +113,67 @@ export class OpenCodeAdapter extends CliAdapterBase {
 
   /** OpenCode streams JSON-lines (`tool_call` / `delta`). */
   override parseLine(line: string): CliStreamChunk | null {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        // OpenCode format: {"type":"text","part":{"type":"text","text":"..."}}
+        if (parsed.type === "text" && parsed.part?.text) {
+          const text = parsed.part.text.trim();
+          let stripped = text;
+          if (stripped.startsWith("```json")) stripped = stripped.slice(7).trim();
+          else if (stripped.startsWith("```")) stripped = stripped.slice(3).trim();
+          if (stripped.endsWith("```")) stripped = stripped.slice(0, -3).trim();
+          if (stripped.startsWith("{") && stripped.endsWith("}")) {
+            try {
+              const inner = JSON.parse(stripped);
+              if (inner.tool_call?.name) {
+                return {
+                  type: "tool_call",
+                  name: inner.tool_call.name,
+                  arguments: inner.tool_call.arguments || {},
+                };
+              }
+            } catch {}
+          }
+          return { type: "delta", content: parsed.part.text };
+        }
+        if (typeof parsed.delta === "string") {
+          return { type: "delta", content: parsed.delta };
+        }
+        if (typeof parsed.content === "string") {
+          return { type: "delta", content: parsed.content };
+        }
+        if (typeof parsed.text === "string") {
+          return { type: "delta", content: parsed.text };
+        }
+        if (parsed.tool_call?.name) {
+          return {
+            type: "tool_call",
+            name: parsed.tool_call.name,
+            arguments: parsed.tool_call.arguments || {},
+          };
+        }
+        if (parsed.type === "tool_use" && parsed.part) {
+          return {
+            type: "tool_call",
+            name: parsed.part.tool ?? parsed.part.id,
+            arguments: parsed.part.state?.input ?? {},
+          };
+        }
+        // Swallowed protocol control events (return empty delta so it's not printed as raw text)
+        if (
+          parsed.type === "step_start" ||
+          parsed.type === "step_finish" ||
+          parsed.type === "reasoning" ||
+          parsed.type === "action"
+        ) {
+          return { type: "delta", content: "" };
+        }
+      } catch {
+        // Fall back to super
+      }
+    }
     return super.parseLine(line);
   }
 

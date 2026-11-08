@@ -106,9 +106,17 @@ function defaultStreamingSpawnImpl(
             onChunk({ type: "tool_call", content: trimmed, toolCall: { name: parsed.tool_call.name, arguments: parsed.tool_call.arguments || {} } });
             continue;
           }
-          const delta = parsed.delta ?? parsed.content ?? parsed.text;
+          const delta = parsed.delta ?? parsed.content ?? parsed.text ?? parsed.part?.text;
           if (typeof delta === "string") {
             onChunk({ type: "delta", content: delta });
+            continue;
+          }
+          if (
+            parsed.type === "step_start" ||
+            parsed.type === "step_finish" ||
+            parsed.type === "reasoning" ||
+            parsed.type === "action"
+          ) {
             continue;
           }
         } catch {}
@@ -171,7 +179,7 @@ export class CliProvider implements LLMProvider {
     this.defaultArgs = opts.args ?? ["-p", "{prompt}"];
     this.cwd = opts.cwd;
     this.env = opts.env;
-    this.timeoutMs = opts.timeoutMs ?? 45_000;
+    this.timeoutMs = opts.timeoutMs ?? 180_000;
     this.isDefaultSpawn = !opts.spawnImpl;
     this.spawnImpl = opts.spawnImpl ?? defaultSpawnImpl;
     this.botId = opts.botId ?? "default";
@@ -248,7 +256,12 @@ export class CliProvider implements LLMProvider {
 
   async *chat(request: ChatRequest, opts?: LLMProviderOptions): AsyncIterable<LLMEvent> {
     const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const model = request.model || this.command;
+    const model =
+      request.model && request.model !== "default" && request.model !== "opencode" && request.model !== "opencode-cli"
+        ? request.model
+        : this.command === "opencode"
+          ? "ollama/qwen2.5:0.5b"
+          : this.command;
     const botId = opts?.botId ?? this.botId;
     yield { type: "message_start", messageId, model, timestamp: Date.now() };
 
@@ -328,7 +341,14 @@ export class CliProvider implements LLMProvider {
       else if (m.role === "assistant") parts.push(`Assistant: ${m.content}`);
       else if (m.role === "tool") parts.push(`Tool result (${m.name ?? m.toolCallId ?? "tool"}): ${m.content}`);
     }
-    if (tools?.length) parts.push(`\nAvailable tools (reply with one JSON line {"tool_call":{"name":"...","arguments":{}}} when you need a tool, else plain text):\n${tools.map((t) => `- ${t.name}: ${t.description}`).join("\n")}`);
+    if (tools?.length) {
+      parts.push(
+        `Available tools:\n${tools.map((t) => `- ${t.name}: ${t.description}`).join("\n")}\n\n` +
+        `CRITICAL: If the user is asking a general question, greeting, or role/connection confirmation, DO NOT use any tools; reply immediately in plain text.\n` +
+        `Only use a tool if the user explicitly asks to query prices, calculate indicators, or view portfolio data. To use a tool, reply ONLY with: {"tool_call":{"name":"<tool_name>","arguments":{}}}`
+      );
+    }
+    parts.push(`Instruction: Respond directly and concisely in 1-2 brief sentences.`);
     return parts.join("\n\n");
   }
 }

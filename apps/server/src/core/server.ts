@@ -2530,15 +2530,12 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     };
   });
 
-  /** Override a single agent's provider (built-ins cannot be changed). */
+  /** Override a single agent's provider. */
   app.patch<{ Params: { id: string } }>("/api/agent-runtime/agents/:id/provider", async (request, reply) => {
     const runtime = getAgentRuntime();
     const id = request.params.id;
     const agent = runtime.getAgent(id);
     if (!agent) return reply.status(404).send({ error: `Agent '${id}' not found` });
-    if (isBuiltInAgent(id)) {
-      return reply.status(403).send({ error: `Agent '${id}' is a built-in safety-critical agent and cannot be reassigned` });
-    }
     const body = (request.body ?? {}) as { providerId?: string };
     const providerId = typeof body.providerId === "string" ? body.providerId.trim() : undefined;
     const registry = getProviderRegistry();
@@ -2551,7 +2548,7 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
   });
 
   /** Bulk assign a CLI provider to agents. Body: { providerId, agentIds?: string[] }.
-   * If agentIds omitted, assigns to all non-built-in, non-archived agents. */
+   * If agentIds omitted, assigns to all non-archived agents. */
   app.post<{ Body: { providerId?: string; agentIds?: string[] } }>("/api/agent-runtime/agents/bulk-provider", async (request, reply) => {
     const runtime = getAgentRuntime();
     const { providerId, agentIds } = request.body ?? {};
@@ -2565,7 +2562,7 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     const allAgents = runtime.listAgents({ includeArchived: true });
     const targets = agentIds && agentIds.length > 0
       ? allAgents.filter((a) => agentIds.includes(a.id))
-      : allAgents.filter((a) => !isBuiltInAgent(a.id) && !(a.archived ?? false));
+      : allAgents.filter((a) => !(a.archived ?? false));
     const results: Array<{ agentId: string; ok: boolean; error?: string }> = [];
     for (const target of targets) {
       try {
