@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import CliPage from "./app/cli/page";
 import CodingPage from "./app/coding/page";
+import FinanceBotPage from "./app/financebot/page";
 import HomePage from "./app/home/page";
 import WorkspacePage from "./app/workspace/page";
 import CoworkersPage from "./app/coworkers/page";
@@ -74,6 +75,8 @@ function renderRoute(path: string) {
       );
     case "/cli":
       return <ShellRoute route="/cli"><CliPage /></ShellRoute>;
+    case "/bot":
+      return <FinanceBotPage />;
     case "/coding":
       return <CodingPage />;
     default:
