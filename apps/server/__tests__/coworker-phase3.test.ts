@@ -168,7 +168,10 @@ describe("Phase 3 — FinanceBot coworker management: defaults", () => {
 
     const supervisor = byId.get("financebot-supervisor")!;
     expect(supervisor.name).toBe("FinanceBot Supervisor");
-    expect(supervisor.engine).toBe("cline-cli");
+    // All 12 built-in coworkers were connected to OpenCode free models
+    // (commit "feat(coworkers): connect all 12 FinanceBot coworkers to OpenCode…");
+    // the supervisor's engine moved from the legacy cline-cli to opencode-cli.
+    expect(supervisor.engine).toBe("opencode-cli");
     expect(supervisor.avatar).toBeDefined();
     expect(typeof supervisor.personality).toBe("string");
     expect(supervisor.memoryScope).toBeDefined();
