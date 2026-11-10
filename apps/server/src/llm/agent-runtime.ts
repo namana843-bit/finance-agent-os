@@ -113,6 +113,11 @@ export class AgentRuntime {
     this.ready = this.init();
   }
 
+  /** Resolves once persisted agents are hydrated and built-in defaults seeded. */
+  awaitReady(): Promise<void> {
+    return this.ready;
+  }
+
   private async init(): Promise<void> {
     const saved = await this.persistence.loadAgents();
     for (const a of saved) {
