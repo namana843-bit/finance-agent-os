@@ -189,6 +189,62 @@ export function bulkSetAgentProvider(body: { providerId: string; agentIds?: stri
   });
 }
 
+// Free Model API
+export interface FreeModelsResponse {
+  available: boolean;
+  cliPath: string | null;
+  total: number;
+  models: string[];
+  grouped: Record<string, string[]>;
+  error?: string;
+}
+
+export interface DefaultModelResponse {
+  model: string | null;
+}
+
+export interface AgentModelAssignment {
+  agentId: string;
+  agentName: string;
+  model: string | null;
+  engine: string;
+  providerId: string | null;
+}
+
+export interface AgentModelAssignmentsResponse {
+  defaultModel: string | null;
+  assignments: AgentModelAssignment[];
+}
+
+export function fetchFreeModels(): Promise<FreeModelsResponse> {
+  return fetchJson<FreeModelsResponse>("/api/cli/free-models");
+}
+
+export function fetchDefaultModel(): Promise<DefaultModelResponse> {
+  return fetchJson<DefaultModelResponse>("/api/cli/default-model");
+}
+
+export function setDefaultModel(model: string | null): Promise<{ ok: boolean; model: string | null }> {
+  return fetchJson<{ ok: boolean; model: string | null }>("/api/cli/default-model", {
+    method: "POST",
+    body: JSON.stringify({ model }),
+  });
+}
+
+export function bulkSetAgentModel(body: { model: string; agentIds?: string[] }): Promise<{ ok: boolean; model: string; results: Array<{ agentId: string; ok: boolean; error?: string }> }> {
+  return fetchJson<{ ok: boolean; model: string; results: Array<{ agentId: string; ok: boolean; error?: string }> }>("/api/agent-runtime/agents/bulk-model", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function setAgentModel(agentId: string, model: string | null): Promise<{ ok: boolean; agent: AgentApiConfig }> {
+  return fetchJson<{ ok: boolean; agent: AgentApiConfig }>(`/api/agent-runtime/agents/${encodeURIComponent(agentId)}/model`, {
+    method: "PATCH",
+    body: JSON.stringify({ model }),
+  });
+}
+
 // Engine & Ollama API
 export function fetchEnginesApi(): Promise<{ engines: EngineApiStatus[] }> {
   return fetchJson<{ engines: EngineApiStatus[] }>("/api/llm/engines");

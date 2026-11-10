@@ -16,12 +16,17 @@ import {
 import { cn } from "../../lib/utils";
 import { navigate } from "../shell/nav";
 import {
+  bulkSetAgentModel,
   bulkSetAgentProvider,
   createAgent,
   fetchAgentAssignments,
   fetchAgents,
+  fetchDefaultModel,
   fetchDefaultProvider,
+  fetchFreeModels,
+  setAgentModel,
   setAgentProvider,
+  setDefaultModel,
   setDefaultProvider,
   type AgentAssignment,
 } from "../../lib/api";
@@ -56,11 +61,14 @@ export default function CliManagementPage() {
   const { agents, agentsState, agentsError, refresh } = useWorkspace();
   const [assignments, setAssignments] = useState<AgentAssignment[]>([]);
   const [defaultProvider, setDefaultProviderState] = useState<string | null>(null);
+  const [freeModels, setFreeModels] = useState<string[]>([]);
+  const [defaultModel, setDefaultModelState] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
-  const [bulkProviderId, setBulkProviderId] = useState("");
+  const [bulkType, setBulkType] = useState<"provider" | "model">("provider");
+  const [bulkValue, setBulkValue] = useState("");
   const [bulkAgentIds, setBulkAgentIds] = useState<string[]>([]);
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
 
@@ -68,12 +76,14 @@ export default function CliManagementPage() {
     setLoading(true);
     setError("");
     try {
-      const [assignmentsResult, defaultResult] = await Promise.all([
+      const [assignmentsResult, defaultResult, modelsResult] = await Promise.all([
         fetchAgentAssignments(),
         fetchDefaultProvider(),
+        fetchFreeModels(),
       ]);
       setAssignments(assignmentsResult.assignments);
       setDefaultProviderState(defaultResult.providerId ?? null);
+      setFreeModels(modelsResult.models);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -94,12 +104,10 @@ export default function CliManagementPage() {
     return counts;
   }, [assignments]);
 
-  // Discovered provider inventory. Declared before any conditional return so
-  // the hook order is identical on every render (React error #310 otherwise).
+  // Discovered provider inventory
   const providers = useMemo(() => {
     const seen = new Set<string>();
     const list: Array<{ id: string; name: string; count: number; status: string }> = [];
-    // Collect from assignments first
     for (const a of assignments) {
       const pid = a.providerId ?? "default";
       if (seen.has(pid)) continue;
@@ -111,12 +119,10 @@ export default function CliManagementPage() {
         status: "ok",
       });
     }
-    // Also include any provider connections that have zero agents
     return list;
   }, [assignments, providerCounts]);
 
-  // Explicit provider ids across agents, deduplicated — several agents may
-  // share one provider, and ids must not repeat as React keys in <option>s.
+  // Explicit provider ids across agents
   const assignedProviderIds = useMemo(
     () => [...new Set(assignments.flatMap((a) => (a.providerId ? [a.providerId] : [])))],
     [assignments],
@@ -143,9 +149,13 @@ export default function CliManagementPage() {
     setSaving(true);
     try {
       const targetIds = bulkAgentIds.length > 0 ? bulkAgentIds : undefined;
-      const result = await bulkSetAgentProvider({ providerId: bulkProviderId.trim(), agentIds: targetIds });
+      if (bulkType === "provider") {
+        await bulkSetAgentProvider({ providerId: bulkValue.trim(), agentIds: targetIds });
+      } else {
+        await bulkSetAgentModel({ model: bulkValue.trim(), agentIds: targetIds });
+      }
       setShowBulk(false);
-      setBulkProviderId("");
+      setBulkValue("");
       setBulkAgentIds([]);
       setSelectedAgentIds(new Set());
       await load();
@@ -160,6 +170,7 @@ export default function CliManagementPage() {
     setSaving(true);
     try {
       await setDefaultProvider(defaultProvider);
+      await setDefaultModel(defaultModel);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -168,10 +179,11 @@ export default function CliManagementPage() {
     }
   };
 
-  const handleAssignAgent = async (agentId: string, providerId: string | null) => {
+  const handleAssignAgent = async (agentId: string, providerId: string | null, model: string | null) => {
     setSaving(true);
     try {
       await setAgentProvider(agentId, providerId);
+      await setAgentModel(agentId, model);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -200,7 +212,7 @@ export default function CliManagementPage() {
       <PageHeader
         eyebrow="CLI Management"
         title="CLI Providers & Agent Assignments"
-        description="Connect any CLI provider (Codex, Claude Code, Gemini, OpenCode) to one agent, selected agents, or all agents."
+        description="Connect any CLI provider (Codex, Claude Code, Gemini, OpenCode) to one agent, selected agents, or all agents. Assign free OpenCode models to coworkers."
         actions={
           <div className="flex shrink-0 items-center gap-2">
             <TextButton
@@ -215,6 +227,56 @@ export default function CliManagementPage() {
           </div>
         }
       />
+
+      {/* Free models from OpenCode */}
+      <Panel className="p-4 mb-5">
+        <SectionHeading
+          title="Free OpenCode Models"
+          description="Discover genuinely available free models from your local OpenCode CLI installation. No API key required."
+        />
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <MonoLabel>Available models</MonoLabel>
+          {freeModels.length === 0 ? (
+            <span className="text-[11px] text-neutral-500">No free models discovered. Install OpenCode CLI and run \`opencode providers\` to authenticate.</span>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {freeModels.map((m) => (
+                <span
+                  key={m}
+                  className="rounded-md border border-white/[0.07] bg-white/[0.02] px-2.5 py-1 text-[10.5px] text-neutral-200 font-mono"
+                >
+                  {m}
+                </span>
+              ))}
+            </div>
+          )}
+          {freeModels.length > 0 && (
+            <div className="mt-3 flex items-center gap-3">
+              <MonoLabel>Global default free model</MonoLabel>
+              <select
+                value={defaultModel ?? ""}
+                onChange={(e) => setDefaultModelState(e.target.value || null)}
+                className="rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+              >
+                <option value="">None</option>
+                {freeModels.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => setDefaultModel(defaultModel)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11.5px] font-medium text-neutral-200 transition-colors disabled:opacity-50 hover:border-white/20"
+              >
+                {saving ? "Saving…" : "Set default model"}
+              </button>
+            </div>
+          )}
+        </div>
+      </Panel>
 
       {/* Global default provider */}
       <Panel className="p-4 mb-5">
@@ -301,7 +363,7 @@ export default function CliManagementPage() {
       <Panel className="p-4">
         <SectionHeading
           title="Agent assignments"
-          description="Each agent's current CLI provider. Override per agent or use bulk actions below."
+          description="Each agent's current CLI provider and free model. Override per agent or use bulk actions below."
         />
         <div className="mt-3 flex items-center gap-3">
           <button
@@ -316,24 +378,26 @@ export default function CliManagementPage() {
         </div>
         {showBulk && (
           <Panel className="mt-4 p-4 border-white/[0.05] bg-white/[0.02]">
-            <SectionHeading title="Bulk assign to selected agents" />
+            <SectionHeading title={`Bulk assign to ${selectedAgentIds.size || "all"} agents`} />
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div>
-                <MonoLabel>Provider ID</MonoLabel>
-                <input
-                  required
-                  value={bulkProviderId}
-                  onChange={(e) => setBulkProviderId(e.target.value)}
-                  placeholder="e.g. codex-cli"
+                <MonoLabel>Assign type</MonoLabel>
+                <select
+                  value={bulkType}
+                  onChange={(e) => setBulkType(e.target.value as "provider" | "model")}
                   className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
-                />
+                >
+                  <option value="provider">Provider</option>
+                  <option value="model">Free model</option>
+                </select>
               </div>
               <div>
-                <MonoLabel>Agent IDs (comma-separated, leave empty for all selected)</MonoLabel>
+                <MonoLabel>{bulkType === "provider" ? "Provider ID" : "Free model ID"}</MonoLabel>
                 <input
-                  value={bulkAgentIds.join(",")}
-                  onChange={(e) => setBulkAgentIds(e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
-                  placeholder="agent-1, agent-2"
+                  required
+                  value={bulkValue}
+                  onChange={(e) => setBulkValue(e.target.value)}
+                  placeholder={bulkType === "provider" ? "e.g. cli-opencode" : "e.g. opencode/nemotron-3.5-super-vl-free"}
                   className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
                 />
               </div>
@@ -346,8 +410,8 @@ export default function CliManagementPage() {
                 >
                   Cancel
                 </button>
-                <PrimaryButton disabled={saving || !bulkProviderId.trim()} onClick={() => handleBulkAssign()}>
-                  {saving ? "Assigning…" : "Assign to selected"}
+                <PrimaryButton disabled={saving || !bulkValue.trim()} onClick={() => handleBulkAssign()}>
+                  {saving ? "Assigning…" : `Assign to ${selectedAgentIds.size || "all"} agents`}
                 </PrimaryButton>
               </div>
             </div>
@@ -368,6 +432,7 @@ export default function CliManagementPage() {
                 <th className="pb-2 font-mono text-[9.5px] uppercase tracking-[0.14em] text-neutral-600">Agent</th>
                 <th className="pb-2 font-mono text-[9.5px] uppercase tracking-[0.14em] text-neutral-600">Engine</th>
                 <th className="pb-2 font-mono text-[9.5px] uppercase tracking-[0.14em] text-neutral-600">Provider</th>
+                <th className="pb-2 font-mono text-[9.5px] uppercase tracking-[0.14em] text-neutral-600">Model</th>
                 <th className="pb-2 font-mono text-[9.5px] uppercase tracking-[0.14em] text-neutral-600">Status</th>
                 <th className="pb-2 font-mono text-[9.5px] uppercase tracking-[0.14em] text-neutral-600">Override</th>
               </tr>
@@ -397,23 +462,41 @@ export default function CliManagementPage() {
                         <span className="text-neutral-500">default</span>
                       )}
                     </td>
+                    <td className="py-3 font-mono text-[10.5px] text-neutral-400 truncate max-w-[200px]">
+                      {a.model ?? "default"}
+                    </td>
                     <td className="py-3">
                       <StatusPill label={style.label} className={style.pill} dotClassName={style.dot} />
                     </td>
                     <td className="py-3">
-                      <select
-                        value={a.providerId ?? ""}
-                        onChange={(e) => handleAssignAgent(a.agentId, e.target.value || null)}
-                        disabled={saving}
-                        className="rounded-lg border border-white/[0.07] bg-white/[0.02] pl-2 pr-2 text-[10px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
-                      >
-                        <option value="">Default</option>
-                        {assignedProviderIds.map((id) => (
-                          <option key={id} value={id}>
-                            {id}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="flex gap-1">
+                        <select
+                          value={a.providerId ?? ""}
+                          onChange={(e) => handleAssignAgent(a.agentId, e.target.value || null, a.model)}
+                          disabled={saving}
+                          className="rounded-lg border border-white/[0.07] bg-white/[0.02] pl-2 pr-2 text-[10px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
+                        >
+                          <option value="">Default</option>
+                          {assignedProviderIds.map((id) => (
+                            <option key={id} value={id}>
+                              {id}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={a.model ?? ""}
+                          onChange={(e) => handleAssignAgent(a.agentId, a.providerId, e.target.value || null)}
+                          disabled={saving}
+                          className="rounded-lg border border-white/[0.07] bg-white/[0.02] pl-2 pr-2 text-[10px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40 ml-1"
+                        >
+                          <option value="">Default</option>
+                          {freeModels.map((m) => (
+                            <option key={m} value={m}>
+                              {m}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     </td>
                   </tr>
                 );
