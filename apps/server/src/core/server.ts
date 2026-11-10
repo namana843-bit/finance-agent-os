@@ -88,6 +88,13 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     logger: opts.logger ?? true,
   });
 
+  // Hydrate persisted agents and seed built-in defaults BEFORE any route can
+  // read the runtime registry. AgentRuntime.init() is async, and fast read
+  // endpoints (/api/agent-runtime/agents, /agents/:id, POST /conversations)
+  // otherwise race the seed on a cold start — returning an empty agent list
+  // or 404s for known built-ins (seen in CI's "Run pnpm test" failures).
+  await getAgentRuntime().awaitReady();
+
   const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? process.env.CORS_ORIGINS ?? "http://localhost:3000,http://localhost:5173").split(",").map((s) => s.trim()).filter(Boolean);
   await app.register(cors, {
     origin: (origin, cb) => {

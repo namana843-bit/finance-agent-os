@@ -230,27 +230,29 @@ describe("CLI stdout protocol parsing", () => {
 // ---------------------------------------------------------------------------
 
 describe("OpenCodeAdapter task argv", () => {
-  it("inserts --agent/--model after `run` (legacy ordering)", () => {
+  it("inserts --agent after `run` and skips self-referential model aliases", () => {
     const adapter = createOpenCodeAdapter();
     expect(
       adapter.decorateTaskArgs(["run", "--auto", "{prompt}"], { model: "opencode", agentId: "quant" }),
-    ).toEqual(["run", "--agent", "quant", "--model", "opencode", "--auto", "{prompt}"]);
+    ).toEqual(["run", "--agent", "quant", "--auto", "{prompt}"]);
   });
 
-  it("sanitises the agent name and skips decoration without an agent id", () => {
+  it("sanitises the agent name, skips decoration without an agent id, and still injects real models", () => {
     const adapter = createOpenCodeAdapter();
     expect(adapter.decorateTaskArgs(["run", "{prompt}"], { model: "opencode", agentId: "my agent/x" })).toEqual([
       "run",
       "--agent",
       "my-agent-x",
-      "--model",
-      "opencode",
       "{prompt}",
     ]);
     expect(adapter.decorateTaskArgs(["run", "{prompt}"], { model: "opencode" })).toEqual([
       "run",
       "{prompt}",
     ]);
+    // A concrete model id (not the engine alias) is passed through to the CLI.
+    expect(
+      adapter.decorateTaskArgs(["run", "{prompt}"], { model: "deepseek-v3.1-free", agentId: "quant" }),
+    ).toEqual(["run", "--agent", "quant", "--model", "deepseek-v3.1-free", "{prompt}"]);
   });
 
   it("never duplicates an existing --agent flag and leaves other CLIs alone", () => {
