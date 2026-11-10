@@ -519,9 +519,25 @@ export class AgentRuntime {
 
     let updated = false;
     for (const agent of defaults) {
-      if (!this.agentConfigs.has(agent.id)) {
+      const existing = this.agentConfigs.get(agent.id);
+      if (!existing) {
         this.agentConfigs.set(agent.id, agent);
         updated = true;
+      } else {
+        // Migrate existing coworkers to OpenCode CLI provider/model if they
+        // still point to a legacy engine (e.g. cline-cli).
+        const needsUpdate =
+          existing.engine !== agent.engine ||
+          existing.providerId !== agent.providerId;
+        if (needsUpdate) {
+          const migrated: AgentConfig = { ...existing, ...agent };
+          // Preserve any custom model override set by the user.
+          if (existing.model && existing.model !== agent.model) {
+            migrated.model = existing.model;
+          }
+          this.agentConfigs.set(agent.id, migrated);
+          updated = true;
+        }
       }
     }
     if (updated) {
