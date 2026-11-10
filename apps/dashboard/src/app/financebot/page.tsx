@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { ArrowLeft, Plus, Search, SendHorizontal, Sparkles } from "lucide-react";
 import { cn } from "../../lib/utils";
-import { fetchHealth, streamAgentChat } from "../../lib/api";
+import { fetchAgents, fetchHealth, streamAgentChat, type AgentApiConfig } from "../../lib/api";
 import { navigate } from "../shell/nav";
 
 /**
@@ -42,7 +42,23 @@ const BOTS: FinanceBotDef[] = [
   { id: "execution", name: "Execution Agent", runtimeId: "cline-cli-agent", role: "Paper orders only", color: "orange", preview: "Prepares and reviews simulated order tickets. No live execution.", time: "4:20 PM" },
 ];
 
-const BOT_BY_ID = new Map(BOTS.map((b) => [b.id, b]));
+/** Palette order cycled across live coworkers from the agent runtime. */
+const LIVE_COLORS: BotColor[] = ["green", "purple", "blue", "orange", "red"];
+
+/** Map a real agent-runtime config onto the chat sidebar shape. */
+function toChatBot(agent: AgentApiConfig, index: number): FinanceBotDef {
+  const role = agent.role || agent.description || `Runs via ${agent.engine}`;
+  const preview = (agent.description || agent.role || "Coworker from the agent runtime.").slice(0, 90);
+  return {
+    id: agent.id,
+    name: agent.name,
+    runtimeId: agent.id,
+    role,
+    color: LIVE_COLORS[index % LIVE_COLORS.length],
+    preview,
+    time: "",
+  };
+}
 
 const COLOR_TEXT: Record<BotColor, string> = {
   red: "text-[#ff8d84]",
@@ -85,14 +101,14 @@ function BotMark({ color, className }: { color: BotColor; className?: string }) 
 }
 
 /** Render @Mentions as tinted chips with a tiny bot mark. */
-function MessageText({ content }: { content: string }) {
+function MessageText({ content, bots }: { content: string; bots: FinanceBotDef[] }) {
   const parts = useMemo(() => content.split(/(@[A-Z][\w]*\s?(?:[A-Z][\w]*)?)/g), [content]);
   return (
     <>
       {parts.map((part, i) => {
         if (part.startsWith("@") && part.trim().length > 1) {
           const name = part.replace(/^@/, "").trim();
-          const bot = BOTS.find((b) => b.name.toLowerCase().includes(name.split(" ")[0].toLowerCase()));
+          const bot = bots.find((b) => b.name.toLowerCase().includes(name.split(" ")[0].toLowerCase()));
           const color: BotColor = bot?.color ?? "red";
           return (
             <span key={i} className={cn("mx-0.5 inline-flex items-center gap-1 rounded-[5px] px-1 py-px align-baseline text-[13px] font-medium", COLOR_BG[color])}>
@@ -121,19 +137,33 @@ export default function FinanceBotPage() {
   const [server, setServer] = useState<"checking" | "online" | "offline">("checking");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
-  const [messages, setMessages] = useState<Record<string, Message[]>>({
-    team: [], finance: [], quant: [], risk: [], market: [], execution: [],
-  });
+  const [runtimeAgents, setRuntimeAgents] = useState<AgentApiConfig[] | null>(null);
+  const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const selected = BOT_BY_ID.get(selectedId) ?? BOTS[0];
+  /** Live coworkers from the agent runtime; falls back to the demo bots
+   * when the API is unreachable or returns no agents. */
+  const bots: FinanceBotDef[] = useMemo(
+    () => (runtimeAgents && runtimeAgents.length > 0 ? runtimeAgents.map(toChatBot) : BOTS.slice(1)),
+    [runtimeAgents],
+  );
+  const botList = useMemo(() => [{ ...BOTS[0] }, ...bots], [bots]);
+  const botById = useMemo(() => new Map(botList.map((b) => [b.id, b])), [botList]);
+
+  const selected = botById.get(selectedId) ?? botList[0];
   const live = server === "online";
 
   useEffect(() => {
     let cancelled = false;
     fetchHealth()
-      .then(() => { if (!cancelled) setServer("online"); })
+      .then(() => {
+        if (!cancelled) setServer("online");
+        return fetchAgents();
+      })
+      .then((res) => {
+        if (!cancelled) setRuntimeAgents(res.agents ?? []);
+      })
       .catch(() => { if (!cancelled) setServer("offline"); });
     return () => { cancelled = true; };
   }, []);
@@ -249,7 +279,7 @@ export default function FinanceBotPage() {
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-            {BOTS.map((bot, idx) => {
+            {botList.map((bot, idx) => {
               const active = bot.id === selectedId;
               return (
                 <button
@@ -316,7 +346,7 @@ export default function FinanceBotPage() {
                 </div>
               ) : (
                 transcript.map((msg) => {
-                  const author = BOT_BY_ID.get(msg.botId);
+                  const author = botById.get(msg.botId);
                   if (msg.role === "user") {
                     return (
                       <div key={msg.id} className="self-end">
@@ -338,7 +368,7 @@ export default function FinanceBotPage() {
                         ) : null}
                       </div>
                       <div className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-neutral-200">
-                        <MessageText content={msg.content} />
+                        <MessageText content={msg.content} bots={botList} />
                         {msg.streaming ? <span className="ml-0.5 inline-block h-3.5 w-[7px] animate-pulse rounded-sm bg-neutral-500 align-middle" /> : null}
                       </div>
                     </div>
