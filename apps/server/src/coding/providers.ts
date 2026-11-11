@@ -19,8 +19,10 @@ import {
   type CodingModel,
   type CodingProviderDescriptor,
   type CodingProviderStatus,
+  supported,
   unsupported,
 } from "./types.js";
+import { discoverCliModels } from "../llm/cli-models.js";
 
 /** Provider ids the workspace is expected to surface first. */
 export const PRIMARY_CODING_PROVIDERS = ["opencode", "claude", "gemini", "codex"] as const;
@@ -118,6 +120,14 @@ function toDescriptor(adapter: CliAdapter, status: CodingProviderStatus): Coding
 export interface CodingProviderRegistryOptions {
   /** Restrict the registry to these provider ids (in this order). */
   only?: string[];
+  /**
+   * Model-discovery hook. Defaults to the shared CLI model discovery
+   * (`llm/cli-models.ts`); tests inject a deterministic fake here.
+   */
+  discoverModels?: (
+    executable: string,
+    providerId: string,
+  ) => Promise<CapabilityResult<CodingModel[]>>;
 }
 
 /**
@@ -169,18 +179,40 @@ export class CodingProviderRegistry {
   }
 
   /**
-   * Model enumeration. No adapter currently publishes a static model list, so
-   * this returns an explicit unsupported result rather than an invented list.
+   * Model enumeration. Uses the shared CLI model discovery: dynamic sources
+   * (`opencode models`, `ollama list`, Gemini ListModels), then the curated
+   * per-CLI catalog, then a single fallback entry. Returns an explicit
+   * unsupported result when the provider is not installed or publishes
+   * nothing.
    */
   async listModels(providerId: string): Promise<CapabilityResult<CodingModel[]>> {
     const descriptor = await this.describe(providerId);
     if (!descriptor) return unsupported(`unknown coding provider '${providerId}'`);
-    if (!descriptor.capabilities.model_selection.supported) {
-      return unsupported(descriptor.capabilities.model_selection.reason);
+    if (!descriptor.status.installed || !descriptor.status.resolvedPath) {
+      return unsupported(
+        `${descriptor.name} is not installed, so its models cannot be enumerated`,
+      );
     }
-    return unsupported(
-      `${descriptor.name} accepts a model flag but does not publish its model list; pass a model id directly`,
-    );
+    if (this.opts.discoverModels) {
+      return this.opts.discoverModels(descriptor.executable, providerId);
+    }
+    try {
+      const discovered = await discoverCliModels(descriptor.executable, { providerId });
+      if (discovered.models.length === 0) {
+        return unsupported(`${descriptor.name} publishes no model list; pass a model id directly`);
+      }
+      return supported(
+        discovered.models.map((m) => ({
+          id: m.id,
+          label: m.name === m.id ? `${descriptor.name}: ${m.id}` : m.name,
+          providerId,
+        })),
+      );
+    } catch (err) {
+      return unsupported(
+        `model discovery failed for ${descriptor.name}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   private async safeValidate(id: string, force: boolean): Promise<CliValidationResult | null> {

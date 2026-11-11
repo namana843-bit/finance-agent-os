@@ -230,11 +230,11 @@ describe("CLI stdout protocol parsing", () => {
 // ---------------------------------------------------------------------------
 
 describe("OpenCodeAdapter task argv", () => {
-  it("inserts --agent/--model after `run` (legacy ordering)", () => {
+  it("inserts --agent after `run` and skips the legacy pseudo-model", () => {
     const adapter = createOpenCodeAdapter();
     expect(
       adapter.decorateTaskArgs(["run", "--auto", "{prompt}"], { model: "opencode", agentId: "quant" }),
-    ).toEqual(["run", "--agent", "quant", "--model", "opencode", "--auto", "{prompt}"]);
+    ).toEqual(["run", "--agent", "quant", "--auto", "{prompt}"]);
   });
 
   it("sanitises the agent name and skips decoration without an agent id", () => {
@@ -243,8 +243,6 @@ describe("OpenCodeAdapter task argv", () => {
       "run",
       "--agent",
       "my-agent-x",
-      "--model",
-      "opencode",
       "{prompt}",
     ]);
     expect(adapter.decorateTaskArgs(["run", "{prompt}"], { model: "opencode" })).toEqual([

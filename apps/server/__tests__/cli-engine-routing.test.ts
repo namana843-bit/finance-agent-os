@@ -67,7 +67,10 @@ describe("engine routing — catalog ids invoke their own adapter", () => {
   it("keeps backward-compatible opencode + api engines", async () => {
     const em = makeManagers();
     const opencode = await em.getProviderForEngine("opencode-cli");
-    expect(opencode.provider.id).toBe("cli");
+    // The legacy engine id still routes to an OpenCode backend; the provider
+    // id is an internal detail ("opencode-cli" since the same-named provider
+    // was registered), so the contract is the executed binary, not the id.
+    expect((opencode.provider as unknown as { command: string }).command).toBe("opencode");
     const gpt = await em.getProviderForEngine("openai-gpt4");
     expect(gpt.provider.id).toBe("openai");
     const ollama = await em.getProviderForEngine("ollama-local");

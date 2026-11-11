@@ -19,6 +19,35 @@ differences (flags, parsing, errors) live in `cli/adapters/`.
 | Cline CLI | `cline` | `--json "{prompt}"` | one-shot | Yes (NDJSON) | Partial (`ask` approvals) | Yes | `cline auth <provider>` | `cli-providers` (3) |
 | Grok | — | Unsupported: xAI publishes no official CLI | — | — | — | — | — | — |
 
+## Model Enumeration
+
+Every CLI's models are discoverable — no engine is limited to a single
+"executable" pseudo-model any more (`apps/server/src/llm/cli-models.ts`).
+
+Sources, in priority order:
+
+1. **dynamic** — the CLI or its API lists models itself:
+   - `opencode` → `opencode models` via `list_opencode_models.py`
+   - `ollama` → `ollama list`
+   - `gemini` → Gemini ListModels API when `GEMINI_API_KEY`/`GOOGLE_API_KEY`
+     is set
+2. **curated** — a maintained catalog of ids each CLI's `--model`/`-m` flag
+   accepts (`gemini`, `claude`, `codex`, `agent`/cursor, `cline`, `qwen`,
+   `grok`). Labeled as curated; never claimed to be a live vendor list.
+3. **fallback** — a single entry named after the executable, so a selector is
+   never empty for unknown CLIs.
+
+Surfaces:
+
+| Surface | Endpoint | Notes |
+| --- | --- | --- |
+| Aggregate catalog | `GET /api/llm/cli-models[?refresh=1]` | All known executables, grouped by engine |
+| LLM provider | `GET /api/llm/providers/:id/models` | `CliProvider.listModels()` uses the same discovery |
+| Coding workspace | `GET /api/coding/providers/:id/models` | 404 unknown · 501 not installed · 200 `{ supported: true, models }` |
+
+Results are cached in memory for 5 minutes (`discoverCliModels`); discovery
+never throws — failures degrade to the next tier and are reported in `error`.
+
 ## Notes
 
 - **Persistent ACP:** `agent acp` (Cursor, documented) is the first planned

@@ -15,7 +15,7 @@ import type { SpawnFn } from "../cli-driver.js";
 import { CliSessionManager, createCliSessionManager, CliSession } from "../cli-session.js";
 import type { CliAdapter, CliManager } from "../../cli/index.js";
 import { getDefaultCliManager } from "../../cli/index.js";
-import { getOpencodeModels } from "../opencode-models.js";
+import { discoverCliModels } from "../cli-models.js";
 
 export interface CliProviderOptions {
   id?: string;
@@ -220,33 +220,35 @@ export class CliProvider implements LLMProvider {
     const start = Date.now();
     const resolved = await this.resolvePath(this.command);
     const latencyMs = Date.now() - start;
-    return resolved
-      ? { providerId: this.id, status: "ok", message: `Executable resolved: ${resolved}`, latencyMs, modelsCount: 1 }
-      : { providerId: this.id, status: "unreachable", message: `CLI executable '${this.command}' not found on system PATH`, latencyMs };
+    if (!resolved) {
+      return { providerId: this.id, status: "unreachable", message: `CLI executable '${this.command}' not found on system PATH`, latencyMs };
+    }
+    let modelsCount = 1;
+    try {
+      const discovered = await discoverCliModels(this.command, { providerId: this.id });
+      if (discovered.models.length > 0) modelsCount = discovered.models.length;
+    } catch {
+      // Health is about the executable; model discovery failure is not fatal.
+    }
+    return { providerId: this.id, status: "ok", message: `Executable resolved: ${resolved}`, latencyMs, modelsCount };
   }
 
   async listModels(): Promise<ModelInfo[]> {
     const resolved = await this.resolvePath(this.command);
     if (!resolved) return [];
 
-    // For the OpenCode CLI, return the dynamically discovered free models
-    // so coworkers can select a specific model. Falls back to the command
-    // name if discovery fails or returns no models.
-    if (this.command === "opencode" || this.id.startsWith("cli-opencode")) {
-      try {
-        const discovered = await getOpencodeModels({ refresh: false });
-        if (discovered.models && discovered.models.length > 0) {
-          return discovered.models.map((m) => ({
-            id: m,
-            name: m,
-            provider: this.id,
-            supportsTools: true,
-            description: `OpenCode free model: ${m}`,
-          }));
-        }
-      } catch {
-        // Fall through to the default single-model entry below.
-      }
+    // Generic discovery: dynamic sources first (`opencode models`, `ollama
+    // list`, Gemini ListModels), then the curated per-CLI catalog, then a
+    // single fallback entry — so every engine shows a real model list.
+    const discovered = await discoverCliModels(this.command, { providerId: this.id });
+    if (discovered.models.length > 0) {
+      return discovered.models.map((m) => ({
+        id: m.id,
+        name: m.name,
+        provider: this.id,
+        supportsTools: true,
+        description: m.description ?? `CLI model (${discovered.source}): ${m.id}`,
+      }));
     }
 
     return resolved
