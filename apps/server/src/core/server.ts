@@ -21,6 +21,7 @@ import {
 import { getCliDefaultProviderStore } from "../llm/cli-default-provider.js";
 import { getCliDefaultModelStore } from "../llm/cli-default-model.js";
 import { getOpencodeModels } from "../llm/opencode-models.js";
+import { discoverCliModels } from "../llm/cli-models.js";
 import { presetSummary } from "../llm/provider-catalog.js";
 import { redactSecrets, redactText } from "../llm/redact.js";
 import type { LlmConfig } from "../llm/types.js";
@@ -1734,6 +1735,32 @@ export async function buildServer(opts: ServerOptions = {}): Promise<FastifyInst
     const registry = getProviderRegistry();
     const health = await registry.getHealth();
     return { health };
+  });
+
+  // Aggregate model catalog for every known CLI engine: dynamic sources first
+  // (`opencode models`, `ollama list`, Gemini ListModels), then curated
+  // per-CLI catalogs, then a single fallback entry per executable.
+  app.get<{ Querystring: { refresh?: string } }>("/api/llm/cli-models", async (request) => {
+    const refresh = request.query?.refresh === "1" || request.query?.refresh === "true";
+    const executables = new Set<string>(["ollama"]);
+    try {
+      for (const meta of getCliManager().listMetadata()) executables.add(meta.executable);
+    } catch {
+      // Manager unavailable — still enumerate the built-in executables.
+    }
+    const engines = await Promise.all(
+      [...executables].map(async (executable) => {
+        const discovered = await discoverCliModels(executable, { refresh });
+        return {
+          engine: executable,
+          source: discovered.source,
+          total: discovered.models.length,
+          models: discovered.models,
+          ...(discovered.error ? { error: discovered.error } : {}),
+        };
+      }),
+    );
+    return { engines, total: engines.reduce((n, e) => n + e.total, 0) };
   });
 
   app.get("/api/llm/tools", async () => {

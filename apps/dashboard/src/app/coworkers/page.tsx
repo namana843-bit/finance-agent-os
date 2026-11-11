@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, MessageSquare, Search, Users, Plus, X, Zap, Terminal, Copy } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { navigate } from "../shell/nav";
@@ -15,7 +15,7 @@ import {
   TextButton,
 } from "../shell/ui";
 import { avatarTone, agentInitials, useWorkspace } from "../shell/workspace-data";
-import { createAgent, fetchAgents, setAgentProvider, bulkSetAgentProvider, type AgentApiConfig } from "../../lib/api";
+import { createAgent, fetchAgents, fetchCliModelsApi, setAgentProvider, bulkSetAgentProvider, type AgentApiConfig, type CliEngineModels } from "../../lib/api";
 
 type CoworkerStatus = "working" | "waiting" | "ready" | "unknown";
 
@@ -57,6 +57,23 @@ export default function CoworkersPage() {
   const [providerSaving, setProviderSaving] = useState<Set<string>>(new Set());
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
   const [newProviderId, setNewProviderId] = useState("");
+  const [cliEngines, setCliEngines] = useState<CliEngineModels[]>([]);
+
+  // Per-CLI model catalogs (opencode, gemini, claude, codex, cline, …) so the
+  // Engine/Model inputs can suggest real ids instead of free-text guesses.
+  useEffect(() => {
+    let cancelled = false;
+    fetchCliModelsApi()
+      .then((res) => {
+        if (!cancelled) setCliEngines(res.engines ?? []);
+      })
+      .catch(() => {
+        // Suggestions are a nicety; the inputs stay free-text on failure.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [form, setForm] = useState<NewCoworker>({
     name: "",
@@ -111,6 +128,19 @@ export default function CoworkersPage() {
     }
     return Array.from(seen).sort();
   }, [agents]);
+
+  // Match the typed engine (e.g. "cline-cli") to a catalog key ("cline").
+  const normalizeEngine = (value: string) =>
+    value.trim().toLowerCase().replace(/-?cli$/, "").replace(/-?agent$/, "").replace(/[^a-z0-9]/g, "");
+  const matchedEngine = useMemo(() => {
+    const needle = normalizeEngine(form.engine);
+    if (!needle) return null;
+    return cliEngines.find((e) => normalizeEngine(e.engine) === needle) ?? null;
+  }, [cliEngines, form.engine]);
+  const engineSuggestions = useMemo(
+    () => (matchedEngine ? matchedEngine.models : []),
+    [matchedEngine],
+  );
 
   const slugify = (name: string) =>
     name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-+$)/g, "") || "coworker";
@@ -289,17 +319,29 @@ export default function CoworkersPage() {
                 value={form.engine}
                 onChange={(e) => setForm({ ...form, engine: e.target.value })}
                 placeholder="cline-cli"
+                list="coworker-engine-options"
                 className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
               />
+              <datalist id="coworker-engine-options">
+                {cliEngines.map((e) => (
+                  <option key={e.engine} value={e.engine}>{`${e.total} models · ${e.source}`}</option>
+                ))}
+              </datalist>
             </div>
             <div>
               <MonoLabel>Model</MonoLabel>
               <input
                 value={form.model}
                 onChange={(e) => setForm({ ...form, model: e.target.value })}
-                placeholder="default model"
+                placeholder={engineSuggestions.length > 0 ? `${engineSuggestions.length} models available` : "default model"}
+                list="coworker-model-options"
                 className="w-full rounded-lg border border-white/[0.07] bg-white/[0.02] pl-3 pr-3 text-[11.5px] text-neutral-200 outline-none transition-colors focus:border-emerald-500/40"
               />
+              <datalist id="coworker-model-options">
+                {engineSuggestions.map((m) => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
+              </datalist>
             </div>
             <div className="lg:col-span-2">
               <MonoLabel>System prompt</MonoLabel>

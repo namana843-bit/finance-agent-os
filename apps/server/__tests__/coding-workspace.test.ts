@@ -223,11 +223,39 @@ describe("provider registry", () => {
     expect(await registry.describe("nope")).toBeNull();
   });
 
-  it("returns an explicit unsupported result for model enumeration", async () => {
-    const registry = new CodingProviderRegistry(buildManager());
+  it("enumerates models for an installed provider via injected discovery", async () => {
+    const registry = new CodingProviderRegistry(buildManager(), {
+      discoverModels: async (executable, providerId) => ({
+        supported: true,
+        value: [
+          { id: "model-a", label: "Model A", providerId },
+          { id: "model-b", label: "Model B", providerId },
+        ],
+      }),
+    });
     const result = await registry.listModels("claude");
+    expect(result.supported).toBe(true);
+    if (result.supported) {
+      expect(result.value.length).toBe(2);
+      expect(result.value[0]).toMatchObject({ id: "model-a", providerId: "claude" });
+    }
+  });
+
+  it("returns an explicit unsupported result for a non-installed provider", async () => {
+    const registry = new CodingProviderRegistry(buildManager());
+    const result = await registry.listModels("codex");
     expect(result.supported).toBe(false);
     if (!result.supported) expect(result.reason).toMatch(/model/i);
+  });
+
+  it("falls back to a single executable entry for unknown CLIs", async () => {
+    const registry = new CodingProviderRegistry(buildManager());
+    const result = await registry.listModels("claude");
+    expect(result.supported).toBe(true);
+    if (result.supported) {
+      expect(result.value.length).toBeGreaterThan(0);
+      expect(result.value[0].id).toBe("fake-claude");
+    }
   });
 
   it("honours the provider allow-list order", async () => {

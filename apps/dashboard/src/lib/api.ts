@@ -293,6 +293,19 @@ export function updateOpencodeModelApi(opts: {
   });
 }
 
+// Aggregate per-CLI model catalog (opencode, gemini, claude, codex, cline, …)
+export interface CliEngineModels {
+  engine: string;
+  source: "dynamic" | "curated" | "fallback" | "unavailable";
+  total: number;
+  models: Array<{ id: string; name: string; description?: string }>;
+  error?: string;
+}
+
+export function fetchCliModelsApi(refresh = false): Promise<{ engines: CliEngineModels[]; total: number }> {
+  return fetchJson<{ engines: CliEngineModels[]; total: number }>(`/api/llm/cli-models${refresh ? "?refresh=1" : ""}`);
+}
+
 // Streaming Agent Chat
 export async function streamAgentChat(
   agentId: string,

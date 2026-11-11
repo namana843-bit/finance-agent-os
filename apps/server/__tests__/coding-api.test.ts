@@ -142,12 +142,22 @@ describe("coding API: providers", () => {
     expect(provider.capabilities.permission_requests?.reason?.length ?? 0).toBeGreaterThan(10);
   });
 
-  it("answers 501 for model enumeration with a reason", async () => {
+  it("answers 200 with a model list for an installed provider", async () => {
     const res = await app.inject({ method: "GET", url: "/api/coding/providers/opencode/models" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { supported: boolean; models: Array<{ id: string; label: string; providerId: string }> };
+    expect(body.supported).toBe(true);
+    expect(body.models.length).toBeGreaterThan(0);
+    expect(body.models[0].providerId).toBe("opencode");
+  });
+
+  it("answers 501 with a reason for a non-installed provider", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/coding/providers/gemini/models" });
     expect(res.statusCode).toBe(501);
-    const body = res.json() as { supported: boolean; reason: string };
+    const body = res.json() as { supported: boolean; reason: string; models: unknown[] };
     expect(body.supported).toBe(false);
     expect(body.reason).toMatch(/model/i);
+    expect(body.models).toEqual([]);
   });
 
   it("404s on unknown providers", async () => {
